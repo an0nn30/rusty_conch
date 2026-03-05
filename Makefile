@@ -10,22 +10,46 @@ help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Targets:"
-	@echo "  macos-arm64   Build DMG for macOS ARM64 (native)"
-	@echo "  macos-x86     Build DMG for macOS x86_64 (cross-compile)"
-	@echo "  macos-universal Build universal DMG (ARM64 + x86_64)"
-	@echo "  linux-amd64   Build .deb and .rpm for Linux AMD64 (requires cross)"
-	@echo "  linux-arm64   Build .deb and .rpm for Linux ARM64 (requires cross)"
-	@echo "  windows       Build .zip for Windows x86_64 (requires cross)"
-	@echo "  all           Build all targets"
-	@echo "  clean         Remove build artifacts"
+	@echo "  dmg-universal  Build universal DMG (ARM64 + x86_64)"
+	@echo "  dmg-native     Build DMG for current architecture"
+	@echo "  linux-amd64    Build .deb and .rpm for Linux AMD64 (requires cross)"
+	@echo "  linux-arm64    Build .deb and .rpm for Linux ARM64 (requires cross)"
+	@echo "  windows        Build .exe for Windows x86_64 (requires cross)"
+	@echo "  all            Build all targets"
+	@echo "  clean          Remove build artifacts"
 	@echo ""
 	@echo "Version: $(VERSION)"
 
 # ---------------------------------------------------------------------------
-# macOS ARM64
+# macOS Universal (fat binary: ARM64 + x86_64)
 # ---------------------------------------------------------------------------
-.PHONY: macos-arm64
-macos-arm64:
+.PHONY: dmg-universal
+dmg-universal:
+	rustup target add aarch64-apple-darwin x86_64-apple-darwin 2>/dev/null || true
+	cargo build --release -p conch_app --target=aarch64-apple-darwin
+	cargo build --release -p conch_app --target=x86_64-apple-darwin
+	@mkdir -p "$(DIST)"
+	rm -rf "$(APP)"
+	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
+	lipo -create \
+		target/aarch64-apple-darwin/release/conch \
+		target/x86_64-apple-darwin/release/conch \
+		-output "$(APP)/Contents/MacOS/conch"
+	cp packaging/macos/Info.plist "$(APP)/Contents/"
+	cp crates/conch_app/icons/conch.icns "$(APP)/Contents/Resources/"
+	codesign --remove-signature "$(APP)" 2>/dev/null || true
+	codesign --force --deep --sign - "$(APP)"
+	hdiutil create -volname "Conch" -srcfolder "$(APP)" \
+		-fs HFS+ -ov -format UDZO \
+		"$(DIST)/Conch-v$(VERSION).dmg"
+	rm -rf "$(APP)"
+	@echo "Built $(DIST)/Conch-v$(VERSION).dmg"
+
+# ---------------------------------------------------------------------------
+# macOS Native (current architecture only)
+# ---------------------------------------------------------------------------
+.PHONY: dmg-native
+dmg-native:
 	cargo build --release -p conch_app
 	@mkdir -p "$(DIST)"
 	rm -rf "$(APP)"
@@ -33,53 +57,13 @@ macos-arm64:
 	cp target/release/conch "$(APP)/Contents/MacOS/"
 	cp packaging/macos/Info.plist "$(APP)/Contents/"
 	cp crates/conch_app/icons/conch.icns "$(APP)/Contents/Resources/"
+	codesign --remove-signature "$(APP)" 2>/dev/null || true
 	codesign --force --deep --sign - "$(APP)"
-	hdiutil create -volname "Conch" -srcfolder "$(APP)" -ov -format UDZO \
-		"$(DIST)/Conch-$(VERSION)-macos-arm64.dmg"
+	hdiutil create -volname "Conch" -srcfolder "$(APP)" \
+		-fs HFS+ -ov -format UDZO \
+		"$(DIST)/Conch-v$(VERSION)-$(shell uname -m).dmg"
 	rm -rf "$(APP)"
-	@echo "Built $(DIST)/Conch-$(VERSION)-macos-arm64.dmg"
-
-# ---------------------------------------------------------------------------
-# macOS x86_64
-# ---------------------------------------------------------------------------
-.PHONY: macos-x86
-macos-x86:
-	rustup target add x86_64-apple-darwin 2>/dev/null || true
-	cargo build --release -p conch_app --target x86_64-apple-darwin
-	@mkdir -p "$(DIST)"
-	rm -rf "$(APP)"
-	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
-	cp target/x86_64-apple-darwin/release/conch "$(APP)/Contents/MacOS/"
-	cp packaging/macos/Info.plist "$(APP)/Contents/"
-	cp crates/conch_app/icons/conch.icns "$(APP)/Contents/Resources/"
-	codesign --force --deep --sign - "$(APP)"
-	hdiutil create -volname "Conch" -srcfolder "$(APP)" -ov -format UDZO \
-		"$(DIST)/Conch-$(VERSION)-macos-x86_64.dmg"
-	rm -rf "$(APP)"
-	@echo "Built $(DIST)/Conch-$(VERSION)-macos-x86_64.dmg"
-
-# ---------------------------------------------------------------------------
-# macOS Universal (fat binary: ARM64 + x86_64)
-# ---------------------------------------------------------------------------
-.PHONY: macos-universal
-macos-universal:
-	rustup target add x86_64-apple-darwin 2>/dev/null || true
-	cargo build --release -p conch_app
-	cargo build --release -p conch_app --target x86_64-apple-darwin
-	@mkdir -p "$(DIST)"
-	rm -rf "$(APP)"
-	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
-	lipo -create \
-		target/release/conch \
-		target/x86_64-apple-darwin/release/conch \
-		-output "$(APP)/Contents/MacOS/conch"
-	cp packaging/macos/Info.plist "$(APP)/Contents/"
-	cp crates/conch_app/icons/conch.icns "$(APP)/Contents/Resources/"
-	codesign --force --deep --sign - "$(APP)"
-	hdiutil create -volname "Conch" -srcfolder "$(APP)" -ov -format UDZO \
-		"$(DIST)/Conch-$(VERSION)-macos-universal.dmg"
-	rm -rf "$(APP)"
-	@echo "Built $(DIST)/Conch-$(VERSION)-macos-universal.dmg"
+	@echo "Built $(DIST)/Conch-v$(VERSION)-$(shell uname -m).dmg"
 
 # ---------------------------------------------------------------------------
 # Linux AMD64 (requires cross: cargo install cross)
@@ -90,8 +74,8 @@ linux-amd64:
 	@mkdir -p "$(DIST)"
 	cargo deb -p conch_app --no-build --target x86_64-unknown-linux-gnu
 	cargo generate-rpm -p crates/conch_app --target x86_64-unknown-linux-gnu
-	cp target/x86_64-unknown-linux-gnu/debian/*.deb "$(DIST)/"
-	cp target/x86_64-unknown-linux-gnu/generate-rpm/*.rpm "$(DIST)/"
+	cp target/x86_64-unknown-linux-gnu/debian/*.deb "$(DIST)/conch-v$(VERSION)-amd64.deb"
+	cp target/x86_64-unknown-linux-gnu/generate-rpm/*.rpm "$(DIST)/conch-v$(VERSION)-1.x86_64.rpm"
 	@echo "Built Linux AMD64 packages in $(DIST)/"
 
 # ---------------------------------------------------------------------------
@@ -103,8 +87,8 @@ linux-arm64:
 	@mkdir -p "$(DIST)"
 	cargo deb -p conch_app --no-build --no-strip --target aarch64-unknown-linux-gnu
 	cargo generate-rpm -p crates/conch_app --target aarch64-unknown-linux-gnu
-	cp target/aarch64-unknown-linux-gnu/debian/*.deb "$(DIST)/"
-	cp target/aarch64-unknown-linux-gnu/generate-rpm/*.rpm "$(DIST)/"
+	cp target/aarch64-unknown-linux-gnu/debian/*.deb "$(DIST)/conch-v$(VERSION)-arm64.deb"
+	cp target/aarch64-unknown-linux-gnu/generate-rpm/*.rpm "$(DIST)/conch-v$(VERSION)-1.aarch64.rpm"
 	@echo "Built Linux ARM64 packages in $(DIST)/"
 
 # ---------------------------------------------------------------------------
@@ -114,14 +98,14 @@ linux-arm64:
 windows:
 	cross build --release -p conch_app --target x86_64-pc-windows-msvc
 	@mkdir -p "$(DIST)"
-	cp target/x86_64-pc-windows-msvc/release/conch.exe "$(DIST)/Conch-$(VERSION)-windows-x86_64.exe"
-	@echo "Built $(DIST)/Conch-$(VERSION)-windows-x86_64.exe"
+	cp target/x86_64-pc-windows-msvc/release/conch.exe "$(DIST)/Conch-v$(VERSION)-portable.exe"
+	@echo "Built $(DIST)/Conch-v$(VERSION)-portable.exe"
 
 # ---------------------------------------------------------------------------
 # All
 # ---------------------------------------------------------------------------
 .PHONY: all
-all: macos-arm64 macos-x86 linux-amd64 linux-arm64 windows
+all: dmg-universal linux-amd64 linux-arm64 windows
 
 # ---------------------------------------------------------------------------
 # Clean
