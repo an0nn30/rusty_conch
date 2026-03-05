@@ -57,6 +57,9 @@ assets = [
     ["icons/app-icon-512.png", "usr/share/icons/hicolor/512x512/apps/conch.png", "644"],
 ]
 
+[package.metadata.deb.variants.cross]
+depends = "libc6,libgcc-s1,libxcb-render0,libxcb-shape0,libxcb-xfixes0,libxkbcommon0,libwayland-client0,libgtk-3-0,libssl3,libfontconfig1"
+
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/conch", dest = "/usr/bin/conch", mode = "755" },

@@ -222,7 +222,7 @@ jobs:
           cargo install cargo-deb
           cargo deb -p conch_app --no-build --no-strip \
             --target aarch64-unknown-linux-gnu \
-            -d "libc6,libgcc-s1,libxcb-render0,libxcb-shape0,libxcb-xfixes0,libxkbcommon0,libwayland-client0,libgtk-3-0,libssl3,libfontconfig1"
+            --variant=cross
 
       - name: Build .rpm
         run: |
