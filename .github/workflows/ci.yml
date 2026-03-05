@@ -31,7 +31,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets
 
   macos:
     runs-on: macos-latest

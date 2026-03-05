@@ -23,22 +23,35 @@ fi
 
 echo "Git tag: $tag"
 
-# Get the upload URL for the current tag.
+# Get the upload URL and release ID for the current tag.
 #
 # Since this might be a draft release, we can't just use the /releases/tags/:tag
 # endpoint which only shows published releases.
 echo "Checking for existing release..."
-upload_url=$(\
+releases_json=$(\
     curl \
         --http1.1 \
         -H "Authorization: Bearer $bearer" \
         "https://api.github.com/repos/$repo/releases" \
         2> /dev/null \
+)
+
+upload_url=$(\
+    echo "$releases_json" \
     | grep -E "(upload_url|tag_name)" \
     | paste - - \
     | grep -e "tag_name\": \"$tag\"" \
     | head -n 1 \
     | sed 's/.*\(https.*assets\).*/\1/' \
+)
+
+release_id=$(\
+    echo "$releases_json" \
+    | grep -E "(\"id\":|tag_name)" \
+    | paste - - \
+    | grep -e "tag_name\": \"$tag\"" \
+    | head -n 1 \
+    | sed 's/.*"id": \([0-9]*\).*/\1/' \
 )
 
 # Create a new release if we didn't find one for this tag.
@@ -63,11 +76,17 @@ if [ -z "$upload_url" ]; then
         exit 1;
     fi
 
-    # Extract upload URL from new release.
+    # Extract upload URL and release ID from new release.
     upload_url=$(\
         echo "$response" \
         | grep "upload_url" \
         | sed 's/.*: "\(.*\){.*/\1/' \
+    )
+    release_id=$(\
+        echo "$response" \
+        | grep '"id":' \
+        | head -n 1 \
+        | sed 's/.*"id": \([0-9]*\).*/\1/' \
     )
 fi
 
@@ -77,8 +96,31 @@ if [ -z "$upload_url" ]; then
     exit 2
 fi
 
-# Upload the file to the tag's release.
+# Delete existing asset with the same name (if any) to allow re-upload.
 file_name=${file_path##*/}
+if [ -n "$release_id" ]; then
+    existing_asset_id=$(\
+        curl \
+            --http1.1 \
+            -H "Authorization: Bearer $bearer" \
+            "https://api.github.com/repos/$repo/releases/$release_id/assets" \
+            2> /dev/null \
+        | grep -B 2 "\"name\": \"$file_name\"" \
+        | grep '"id":' \
+        | sed 's/.*"id": \([0-9]*\).*/\1/' \
+    )
+    if [ -n "$existing_asset_id" ]; then
+        echo "Deleting existing asset $file_name (id: $existing_asset_id)..."
+        curl -f \
+            --http1.1 \
+            -X DELETE \
+            -H "Authorization: Bearer $bearer" \
+            "https://api.github.com/repos/$repo/releases/assets/$existing_asset_id" \
+            &> /dev/null
+    fi
+fi
+
+# Upload the file to the tag's release.
 echo "Uploading asset $file_name to $upload_url..."
 curl -f \
     --http1.1 \
