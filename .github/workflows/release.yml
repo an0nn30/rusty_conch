@@ -109,35 +109,37 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Windows x86_64
+  # Disabled: conch_session uses Unix-only APIs (UnixStream, Pty::child).
+  # Re-enable once platform-specific code is gated with #[cfg].
   # ---------------------------------------------------------------------------
-  build-windows:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: cargo build --release -p conch_app
-
-      - name: Extract version
-        id: version
-        shell: bash
-        run: |
-          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Package ZIP
-        shell: bash
-        run: |
-          7z a "Conch-${{ steps.version.outputs.version }}-windows-x86_64.zip" ./target/release/conch.exe
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-zip
-          path: "*.zip"
+  # build-windows:
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   needs: test
+  #   runs-on: windows-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: Swatinem/rust-cache@v2
+  #
+  #     - name: Build
+  #       run: cargo build --release -p conch_app
+  #
+  #     - name: Extract version
+  #       id: version
+  #       shell: bash
+  #       run: |
+  #         VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+  #         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+  #
+  #     - name: Package ZIP
+  #       shell: bash
+  #       run: |
+  #         7z a "Conch-${{ steps.version.outputs.version }}-windows-x86_64.zip" ./target/release/conch.exe
+  #
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: windows-zip
+  #         path: "*.zip"
 
   # ---------------------------------------------------------------------------
   # Linux AMD64
@@ -218,7 +220,9 @@ jobs:
       - name: Build .deb
         run: |
           cargo install cargo-deb
-          cargo deb -p conch_app --no-build --target aarch64-unknown-linux-gnu
+          cargo deb -p conch_app --no-build --no-strip \
+            --target aarch64-unknown-linux-gnu \
+            -d "libc6,libgcc-s1,libxcb-render0,libxcb-shape0,libxcb-xfixes0,libxkbcommon0,libwayland-client0,libgtk-3-0,libssl3,libfontconfig1"
 
       - name: Build .rpm
         run: |
@@ -245,7 +249,6 @@ jobs:
     needs:
       - build-macos-arm64
       - build-macos-x86
-      - build-windows
       - build-linux-amd64
       - build-linux-arm64
     runs-on: ubuntu-latest
