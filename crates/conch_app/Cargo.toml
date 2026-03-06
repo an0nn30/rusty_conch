@@ -21,6 +21,7 @@ env_logger = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
 dirs = { workspace = true }
+rfd = { workspace = true }
 
 chrono = "0.4"
 

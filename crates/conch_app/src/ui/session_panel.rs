@@ -12,6 +12,7 @@ pub struct SshConnectRequest {
     pub identity_file: Option<String>,
     pub proxy_command: Option<String>,
     pub proxy_jump: Option<String>,
+    pub password: Option<String>,
 }
 
 /// Identifies a server entry by the folder path it lives in + its index.
@@ -153,6 +154,7 @@ pub fn show_session_panel(
                 identity_file: entry.identity_file.clone(),
                 proxy_command: entry.proxy_command.clone(),
                 proxy_jump: entry.proxy_jump.clone(),
+                password: None,
             });
             panel_state.quick_connect_query.clear();
         }
@@ -204,6 +206,7 @@ pub fn show_session_panel(
                             identity_file: entry.identity_file.clone(),
                             proxy_command: entry.proxy_command.clone(),
                             proxy_jump: entry.proxy_jump.clone(),
+                            password: None,
                         });
                         panel_state.quick_connect_query.clear();
                     }
@@ -310,27 +313,31 @@ pub fn show_session_panel(
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ui.ctx(), |ui| {
-                ui.label(detail);
+                ui.label(egui::RichText::new(detail).size(14.0));
                 ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Delete").clicked() {
-                        match target {
-                            DeleteTarget::Folder(path) => {
-                                action = SessionPanelAction::DeleteFolder {
-                                    path: path.clone(),
-                                };
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if crate::ui::widgets::dialog_button(ui, "Delete").clicked() {
+                            match target {
+                                DeleteTarget::Folder(path) => {
+                                    action = SessionPanelAction::DeleteFolder {
+                                        path: path.clone(),
+                                    };
+                                }
+                                DeleteTarget::Server(addr) => {
+                                    action = SessionPanelAction::DeleteServer {
+                                        addr: addr.clone(),
+                                    };
+                                }
                             }
-                            DeleteTarget::Server(addr) => {
-                                action = SessionPanelAction::DeleteServer {
-                                    addr: addr.clone(),
-                                };
-                            }
+                            panel_state.confirm_delete = None;
                         }
-                        panel_state.confirm_delete = None;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        panel_state.confirm_delete = None;
-                    }
+                        if crate::ui::widgets::dialog_button(ui, "Cancel").clicked() {
+                            panel_state.confirm_delete = None;
+                        }
+                    });
                 });
             });
     }
@@ -581,6 +588,7 @@ fn show_server_entry_editable(
             identity_file: entry.identity_file.clone(),
             proxy_command: entry.proxy_command.clone(),
             proxy_jump: entry.proxy_jump.clone(),
+            password: None,
         })
     } else {
         SessionPanelAction::None
@@ -614,6 +622,7 @@ fn show_server_entry_readonly(
             identity_file: entry.identity_file.clone(),
             proxy_command: entry.proxy_command.clone(),
             proxy_jump: entry.proxy_jump.clone(),
+            password: None,
         })
     } else {
         SessionPanelAction::None

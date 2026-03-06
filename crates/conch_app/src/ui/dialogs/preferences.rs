@@ -6,18 +6,16 @@ use conch_core::config::{self, UserConfig};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreferencesSection {
     Terminal,
-    Sessions,
     Appearance,
     General,
 }
 
 impl PreferencesSection {
-    const ALL: [Self; 4] = [Self::Terminal, Self::Sessions, Self::Appearance, Self::General];
+    const ALL: [Self; 3] = [Self::Terminal, Self::Appearance, Self::General];
 
     fn label(self) -> &'static str {
         match self {
             Self::Terminal => "Terminal",
-            Self::Sessions => "Sessions",
             Self::Appearance => "Appearance",
             Self::General => "General",
         }
@@ -31,10 +29,13 @@ pub struct PreferencesForm {
     pub terminal_font_size: String,
     pub theme_name: String,
     pub available_themes: Vec<String>,
-    // Sessions
-    pub shell: String,
+    pub shell_program: String,
+    pub shell_args: String,
     pub startup_command: String,
     pub use_tmux: bool,
+    // Window
+    pub window_columns: String,
+    pub window_lines: String,
     // Appearance
     pub ui_font_family: String,
     pub ui_font_size: String,
@@ -57,11 +58,14 @@ impl PreferencesForm {
             terminal_font_size: format!("{}", config.font.size),
             theme_name: config.colors.theme.clone(),
             available_themes: themes,
-            shell: config.session.shell.clone(),
-            startup_command: config.session.startup_command.clone(),
-            use_tmux: config.session.use_tmux,
-            ui_font_family: config.font.ui_family.clone(),
-            ui_font_size: format!("{}", config.font.ui_size),
+            shell_program: config.terminal.shell.program.clone(),
+            shell_args: config.terminal.shell.args.join(" "),
+            startup_command: config.terminal.shell.startup_command.clone(),
+            use_tmux: config.terminal.shell.use_tmux,
+            window_columns: format!("{}", config.window.dimensions.columns),
+            window_lines: format!("{}", config.window.dimensions.lines),
+            ui_font_family: config.conch.ui.font_family.clone(),
+            ui_font_size: format!("{}", config.conch.ui.font_size),
         }
     }
 
@@ -73,13 +77,30 @@ impl PreferencesForm {
             }
         }
         config.colors.theme = self.theme_name.clone();
-        config.session.shell = self.shell.clone();
-        config.session.startup_command = self.startup_command.clone();
-        config.session.use_tmux = self.use_tmux;
-        config.font.ui_family = self.ui_font_family.clone();
+
+        // [terminal.shell]
+        config.terminal.shell.program = self.shell_program.trim().to_string();
+        config.terminal.shell.args = if self.shell_args.trim().is_empty() {
+            Vec::new()
+        } else {
+            self.shell_args.split_whitespace().map(String::from).collect()
+        };
+        config.terminal.shell.startup_command = self.startup_command.clone();
+        config.terminal.shell.use_tmux = self.use_tmux;
+
+        // [window.dimensions]
+        if let Ok(cols) = self.window_columns.trim().parse::<u16>() {
+            config.window.dimensions.columns = cols;
+        }
+        if let Ok(lines) = self.window_lines.trim().parse::<u16>() {
+            config.window.dimensions.lines = lines;
+        }
+
+        // [conch.ui]
+        config.conch.ui.font_family = self.ui_font_family.clone();
         if let Ok(size) = self.ui_font_size.trim().parse::<f32>() {
             if size > 0.0 {
-                config.font.ui_size = size;
+                config.conch.ui.font_size = size;
             }
         }
     }
@@ -125,7 +146,6 @@ pub fn show_preferences(ctx: &egui::Context, form: &mut PreferencesForm) -> Pref
                     ui.set_min_width(avail.x - 150.0);
                     match form.active_section {
                         PreferencesSection::Terminal => show_terminal_section(ui, form),
-                        PreferencesSection::Sessions => show_sessions_section(ui, form),
                         PreferencesSection::Appearance => show_appearance_section(ui, form),
                         PreferencesSection::General => show_general_section(ui),
                     }
@@ -135,13 +155,16 @@ pub fn show_preferences(ctx: &egui::Context, form: &mut PreferencesForm) -> Pref
             // Bottom buttons.
             ui.add_space(8.0);
             ui.separator();
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    action = PreferencesAction::Save;
-                }
-                if ui.button("Cancel").clicked() {
-                    action = PreferencesAction::Cancel;
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if crate::ui::widgets::dialog_button(ui, "Save").clicked() {
+                        action = PreferencesAction::Save;
+                    }
+                    if crate::ui::widgets::dialog_button(ui, "Cancel").clicked() {
+                        action = PreferencesAction::Cancel;
+                    }
+                });
             });
         });
 
@@ -171,17 +194,17 @@ fn show_terminal_section(ui: &mut egui::Ui, form: &mut PreferencesForm) {
                     }
                 });
             ui.end_row();
-        });
-}
 
-fn show_sessions_section(ui: &mut egui::Ui, form: &mut PreferencesForm) {
-    use crate::ui::widgets::text_edit;
-    egui::Grid::new("prefs_sessions")
-        .num_columns(2)
-        .spacing([12.0, 6.0])
-        .show(ui, |ui| {
+            ui.separator();
+            ui.separator();
+            ui.end_row();
+
             ui.label("Shell Program:");
-            ui.add(text_edit(&mut form.shell).desired_width(200.0).hint_text("$SHELL"));
+            ui.add(text_edit(&mut form.shell_program).desired_width(200.0).hint_text("$SHELL"));
+            ui.end_row();
+
+            ui.label("Shell Args:");
+            ui.add(text_edit(&mut form.shell_args).desired_width(200.0).hint_text("-l"));
             ui.end_row();
 
             ui.label("Startup Command:");
@@ -207,7 +230,27 @@ fn show_appearance_section(ui: &mut egui::Ui, form: &mut PreferencesForm) {
             ui.label("UI Font Size:");
             ui.add(text_edit(&mut form.ui_font_size).desired_width(60.0));
             ui.end_row();
+
+            ui.separator();
+            ui.separator();
+            ui.end_row();
+
+            ui.label("Window Columns:");
+            ui.add(text_edit(&mut form.window_columns).desired_width(60.0));
+            ui.end_row();
+
+            ui.label("Window Lines:");
+            ui.add(text_edit(&mut form.window_lines).desired_width(60.0));
+            ui.end_row();
         });
+
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("Window size takes effect on next launch.")
+            .italics()
+            .weak()
+            .size(11.0),
+    );
 }
 
 fn show_general_section(ui: &mut egui::Ui) {

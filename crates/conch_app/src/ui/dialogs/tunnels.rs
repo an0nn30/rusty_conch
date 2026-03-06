@@ -3,19 +3,7 @@
 use conch_core::models::{SavedTunnel, ServerEntry};
 use uuid::Uuid;
 
-/// Minimum size for dialog action buttons.
-const BTN_MIN_SIZE: egui::Vec2 = egui::Vec2::new(95.0, 26.0);
-
-fn dialog_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add_sized(BTN_MIN_SIZE, egui::Button::new(egui::RichText::new(label).size(14.0)))
-}
-
-fn dialog_button_enabled(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(egui::RichText::new(label).size(14.0)).min_size(BTN_MIN_SIZE),
-    )
-}
+use crate::ui::widgets::{dialog_button, dialog_button_enabled};
 
 // ---------------------------------------------------------------------------
 // Tunnel manager dialog (table of saved tunnels)

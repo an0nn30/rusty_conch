@@ -203,14 +203,13 @@ pub struct ConchApp {
 
 impl ConchApp {
     pub fn new(rt: Arc<Runtime>) -> Self {
-        // Run legacy migration before loading.
-        config::migrate_if_needed();
-
+        // Migration already ran in main(); load_user_config is idempotent.
         let user_config = config::load_user_config().unwrap_or_default();
         let persistent = config::load_persistent_state().unwrap_or_default();
-        let shortcuts = ResolvedShortcuts::from_config(&user_config.keyboard);
+        let sessions_config = config::load_sessions().unwrap_or_default();
+        let shortcuts = ResolvedShortcuts::from_config(&user_config.conch.keyboard);
 
-        let mut state = AppState::new(user_config, persistent);
+        let mut state = AppState::new(user_config, persistent, sessions_config);
 
         state.ssh_config_hosts = ssh_config::parse_ssh_config().unwrap_or_default();
 
@@ -559,6 +558,7 @@ impl ConchApp {
                         server.identity_file.clone(),
                         server.proxy_command.clone(),
                         server.proxy_jump.clone(),
+                        None,
                     );
                 }
                 let _ = resp_tx.send(PluginResponse::Ok);
@@ -863,6 +863,7 @@ impl ConchApp {
         identity_file: Option<String>,
         proxy_command: Option<String>,
         proxy_jump: Option<String>,
+        password: Option<String>,
     ) {
         let id = Uuid::new_v4();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -873,7 +874,7 @@ impl ConchApp {
                 port,
                 user,
                 identity_file: identity_file.map(std::path::PathBuf::from),
-                password: None,
+                password,
                 proxy_command,
                 proxy_jump,
             };
@@ -884,6 +885,24 @@ impl ConchApp {
         });
 
         self.pending_ssh_connections.push(PendingSsh { id, rx });
+    }
+
+    /// Save a server entry into the given folder (by top-level index).
+    fn save_server_entry(
+        &mut self,
+        entry: conch_core::models::ServerEntry,
+        folder_index: usize,
+    ) {
+        // Ensure at least one folder exists.
+        if self.state.sessions_config.folders.is_empty() {
+            self.state
+                .sessions_config
+                .folders
+                .push(conch_core::models::ServerFolder::new("Servers"));
+        }
+        let idx = folder_index.min(self.state.sessions_config.folders.len() - 1);
+        self.state.sessions_config.folders[idx].servers.push(entry);
+        let _ = config::save_sessions(&self.state.sessions_config);
     }
 
     /// Close a session and activate the previous tab.
@@ -936,7 +955,7 @@ impl ConchApp {
                 collect_from_folders(&folder.subfolders, out);
             }
         }
-        collect_from_folders(&self.state.persistent.folders, &mut servers);
+        collect_from_folders(&self.state.sessions_config.folders, &mut servers);
         for host in &self.state.ssh_config_hosts {
             // Avoid duplicates by session_key.
             if !servers.iter().any(|s| s.session_key() == host.session_key()) {
@@ -1025,7 +1044,7 @@ impl eframe::App for ConchApp {
         // Apply custom style: sharp corners everywhere.
         if !self.style_applied {
             if let Some((_name, font_data)) =
-                crate::fonts::load_system_ui_font(&self.state.user_config.font.ui_family)
+                crate::fonts::load_system_ui_font(&self.state.user_config.conch.ui.font_family)
             {
                 let mut font_defs = egui::FontDefinitions::default();
                 font_defs.font_data.insert(
@@ -1152,13 +1171,39 @@ impl eframe::App for ConchApp {
         // -- Dialogs (floating windows, rendered before panels) --
 
         if let Some(mut form) = self.state.new_connection_form.take() {
-            match new_connection::show_new_connection(ctx, &mut form) {
-                DialogAction::Connect {
-                    host,
-                    port,
-                    user,
-                    identity_file,
-                } => self.start_ssh_connect(host, port, user, identity_file, None, None),
+            let folder_names: Vec<String> = self
+                .state
+                .sessions_config
+                .folders
+                .iter()
+                .map(|f| f.name.clone())
+                .collect();
+            match new_connection::show_new_connection(ctx, &mut form, &folder_names) {
+                DialogAction::Save { entry, folder_index } => {
+                    self.save_server_entry(entry, folder_index);
+                }
+                DialogAction::SaveAndConnect {
+                    entry,
+                    folder_index,
+                    password,
+                } => {
+                    let host = entry.host.clone();
+                    let port = entry.port;
+                    let user = entry.user.clone();
+                    let identity_file = entry.identity_file.clone();
+                    let proxy_command = entry.proxy_command.clone();
+                    let proxy_jump = entry.proxy_jump.clone();
+                    self.save_server_entry(entry, folder_index);
+                    self.start_ssh_connect(
+                        host,
+                        port,
+                        user,
+                        identity_file,
+                        proxy_command,
+                        proxy_jump,
+                        password,
+                    );
+                }
                 DialogAction::Cancel => {}
                 DialogAction::None => {
                     self.state.new_connection_form = Some(form);
@@ -1194,12 +1239,14 @@ impl eframe::App for ConchApp {
                     }
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
-                            save = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            cancel = true;
-                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if crate::ui::widgets::dialog_button(ui, "Save").clicked() {
+                                save = true;
+                            }
+                            if crate::ui::widgets::dialog_button(ui, "Cancel").clicked() {
+                                cancel = true;
+                            }
+                        });
                     });
                 });
             if save {
@@ -1245,7 +1292,7 @@ impl eframe::App for ConchApp {
         // Refresh active tunnel IDs (poll TunnelManager).
         if self.tunnel_dialog.is_some() {
             let tm = &self.tunnel_manager;
-            let tunnels = &self.state.persistent.tunnels;
+            let tunnels = &self.state.sessions_config.tunnels;
             let mut active = Vec::new();
             for t in tunnels {
                 // Use try_lock to avoid blocking; falls back to previous state.
@@ -1278,19 +1325,19 @@ impl eframe::App for ConchApp {
             let action = tunnels::show_tunnel_manager(
                 ctx,
                 &mut dialog,
-                &self.state.persistent.tunnels,
+                &self.state.sessions_config.tunnels,
                 &self.tunnel_active_ids,
                 &all_servers,
             );
             match action {
                 TunnelManagerAction::NewTunnel(tunnel) => {
                     self.activate_tunnel(&tunnel);
-                    self.state.persistent.tunnels.push(tunnel);
-                    let _ = config::save_persistent_state(&self.state.persistent);
+                    self.state.sessions_config.tunnels.push(tunnel);
+                    let _ = config::save_sessions(&self.state.sessions_config);
                     self.tunnel_dialog = Some(dialog);
                 }
                 TunnelManagerAction::Activate(id) => {
-                    if let Some(tunnel) = self.state.persistent.tunnels.iter().find(|t| t.id == id).cloned() {
+                    if let Some(tunnel) = self.state.sessions_config.tunnels.iter().find(|t| t.id == id).cloned() {
                         self.activate_tunnel(&tunnel);
                     }
                     self.tunnel_dialog = Some(dialog);
@@ -1308,8 +1355,8 @@ impl eframe::App for ConchApp {
                     self.rt.spawn(async move {
                         tm.stop(&id).await;
                     });
-                    self.state.persistent.tunnels.retain(|t| t.id != id);
-                    let _ = config::save_persistent_state(&self.state.persistent);
+                    self.state.sessions_config.tunnels.retain(|t| t.id != id);
+                    let _ = config::save_sessions(&self.state.sessions_config);
                     self.tunnel_dialog = Some(dialog);
                 }
                 TunnelManagerAction::Close => {
@@ -1573,7 +1620,7 @@ impl eframe::App for ConchApp {
                 .show(ctx, |ui| {
                     panel_action = session_panel::show_session_panel(
                         ui,
-                        &self.state.persistent.folders,
+                        &self.state.sessions_config.folders,
                         &self.state.ssh_config_hosts,
                         icons,
                         &mut self.session_panel_state,
@@ -1589,28 +1636,29 @@ impl eframe::App for ConchApp {
                     req.identity_file,
                     req.proxy_command,
                     req.proxy_jump,
+                    req.password,
                 );
             }
             SessionPanelAction::CreateFolder { parent_path, name } => {
                 let folder = conch_core::models::ServerFolder::new(name);
                 if parent_path.is_empty() {
-                    self.state.persistent.folders.push(folder);
+                    self.state.sessions_config.folders.push(folder);
                 } else {
-                    if let Some(parent) = find_folder_mut(&mut self.state.persistent.folders, &parent_path) {
+                    if let Some(parent) = find_folder_mut(&mut self.state.sessions_config.folders, &parent_path) {
                         parent.subfolders.push(folder);
                     }
                 }
-                let _ = config::save_persistent_state(&self.state.persistent);
+                let _ = config::save_sessions(&self.state.sessions_config);
             }
             SessionPanelAction::RenameFolder { path, new_name } => {
-                if let Some(f) = find_folder_mut(&mut self.state.persistent.folders, &path) {
+                if let Some(f) = find_folder_mut(&mut self.state.sessions_config.folders, &path) {
                     f.name = new_name;
                 }
-                let _ = config::save_persistent_state(&self.state.persistent);
+                let _ = config::save_sessions(&self.state.sessions_config);
             }
             SessionPanelAction::DeleteFolder { path } => {
-                delete_folder(&mut self.state.persistent.folders, &path);
-                let _ = config::save_persistent_state(&self.state.persistent);
+                delete_folder(&mut self.state.sessions_config.folders, &path);
+                let _ = config::save_sessions(&self.state.sessions_config);
             }
             SessionPanelAction::CreateServer { folder_path } => {
                 let entry = conch_core::models::ServerEntry {
@@ -1627,26 +1675,26 @@ impl eframe::App for ConchApp {
                 };
                 if folder_path.is_empty() {
                     // Create a default folder if none exist, then add entry.
-                    if self.state.persistent.folders.is_empty() {
-                        self.state.persistent.folders.push(
+                    if self.state.sessions_config.folders.is_empty() {
+                        self.state.sessions_config.folders.push(
                             conch_core::models::ServerFolder::new("Servers"),
                         );
                     }
-                    self.state.persistent.folders[0].servers.push(entry);
-                } else if let Some(f) = find_folder_mut(&mut self.state.persistent.folders, &folder_path) {
+                    self.state.sessions_config.folders[0].servers.push(entry);
+                } else if let Some(f) = find_folder_mut(&mut self.state.sessions_config.folders, &folder_path) {
                     f.servers.push(entry);
                 }
-                let _ = config::save_persistent_state(&self.state.persistent);
+                let _ = config::save_sessions(&self.state.sessions_config);
             }
             SessionPanelAction::RenameServer { addr, new_name } => {
-                if let Some(server) = find_server_mut(&mut self.state.persistent.folders, &addr) {
+                if let Some(server) = find_server_mut(&mut self.state.sessions_config.folders, &addr) {
                     server.name = new_name;
                 }
-                let _ = config::save_persistent_state(&self.state.persistent);
+                let _ = config::save_sessions(&self.state.sessions_config);
             }
             SessionPanelAction::DeleteServer { addr } => {
-                delete_server(&mut self.state.persistent.folders, &addr);
-                let _ = config::save_persistent_state(&self.state.persistent);
+                delete_server(&mut self.state.sessions_config.folders, &addr);
+                let _ = config::save_sessions(&self.state.sessions_config);
             }
             SessionPanelAction::EditServer { .. } => {
                 // Stub — will open edit dialog in a future change.
@@ -2044,7 +2092,7 @@ impl ConchApp {
                     ui.add_space(4.0);
                     ui.label("A cross-platform SSH terminal emulator.");
                     ui.add_space(8.0);
-                    if ui.button("OK").clicked() {
+                    if crate::ui::widgets::dialog_button(ui, "OK").clicked() {
                         self.show_about = false;
                     }
                 });
@@ -2136,7 +2184,19 @@ fn is_dialog_command(cmd: &PluginCommand) -> bool {
 
 fn open_local_terminal(state: &mut AppState) -> Option<(Uuid, u32)> {
     let id = Uuid::new_v4();
-    match LocalSession::new(DEFAULT_COLS, DEFAULT_ROWS, 8, 16) {
+
+    // Build shell from [terminal.shell] config (empty program ⇒ $SHELL default).
+    let shell_cfg = &state.user_config.terminal.shell;
+    let shell = if shell_cfg.program.is_empty() {
+        None
+    } else {
+        Some(alacritty_terminal::tty::Shell::new(
+            shell_cfg.program.clone(),
+            shell_cfg.args.clone(),
+        ))
+    };
+
+    match LocalSession::new(DEFAULT_COLS, DEFAULT_ROWS, 8, 16, shell) {
         Ok(mut local) => {
             let child_pid = local.child_pid();
             let event_rx = local.take_event_rx();

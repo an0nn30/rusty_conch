@@ -9,7 +9,7 @@ use std::time::Instant;
 use conch_plugin::{FormField, PluginResponse};
 use tokio::sync::mpsc;
 
-const BTN_MIN_SIZE: egui::Vec2 = egui::Vec2::new(95.0, 26.0);
+use crate::ui::widgets::dialog_button;
 
 /// State for a single form field (mutable values the user edits).
 pub enum FormFieldState {
@@ -226,10 +226,7 @@ fn show_form(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_sized(BTN_MIN_SIZE, egui::Button::new("OK"))
-                        .clicked()
-                    {
+                    if dialog_button(ui, "OK").clicked() {
                         let mut map = HashMap::new();
                         for f in fields.iter() {
                             if let Some((k, v)) = f.collect() {
@@ -239,10 +236,7 @@ fn show_form(
                         let _ = resp_tx.send(PluginResponse::FormResult(Some(map)));
                         closed = true;
                     }
-                    if ui
-                        .add_sized(BTN_MIN_SIZE, egui::Button::new("Cancel"))
-                        .clicked()
-                    {
+                    if dialog_button(ui, "Cancel").clicked() {
                         let _ = resp_tx.send(PluginResponse::FormResult(None));
                         closed = true;
                     }
@@ -280,16 +274,11 @@ fn show_prompt(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_sized(BTN_MIN_SIZE, egui::Button::new("OK")).clicked()
-                        || enter
-                    {
+                    if dialog_button(ui, "OK").clicked() || enter {
                         let _ = resp_tx.send(PluginResponse::Output(input.clone()));
                         closed = true;
                     }
-                    if ui
-                        .add_sized(BTN_MIN_SIZE, egui::Button::new("Cancel"))
-                        .clicked()
-                    {
+                    if dialog_button(ui, "Cancel").clicked() {
                         let _ = resp_tx.send(PluginResponse::Ok);
                         closed = true;
                     }
@@ -319,17 +308,11 @@ fn show_confirm(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_sized(BTN_MIN_SIZE, egui::Button::new("Yes"))
-                        .clicked()
-                    {
+                    if dialog_button(ui, "Yes").clicked() {
                         let _ = resp_tx.send(PluginResponse::Bool(true));
                         closed = true;
                     }
-                    if ui
-                        .add_sized(BTN_MIN_SIZE, egui::Button::new("No"))
-                        .clicked()
-                    {
+                    if dialog_button(ui, "No").clicked() {
                         let _ = resp_tx.send(PluginResponse::Bool(false));
                         closed = true;
                     }
@@ -368,10 +351,7 @@ fn show_alert(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_sized(BTN_MIN_SIZE, egui::Button::new("OK"))
-                        .clicked()
-                    {
+                    if dialog_button(ui, "OK").clicked() {
                         let _ = resp_tx.send(PluginResponse::Ok);
                         closed = true;
                     }
@@ -412,10 +392,7 @@ fn show_text_viewer(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_sized(BTN_MIN_SIZE, egui::Button::new("Close"))
-                        .clicked()
-                    {
+                    if dialog_button(ui, "Close").clicked() {
                         let _ = resp_tx.send(PluginResponse::Ok);
                         closed = true;
                     }
@@ -426,10 +403,7 @@ fn show_text_viewer(
                         .unwrap_or(false);
 
                     let copy_label = if recently_copied { "Copied!" } else { "Copy" };
-                    if ui
-                        .add_sized(BTN_MIN_SIZE, egui::Button::new(copy_label))
-                        .clicked()
-                    {
+                    if dialog_button(ui, copy_label).clicked() {
                         ctx.copy_text(text.to_string());
                         *copied_at = Some(Instant::now());
                     }
@@ -504,10 +478,7 @@ fn show_table_viewer(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_sized(BTN_MIN_SIZE, egui::Button::new("Close"))
-                        .clicked()
-                    {
+                    if dialog_button(ui, "Close").clicked() {
                         let _ = resp_tx.send(PluginResponse::Ok);
                         closed = true;
                     }

@@ -1,10 +1,12 @@
 //! Configuration and persistent state management.
 //!
-//! Split into two files:
-//! - `config.toml` — user preferences (font, theme, keyboard shortcuts)
-//! - `state.toml` — UI state (panel layout, session history, folders, tunnels)
+//! Split into three files:
+//! - `config.toml` — terminal + appearance prefs (Alacritty-compatible + [conch.*] extensions)
+//! - `sessions.toml` — server folders + tunnels (user data, app-managed)
+//! - `state.toml` — ephemeral UI state (not user-edited)
 //!
-//! Legacy single-file `config.toml` with `[general]` section is automatically migrated.
+//! Legacy single-file `config.toml` with `[general]` section is automatically migrated (v1→v2).
+//! Two-file layout with `[keyboard]`/`[session]` at top level is migrated (v2→v3).
 
 use std::fs;
 use std::path::PathBuf;
@@ -22,31 +24,140 @@ use crate::models::{SavedTunnel, ServerFolder};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserConfig {
     #[serde(default)]
+    pub window: WindowConfig,
+    #[serde(default)]
     pub font: FontConfig,
     #[serde(default)]
     pub colors: ColorsConfig,
     #[serde(default)]
-    pub keyboard: KeyboardConfig,
+    pub terminal: TerminalConfig,
     #[serde(default)]
-    pub session: SessionSettings,
+    pub conch: ConchConfig,
 }
 
+// ---------------------------------------------------------------------------
+// Window config — [window] / [window.dimensions]
+// ---------------------------------------------------------------------------
+
+/// Window configuration (mirrors Alacritty `[window]`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionSettings {
+pub struct WindowConfig {
     #[serde(default)]
-    pub shell: String,
+    pub dimensions: WindowDimensions,
+}
+
+/// Startup window dimensions in character cells (Alacritty `[window.dimensions]`).
+///
+/// A value of `0` for either field means "use the default".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowDimensions {
+    #[serde(default = "default_columns")]
+    pub columns: u16,
+    #[serde(default = "default_lines")]
+    pub lines: u16,
+}
+
+fn default_columns() -> u16 { 150 }
+fn default_lines() -> u16 { 50 }
+
+impl Default for WindowDimensions {
+    fn default() -> Self {
+        Self {
+            columns: default_columns(),
+            lines: default_lines(),
+        }
+    }
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            dimensions: WindowDimensions::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Terminal config — [terminal] / [terminal.shell]
+// ---------------------------------------------------------------------------
+
+/// Terminal configuration (mirrors Alacritty `[terminal]`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalConfig {
+    #[serde(default)]
+    pub shell: TerminalShell,
+}
+
+/// Shell program and arguments (Alacritty `[terminal.shell]`).
+///
+/// An empty `program` means "use the default login shell ($SHELL)".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalShell {
+    #[serde(default)]
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
     #[serde(default)]
     pub startup_command: String,
     #[serde(default)]
     pub use_tmux: bool,
 }
 
-impl Default for SessionSettings {
+impl Default for TerminalShell {
     fn default() -> Self {
         Self {
-            shell: String::new(),
+            program: String::new(),
+            args: Vec::new(),
             startup_command: String::new(),
             use_tmux: false,
+        }
+    }
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            shell: TerminalShell::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Conch-specific config — [conch.keyboard] / [conch.ui]
+// ---------------------------------------------------------------------------
+
+/// Conch-specific settings namespaced under `[conch]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConchConfig {
+    #[serde(default)]
+    pub keyboard: KeyboardConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
+}
+
+impl Default for ConchConfig {
+    fn default() -> Self {
+        Self {
+            keyboard: KeyboardConfig::default(),
+            ui: UiConfig::default(),
+        }
+    }
+}
+
+/// UI appearance settings (non-terminal).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiConfig {
+    #[serde(default)]
+    pub font_family: String,
+    #[serde(default = "default_ui_size")]
+    pub font_size: f32,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            font_family: String::new(),
+            font_size: default_ui_size(),
         }
     }
 }
@@ -57,10 +168,6 @@ pub struct FontConfig {
     pub normal: FontFamily,
     #[serde(default = "default_font_size")]
     pub size: f32,
-    #[serde(default)]
-    pub ui_family: String,
-    #[serde(default = "default_ui_size")]
-    pub ui_size: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,8 +221,6 @@ impl Default for FontConfig {
         Self {
             normal: FontFamily::default(),
             size: default_font_size(),
-            ui_family: String::new(),
-            ui_size: default_ui_size(),
         }
     }
 }
@@ -141,10 +246,33 @@ impl Default for KeyboardConfig {
 impl Default for UserConfig {
     fn default() -> Self {
         Self {
+            window: WindowConfig::default(),
             font: FontConfig::default(),
             colors: ColorsConfig::default(),
-            keyboard: KeyboardConfig::default(),
-            session: SessionSettings::default(),
+            terminal: TerminalConfig::default(),
+            conch: ConchConfig::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SessionsConfig — ~/.config/conch/sessions.toml
+// ---------------------------------------------------------------------------
+
+/// Server folders and tunnels (user data, app-managed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionsConfig {
+    #[serde(default)]
+    pub folders: Vec<ServerFolder>,
+    #[serde(default)]
+    pub tunnels: Vec<SavedTunnel>,
+}
+
+impl Default for SessionsConfig {
+    fn default() -> Self {
+        Self {
+            folders: Vec::new(),
+            tunnels: Vec::new(),
         }
     }
 }
@@ -160,10 +288,6 @@ pub struct PersistentState {
     pub layout: LayoutConfig,
     #[serde(default)]
     pub sessions: SessionConfig,
-    #[serde(default)]
-    pub folders: Vec<ServerFolder>,
-    #[serde(default)]
-    pub tunnels: Vec<SavedTunnel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,8 +327,6 @@ impl Default for PersistentState {
         Self {
             layout: LayoutConfig::default(),
             sessions: SessionConfig::default(),
-            folders: Vec::new(),
-            tunnels: Vec::new(),
         }
     }
 }
@@ -222,6 +344,7 @@ pub fn config_dir() -> PathBuf {
 
 fn config_path() -> PathBuf { config_dir().join("config.toml") }
 fn state_path() -> PathBuf { config_dir().join("state.toml") }
+fn sessions_path() -> PathBuf { config_dir().join("sessions.toml") }
 
 // ---------------------------------------------------------------------------
 // Load / Save — UserConfig
@@ -245,6 +368,31 @@ pub fn save_user_config(config: &UserConfig) -> Result<()> {
     if !dir.exists() { fs::create_dir_all(&dir)?; }
     let contents = toml::to_string_pretty(config).context("Failed to serialize config")?;
     fs::write(config_path(), contents)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Load / Save — SessionsConfig
+// ---------------------------------------------------------------------------
+
+pub fn load_sessions() -> Result<SessionsConfig> {
+    let path = sessions_path();
+    if !path.exists() {
+        log::info!("No sessions.toml at {}, using defaults", path.display());
+        return Ok(SessionsConfig::default());
+    }
+    let contents = fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let config: SessionsConfig = toml::from_str(&contents)
+        .with_context(|| format!("Failed to parse {}", path.display()))?;
+    Ok(config)
+}
+
+pub fn save_sessions(config: &SessionsConfig) -> Result<()> {
+    let dir = config_dir();
+    if !dir.exists() { fs::create_dir_all(&dir)?; }
+    let contents = toml::to_string_pretty(config).context("Failed to serialize sessions")?;
+    fs::write(sessions_path(), contents)?;
     Ok(())
 }
 
@@ -274,7 +422,7 @@ pub fn save_persistent_state(state: &PersistentState) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy migration
+// Legacy migration — v1 (single file with [general]) → v2 (split)
 // ---------------------------------------------------------------------------
 
 /// Legacy config format (pre-split). Used only for migration detection.
@@ -300,29 +448,27 @@ struct LegacyGeneral {
     font_size: Option<f32>,
     #[serde(default)]
     font_name: Option<String>,
-    // terminal_background and terminal_foreground are ignored —
-    // they are now derived from the color scheme.
 }
 
 /// Detect a legacy single-file config with `[general]` and migrate to split files.
 ///
 /// Backs up the old file as `config.toml.bak`.
-pub fn migrate_if_needed() {
+fn migrate_v1_to_v2() -> bool {
     let path = config_path();
-    if !path.exists() { return; }
-    // Don't migrate if state.toml already exists (already migrated).
-    if state_path().exists() { return; }
+    if !path.exists() { return false; }
+    // Don't migrate if state.toml already exists (already migrated past v1).
+    if state_path().exists() { return false; }
 
-    let Ok(contents) = fs::read_to_string(&path) else { return; };
+    let Ok(contents) = fs::read_to_string(&path) else { return false; };
 
     // Detect legacy format by presence of `[general]` section.
-    if !contents.contains("[general]") { return; }
+    if !contents.contains("[general]") { return false; }
 
-    let Ok(legacy) = toml::from_str::<LegacyConfig>(&contents) else { return; };
+    let Ok(legacy) = toml::from_str::<LegacyConfig>(&contents) else { return false; };
 
-    log::info!("Migrating legacy config.toml to split config + state");
+    log::info!("Migrating v1 legacy config.toml to v2 split config + state");
 
-    // Build UserConfig from legacy.
+    // Build UserConfig from legacy (v2 shape — we'll run v2→v3 migration next).
     let mut user_config = UserConfig::default();
     if let Some(general) = &legacy.general {
         if let Some(theme) = &general.theme {
@@ -336,13 +482,30 @@ pub fn migrate_if_needed() {
         }
     }
 
-    // Build PersistentState from legacy.
-    let persistent = PersistentState {
-        layout: legacy.layout.unwrap_or_default(),
-        sessions: legacy.sessions.unwrap_or_default(),
-        folders: legacy.folders.unwrap_or_default(),
-        tunnels: legacy.tunnels.unwrap_or_default(),
-    };
+    // Build PersistentState — still has folders/tunnels at this point for v2→v3 to pick up.
+    // We write folders/tunnels directly into state.toml as a toml::Value so the v2→v3
+    // migration can extract them.
+    let mut state_val = toml::value::Table::new();
+    if let Some(layout) = &legacy.layout {
+        if let Ok(v) = toml::Value::try_from(layout.clone()) {
+            state_val.insert("layout".into(), v);
+        }
+    }
+    if let Some(sessions) = &legacy.sessions {
+        if let Ok(v) = toml::Value::try_from(sessions.clone()) {
+            state_val.insert("sessions".into(), v);
+        }
+    }
+    if let Some(folders) = &legacy.folders {
+        if let Ok(v) = toml::Value::try_from(folders.clone()) {
+            state_val.insert("folders".into(), v);
+        }
+    }
+    if let Some(tunnels) = &legacy.tunnels {
+        if let Ok(v) = toml::Value::try_from(tunnels.clone()) {
+            state_val.insert("tunnels".into(), v);
+        }
+    }
 
     // Back up old config.
     let bak = path.with_extension("toml.bak");
@@ -354,9 +517,162 @@ pub fn migrate_if_needed() {
     if let Err(e) = save_user_config(&user_config) {
         log::error!("Failed to write new config.toml: {e}");
     }
-    if let Err(e) = save_persistent_state(&persistent) {
+    let dir = config_dir();
+    if !dir.exists() { let _ = fs::create_dir_all(&dir); }
+    let state_str = toml::to_string_pretty(&toml::Value::Table(state_val)).unwrap_or_default();
+    if let Err(e) = fs::write(state_path(), &state_str) {
         log::error!("Failed to write state.toml: {e}");
     }
 
-    log::info!("Migration complete. Old config backed up to {}", bak.display());
+    log::info!("v1→v2 migration complete. Old config backed up to {}", bak.display());
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Migration — v2 (2-file with [keyboard]/[session] at top) → v3 (3-file)
+// ---------------------------------------------------------------------------
+
+/// Migrate from v2 (2-file) to v3 (3-file) layout.
+///
+/// Triggered when `sessions.toml` doesn't exist. Uses `toml::Value` manipulation to:
+/// 1. Extract `folders`/`tunnels` from `state.toml` → write `sessions.toml`, rewrite slimmed `state.toml`
+/// 2. In `config.toml`: move `[keyboard]` → `[conch.keyboard]`, move `font.ui_family`/`font.ui_size` → `[conch.ui]`,
+///    move `[session]` fields → `[terminal.shell]`, back up old config as `.v2.bak`
+/// 3. Write empty `sessions.toml` if still missing (marks migration complete)
+fn migrate_v2_to_v3() {
+    let sessions_file = sessions_path();
+    if sessions_file.exists() { return; }
+
+    log::info!("Migrating v2 (2-file) → v3 (3-file) config layout");
+
+    // --- Step 1: Extract folders/tunnels from state.toml ---
+    let state_file = state_path();
+    let mut sessions_config = SessionsConfig::default();
+    if state_file.exists() {
+        if let Ok(contents) = fs::read_to_string(&state_file) {
+            if let Ok(mut table) = contents.parse::<toml::Value>() {
+                if let Some(tbl) = table.as_table_mut() {
+                    // Extract folders
+                    if let Some(folders_val) = tbl.remove("folders") {
+                        if let Ok(folders) = folders_val.try_into::<Vec<ServerFolder>>() {
+                            sessions_config.folders = folders;
+                        }
+                    }
+                    // Extract tunnels
+                    if let Some(tunnels_val) = tbl.remove("tunnels") {
+                        if let Ok(tunnels) = tunnels_val.try_into::<Vec<SavedTunnel>>() {
+                            sessions_config.tunnels = tunnels;
+                        }
+                    }
+                    // Rewrite slimmed state.toml
+                    let slimmed = toml::to_string_pretty(&table).unwrap_or_default();
+                    if let Err(e) = fs::write(&state_file, slimmed) {
+                        log::error!("Failed to rewrite state.toml: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Step 2: Restructure config.toml ---
+    let config_file = config_path();
+    if config_file.exists() {
+        if let Ok(contents) = fs::read_to_string(&config_file) {
+            if let Ok(mut root) = contents.parse::<toml::Value>() {
+                if let Some(tbl) = root.as_table_mut() {
+                    let mut conch_tbl = toml::value::Table::new();
+
+                    // Move [keyboard] → [conch.keyboard]
+                    if let Some(kb) = tbl.remove("keyboard") {
+                        conch_tbl.insert("keyboard".into(), kb);
+                    }
+
+                    // Move font.ui_family/ui_size → [conch.ui]
+                    let mut ui_tbl = toml::value::Table::new();
+                    if let Some(font) = tbl.get_mut("font").and_then(|v| v.as_table_mut()) {
+                        if let Some(ui_family) = font.remove("ui_family") {
+                            ui_tbl.insert("font_family".into(), ui_family);
+                        }
+                        if let Some(ui_size) = font.remove("ui_size") {
+                            ui_tbl.insert("font_size".into(), ui_size);
+                        }
+                    }
+                    if !ui_tbl.is_empty() {
+                        conch_tbl.insert("ui".into(), toml::Value::Table(ui_tbl));
+                    }
+
+                    if !conch_tbl.is_empty() {
+                        tbl.insert("conch".into(), toml::Value::Table(conch_tbl));
+                    }
+
+                    // Move [session] fields → [terminal.shell]
+                    if let Some(session) = tbl.remove("session") {
+                        if let Some(session_tbl) = session.as_table() {
+                            let terminal = tbl
+                                .entry("terminal")
+                                .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+                            if let Some(term_tbl) = terminal.as_table_mut() {
+                                let shell = term_tbl
+                                    .entry("shell")
+                                    .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+                                if let Some(shell_tbl) = shell.as_table_mut() {
+                                    // Move startup_command and use_tmux (skip `shell` — it was redundant with program)
+                                    if let Some(v) = session_tbl.get("startup_command") {
+                                        shell_tbl.insert("startup_command".into(), v.clone());
+                                    }
+                                    if let Some(v) = session_tbl.get("use_tmux") {
+                                        shell_tbl.insert("use_tmux".into(), v.clone());
+                                    }
+                                    // If [session].shell was set and terminal.shell.program is empty, migrate it
+                                    if let Some(toml::Value::String(old_shell)) = session_tbl.get("shell") {
+                                        if !old_shell.is_empty() {
+                                            let program = shell_tbl
+                                                .get("program")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            if program.is_empty() {
+                                                shell_tbl.insert(
+                                                    "program".into(),
+                                                    toml::Value::String(old_shell.clone()),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Back up old config as .v2.bak
+                    let bak = config_file.with_extension("toml.v2.bak");
+                    if let Err(e) = fs::copy(&config_file, &bak) {
+                        log::warn!("Failed to back up v2 config: {e}");
+                    }
+
+                    // Write restructured config.toml
+                    let restructured = toml::to_string_pretty(&root).unwrap_or_default();
+                    if let Err(e) = fs::write(&config_file, restructured) {
+                        log::error!("Failed to write restructured config.toml: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Step 3: Write sessions.toml (marks migration complete) ---
+    if let Err(e) = save_sessions(&sessions_config) {
+        log::error!("Failed to write sessions.toml: {e}");
+    }
+
+    log::info!("v2→v3 migration complete");
+}
+
+// ---------------------------------------------------------------------------
+// Public migration entry point
+// ---------------------------------------------------------------------------
+
+/// Run all necessary migrations in order.
+pub fn migrate_if_needed() {
+    migrate_v1_to_v2();
+    migrate_v2_to_v3();
 }

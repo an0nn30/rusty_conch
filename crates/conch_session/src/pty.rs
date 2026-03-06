@@ -48,7 +48,15 @@ pub struct LocalSession {
 
 impl LocalSession {
     /// Spawn a new local PTY session.
-    pub fn new(cols: u16, rows: u16, cell_width: u16, cell_height: u16) -> Result<Self> {
+    ///
+    /// If `shell` is `Some`, the given program + args are used instead of `$SHELL`.
+    pub fn new(
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+        shell: Option<tty::Shell>,
+    ) -> Result<Self> {
         let window_size = WindowSize {
             num_lines: rows,
             num_cols: cols,
@@ -67,12 +75,12 @@ impl LocalSession {
         let term = Term::new(term_config, &term_size, event_proxy.clone());
         let term = Arc::new(FairMutex::new(term));
 
-        // PTY options — use default shell
+        // PTY options
         let mut env = HashMap::new();
         env.insert("TERM".into(), "xterm-256color".into());
         env.insert("COLORTERM".into(), "truecolor".into());
         let options = tty::Options {
-            shell: None, // uses $SHELL
+            shell,
             working_directory: None,
             drain_on_exit: true,
             env,

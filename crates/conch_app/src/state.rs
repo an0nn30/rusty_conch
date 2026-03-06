@@ -6,7 +6,7 @@ use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
 use conch_core::color_scheme;
-use conch_core::config::{PersistentState, UserConfig};
+use conch_core::config::{PersistentState, SessionsConfig, UserConfig};
 use conch_core::models::ServerEntry;
 use conch_session::{EventProxy, LocalSession, SshSession};
 use std::sync::Arc;
@@ -68,6 +68,7 @@ pub struct Session {
 pub struct AppState {
     pub user_config: UserConfig,
     pub persistent: PersistentState,
+    pub sessions_config: SessionsConfig,
     pub colors: ResolvedColors,
     pub sessions: HashMap<Uuid, Session>,
     pub active_tab: Option<Uuid>,
@@ -81,7 +82,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(user_config: UserConfig, persistent: PersistentState) -> Self {
+    pub fn new(user_config: UserConfig, persistent: PersistentState, sessions_config: SessionsConfig) -> Self {
         let show_left_sidebar = !persistent.layout.left_panel_collapsed;
         let show_right_sidebar = !persistent.layout.right_panel_collapsed;
 
@@ -91,6 +92,7 @@ impl AppState {
         Self {
             user_config,
             persistent,
+            sessions_config,
             colors,
             sessions: HashMap::new(),
             active_tab: None,
