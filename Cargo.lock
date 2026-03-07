@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "conch_app"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "conch_core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1084,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "conch_plugin"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1105,7 +1105,7 @@ dependencies = [
 
 [[package]]
 name = "conch_session"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "alacritty_terminal",
  "anyhow",

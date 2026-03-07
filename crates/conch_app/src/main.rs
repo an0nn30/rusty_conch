@@ -11,8 +11,7 @@ mod sessions;
 mod shortcuts;
 mod sidebar_handler;
 mod ssh;
-#[cfg(target_os = "macos")]
-mod macos_locale;
+mod platform;
 #[cfg(target_os = "macos")]
 mod macos_menu;
 mod mouse;
@@ -115,11 +114,9 @@ fn send_ipc_message(_msg: &str) -> Result<(), String> {
 }
 
 fn main() -> eframe::Result<()> {
-    // When launched from Finder, macOS provides a minimal launchd environment
-    // without LANG/LC_ALL. Query NSLocale to set proper UTF-8 locale so that
-    // font rendering and child processes work correctly.
-    #[cfg(target_os = "macos")]
-    macos_locale::set_locale_environment();
+    // Perform platform-specific environment setup (locale, SSH_AUTH_SOCK, etc.)
+    // before anything else.
+    platform::init();
 
     let cli = Cli::parse();
 

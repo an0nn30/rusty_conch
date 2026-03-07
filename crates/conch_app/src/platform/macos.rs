@@ -1,3 +1,9 @@
+//! macOS environment initialisation.
+//!
+//! When launched from Finder, the process inherits a minimal launchd
+//! environment that lacks `LANG`/`LC_ALL`, `SSH_AUTH_SOCK`, and often a
+//! complete `PATH`.  This module detects and repairs those gaps.
+
 use std::ffi::{CStr, CString};
 use std::{env, str};
 
@@ -8,14 +14,42 @@ use objc2_foundation::{NSLocale, NSObjectProtocol};
 
 const FALLBACK_LOCALE: &str = "UTF-8";
 
-/// Ensure critical environment variables are present when launched from Finder.
-///
-/// macOS .app bundles launched from Finder inherit a minimal launchd environment
-/// that lacks variables like LANG, LC_ALL, SSH_AUTH_SOCK, and PATH additions.
-/// This function sets locale and discovers SSH_AUTH_SOCK so that SSH agent
-/// authentication works correctly.
-pub fn set_locale_environment() {
+/// Entry point — called from `platform::init()`.
+pub fn init() {
     set_ssh_auth_sock();
+    set_locale();
+}
+
+/// Discover `SSH_AUTH_SOCK` from the launchd environment if not already set.
+fn set_ssh_auth_sock() {
+    if env::var("SSH_AUTH_SOCK").is_ok() {
+        return;
+    }
+
+    let output = std::process::Command::new("launchctl")
+        .args(["getenv", "SSH_AUTH_SOCK"])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !path.is_empty() {
+                debug!("Discovered SSH_AUTH_SOCK from launchd: {path}");
+                unsafe { env::set_var("SSH_AUTH_SOCK", &path) };
+            }
+        }
+        _ => {
+            debug!("SSH_AUTH_SOCK not available from launchd");
+        }
+    }
+}
+
+/// Set locale via NSLocale when the environment doesn't provide one.
+///
+/// This mirrors Alacritty's approach: query the system locale via NSLocale and
+/// set `LC_ALL` so that child processes (and the process itself) get proper
+/// UTF-8 locale settings.
+fn set_locale() {
     let env_locale_c = CString::new("").unwrap();
     let env_locale_ptr = unsafe { setlocale(LC_ALL, env_locale_c.as_ptr()) };
     if !env_locale_ptr.is_null() {
@@ -42,34 +76,6 @@ pub fn set_locale_environment() {
     } else {
         debug!("Using system locale: {}", system_locale);
         unsafe { env::set_var("LC_ALL", system_locale) };
-    }
-}
-
-/// Discover SSH_AUTH_SOCK from the launchd environment if it is not already set.
-///
-/// When launched from Finder, the process does not inherit shell environment
-/// variables like SSH_AUTH_SOCK. We ask launchd for it so that SSH agent
-/// authentication works from .app bundles.
-fn set_ssh_auth_sock() {
-    if env::var("SSH_AUTH_SOCK").is_ok() {
-        return;
-    }
-
-    let output = std::process::Command::new("launchctl")
-        .args(["getenv", "SSH_AUTH_SOCK"])
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !path.is_empty() {
-                debug!("Discovered SSH_AUTH_SOCK from launchd: {path}");
-                unsafe { env::set_var("SSH_AUTH_SOCK", &path) };
-            }
-        }
-        _ => {
-            debug!("SSH_AUTH_SOCK not available from launchd");
-        }
     }
 }
 
