@@ -45,14 +45,31 @@ pub struct UserConfig {
 /// - `Transparent` — transparent title bar, content extends behind it (macOS only)
 /// - `Buttonless` — transparent title bar with no window buttons (macOS only)
 /// - `None` — no title bar or borders
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub enum WindowDecorations {
     #[default]
     Full,
     Transparent,
     Buttonless,
     None,
+}
+
+/// Case-insensitive deserialization for WindowDecorations.
+/// Accepts "Full", "full", "FULL", etc.
+impl<'de> serde::Deserialize<'de> for WindowDecorations {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        match s.to_lowercase().as_str() {
+            "full" => Ok(Self::Full),
+            "transparent" => Ok(Self::Transparent),
+            "buttonless" => Ok(Self::Buttonless),
+            "none" => Ok(Self::None),
+            _ => Err(serde::de::Error::unknown_variant(
+                &s,
+                &["Full", "Transparent", "Buttonless", "None"],
+            )),
+        }
+    }
 }
 
 /// Window configuration (mirrors Alacritty `[window]`).

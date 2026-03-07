@@ -186,7 +186,10 @@ pub struct ConchApp {
 impl ConchApp {
     pub fn new(rt: Arc<Runtime>) -> Self {
         // Migration already ran in main(); load_user_config is idempotent.
-        let user_config = config::load_user_config().unwrap_or_default();
+        let user_config = config::load_user_config().unwrap_or_else(|e| {
+            log::error!("Failed to load config.toml, using defaults: {e:#}");
+            config::UserConfig::default()
+        });
         let persistent = config::load_persistent_state().unwrap_or_default();
         let sessions_config = config::load_sessions().unwrap_or_default();
         let shortcuts = ResolvedShortcuts::from_config(&user_config.conch.keyboard);
@@ -1559,6 +1562,44 @@ impl eframe::App for ConchApp {
         }
 
         // -- Panels --
+
+        {
+            use config::WindowDecorations;
+            let decorations = self.state.user_config.window.decorations;
+
+            // Buttonless: no title bar, so add a thin drag region at the top so the
+            // user can still move the window by dragging the first terminal line.
+            if decorations == WindowDecorations::Buttonless {
+                let drag_h = self.cell_height.max(6.0);
+                egui::TopBottomPanel::top("drag_region")
+                    .exact_height(drag_h)
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        let rect = ui.available_rect_before_wrap();
+                        let response = ui.interact(rect, ui.id().with("drag"), egui::Sense::drag());
+                        if response.drag_started() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        }
+                    });
+            }
+
+            // When using native menu bar on macOS with fullsize_content_view (Transparent
+            // or Full-non-native), the in-window menu bar is not rendered, but the content
+            // still extends behind the title bar area. Add a spacer to push content below
+            // the ~28px title bar. Buttonless and None have no title bar, so no spacer.
+            if self.use_native_menu {
+                let needs_spacer = match decorations {
+                    WindowDecorations::None | WindowDecorations::Buttonless => false,
+                    _ => cfg!(target_os = "macos"),
+                };
+                if needs_spacer {
+                    egui::TopBottomPanel::top("titlebar_spacer")
+                        .exact_height(28.0)
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |_ui| {});
+                }
+            }
+        }
 
         // Menu bar (File, Sessions, Tools, View, Help).
         // Shown in-window when native macOS menu bar is disabled (or on non-macOS).

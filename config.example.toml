@@ -1,0 +1,140 @@
+# Conch — Example Configuration
+#
+# All values shown are the defaults. Uncomment and modify as needed.
+# Config location:
+#   macOS / Linux: ~/.config/conch/config.toml
+#   Windows:       %APPDATA%\conch\config.toml
+#
+# Conch uses an Alacritty-compatible TOML format with additional [conch.*] sections.
+
+# ---------------------------------------------------------------------------
+# Window
+# ---------------------------------------------------------------------------
+
+[window]
+
+# Window decoration style.
+# Values: "Full", "Transparent", "Buttonless", "None" (case-insensitive)
+#
+#   Full        — Standard title bar and borders (default)
+#   Transparent — Transparent title bar, content extends behind it (macOS only)
+#   Buttonless  — No title bar or buttons, terminal fills the entire window (macOS only)
+#   None        — No title bar or borders
+#
+decorations = "Full"
+
+[window.dimensions]
+
+# Initial window size in character cells. 0 = use system default.
+columns = 150
+lines = 50
+
+# ---------------------------------------------------------------------------
+# Font
+# ---------------------------------------------------------------------------
+
+[font]
+
+# Terminal font size in points.
+size = 14.0
+
+[font.normal]
+
+# Terminal font family name.
+family = "JetBrains Mono"
+
+[font.offset]
+
+# Extra pixel spacing added to each character cell.
+# x = horizontal pixels per cell, y = vertical pixels per cell.
+x = 0.0
+y = 0.0
+
+# ---------------------------------------------------------------------------
+# Colors
+# ---------------------------------------------------------------------------
+
+[colors]
+
+# Color scheme name. Themes are loaded from ~/.config/conch/themes/<name>.toml.
+# Built-in themes include: dracula, solarized-dark, solarized-light, gruvbox,
+# nord, one-dark, tokyo-night, catppuccin-mocha, etc.
+theme = "dracula"
+
+# UI appearance mode: "dark", "light", or "system".
+appearance_mode = "dark"
+
+# ---------------------------------------------------------------------------
+# Terminal
+# ---------------------------------------------------------------------------
+
+[terminal.shell]
+
+# Shell program to run. Empty string = use default login shell ($SHELL).
+program = ""
+
+# Arguments passed to the shell program.
+# Example: to launch tmux via bash:
+#   program = "/opt/homebrew/bin/bash"
+#   args = ["-c", "/opt/homebrew/bin/tmux"]
+args = []
+
+# Command to send to the shell after it starts (e.g. "tmux attach || tmux new").
+startup_command = ""
+
+# Whether to automatically wrap the shell in tmux.
+use_tmux = false
+
+[terminal.env]
+
+# Extra environment variables set in the terminal.
+# TERM and COLORTERM are always set to "xterm-256color" and "truecolor"
+# unless overridden here.
+#
+# Example:
+#   EDITOR = "nvim"
+#   LANG = "en_US.UTF-8"
+
+[terminal.cursor.style]
+
+# Cursor shape: "Block", "Underline", or "Beam".
+shape = "Block"
+
+# Whether the cursor blinks.
+# Accepts: true, false, "Always", "On", "Never", "Off"
+blinking = true
+
+# ---------------------------------------------------------------------------
+# Conch — Keyboard Shortcuts
+# ---------------------------------------------------------------------------
+#
+# Format: "mod+key" where mod is cmd, ctrl, alt, shift (combine with +).
+# On Linux/Windows, "cmd" maps to Ctrl.
+
+[conch.keyboard]
+
+new_tab = "cmd+t"
+close_tab = "cmd+w"
+new_window = "cmd+shift+n"
+new_connection = "cmd+n"
+quit = "cmd+q"
+toggle_left_sidebar = "cmd+shift+b"
+toggle_right_sidebar = "cmd+shift+e"
+focus_quick_connect = "cmd+/"
+focus_plugin_search = "cmd+shift+p"
+
+# ---------------------------------------------------------------------------
+# Conch — UI Settings
+# ---------------------------------------------------------------------------
+
+[conch.ui]
+
+# UI font family (sidebars, menus, dialogs). Empty string = system default.
+font_family = ""
+
+# UI font size in points.
+font_size = 13.0
+
+# Use the native macOS global menu bar instead of the in-window menu bar.
+# Only applies on macOS; ignored on other platforms.
+native_menu_bar = false

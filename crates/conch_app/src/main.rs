@@ -182,16 +182,10 @@ fn main() -> eframe::Result<()> {
                 .with_transparent(true);
         }
         WindowDecorations::Buttonless => {
+            // No title bar at all — just the terminal content edge-to-edge.
             viewport = viewport
-                .with_fullsize_content_view(true)
-                .with_titlebar_shown(true)
-                .with_title_shown(false)
+                .with_decorations(false)
                 .with_transparent(true);
-            // On macOS, buttonless hides the traffic light buttons.
-            #[cfg(target_os = "macos")]
-            {
-                viewport = viewport.with_titlebar_buttons_shown(false);
-            }
         }
         WindowDecorations::None => {
             viewport = viewport.with_decorations(false);
