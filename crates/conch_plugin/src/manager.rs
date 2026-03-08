@@ -141,8 +141,17 @@ pub fn validate_icon_bytes(data: &[u8]) -> bool {
     false
 }
 
+/// Parse plugin metadata from source text (for use by the checker without disk I/O).
+pub fn parse_plugin_header_from_source(source: &str, path: &Path) -> Option<PluginMeta> {
+    Some(parse_plugin_header_inner(source, path))
+}
+
 fn parse_plugin_header(path: &Path) -> Result<PluginMeta> {
     let contents = fs::read_to_string(path)?;
+    Ok(parse_plugin_header_inner(&contents, path))
+}
+
+fn parse_plugin_header_inner(contents: &str, path: &Path) -> PluginMeta {
     let mut name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
     let mut description = String::new();
     let mut version = String::from("0.0.0");
@@ -199,7 +208,7 @@ fn parse_plugin_header(path: &Path) -> Result<PluginMeta> {
         }
     }
 
-    Ok(PluginMeta {
+    PluginMeta {
         name,
         description,
         version,
@@ -207,5 +216,5 @@ fn parse_plugin_header(path: &Path) -> Result<PluginMeta> {
         keybindings,
         icon,
         path: path.to_path_buf(),
-    })
+    }
 }

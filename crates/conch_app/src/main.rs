@@ -15,6 +15,7 @@ mod platform;
 #[cfg(target_os = "macos")]
 mod macos_menu;
 mod mouse;
+mod notifications;
 mod state;
 mod terminal;
 mod ui;
@@ -38,6 +39,12 @@ enum Command {
     Msg {
         #[command(subcommand)]
         action: MsgAction,
+    },
+    /// Check Lua plugin files for syntax errors and API misuse.
+    Check {
+        /// Plugin files to check.
+        #[arg(required = true)]
+        files: Vec<std::path::PathBuf>,
     },
 }
 
@@ -119,6 +126,26 @@ fn main() -> eframe::Result<()> {
     platform::init();
 
     let cli = Cli::parse();
+
+    // Handle `conch check ...` — validate plugin files without launching the GUI.
+    if let Some(Command::Check { files }) = &cli.command {
+        let mut any_error = false;
+        for path in files {
+            let result = conch_plugin::check_plugin(path);
+            let display_path = path.display();
+            if result.diagnostics.is_empty() {
+                println!("{display_path}: ok");
+            } else {
+                for diag in &result.diagnostics {
+                    eprintln!("{display_path}:{diag}");
+                }
+            }
+            if result.has_errors() {
+                any_error = true;
+            }
+        }
+        std::process::exit(if any_error { 1 } else { 0 });
+    }
 
     // Handle `conch msg ...` subcommands — these don't launch the GUI.
     if let Some(Command::Msg { action }) = cli.command {
