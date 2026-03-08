@@ -131,6 +131,28 @@ sudo apt-get install -y \
 
 </details>
 
+## Keyboard Shortcuts
+
+> On Linux/Windows, replace `Cmd` with `Ctrl`.
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+T` | New tab |
+| `Cmd+W` | Close tab |
+| `Cmd+1`–`9` | Switch to tab N |
+| `Cmd+Shift+N` | New window |
+| `Cmd+N` | New SSH connection |
+| `Cmd+/` | Quick connect (toggle) |
+| `Cmd+Shift+B` | Toggle file browser sidebar |
+| `Cmd+Shift+E` | Toggle sessions sidebar |
+| `Cmd+Shift+F` | Focus file browser |
+| `Cmd+Shift+P` | Plugin search |
+| `Cmd+Shift+T` | SSH tunnels manager |
+| `Cmd+Shift+Z` | Zen mode (hide all sidebars) |
+| `Cmd+Q` | Quit |
+
+All shortcuts are configurable — see [Configuration](#configuration) below.
+
 ## Configuration
 
 Conch uses an Alacritty-compatible TOML config at `~/.config/conch/config.toml` (Linux/macOS) or `%APPDATA%\conch\config.toml` (Windows).
