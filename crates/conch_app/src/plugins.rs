@@ -636,20 +636,6 @@ impl ConchApp {
 
         let old_loaded = self.state.persistent.loaded_plugins.clone();
 
-        // Check if any panel plugins changed state
-        let panel_changed = self.discovered_plugins.iter().enumerate().any(|(i, meta)| {
-            if meta.plugin_type != PluginType::Panel {
-                return false;
-            }
-            let filename = meta.path.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            let was_loaded = old_loaded.contains(&filename);
-            let now_loaded = loaded_indices.contains(&i);
-            was_loaded != now_loaded
-        });
-
         // Save to persistent state
         self.state.persistent.loaded_plugins = new_loaded;
         let _ = config::save_persistent_state(&self.state.persistent);
@@ -678,11 +664,6 @@ impl ConchApp {
         }
         for idx in to_activate {
             self.activate_panel_plugin(idx);
-        }
-
-        // If panel plugins changed, show restart prompt
-        if panel_changed {
-            self.plugin_restart_pending = true;
         }
 
         // Re-resolve plugin keybindings with new load state

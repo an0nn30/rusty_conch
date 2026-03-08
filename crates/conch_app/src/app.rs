@@ -219,8 +219,6 @@ pub struct ConchApp {
     pub(crate) panel_event_waiters: std::collections::HashMap<usize, tokio::sync::mpsc::UnboundedSender<conch_plugin::PluginResponse>>,
     /// Checkbox states in the plugin list (mirrors loaded state, user toggles before applying).
     pub(crate) pending_plugin_loads: Vec<bool>,
-    /// Whether a restart prompt is pending for plugin changes.
-    pub(crate) plugin_restart_pending: bool,
     /// Resolved plugin keybindings (checked after app shortcuts).
     pub(crate) plugin_keybinds: Vec<ResolvedPluginKeybind>,
     /// Loaded plugin icon textures, keyed by discovered_plugins index.
@@ -332,7 +330,6 @@ impl ConchApp {
             panel_button_events: std::collections::HashMap::new(),
             panel_event_waiters: std::collections::HashMap::new(),
             pending_plugin_loads: Vec::new(),
-            plugin_restart_pending: false,
             plugin_keybinds: Vec::new(),
             plugin_icons: HashMap::new(),
             pending_plugin_icons: Vec::new(),
@@ -821,38 +818,6 @@ impl eframe::App for ConchApp {
 
         if self.show_about {
             self.show_about_dialog(ctx);
-        }
-
-        // Plugin restart prompt.
-        if self.plugin_restart_pending {
-            let mut dismiss = false;
-            egui::Window::new("Plugin Changes Applied")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label("Panel plugin changes have been applied.");
-                    ui.label("A restart is recommended for a clean state.");
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if crate::ui::widgets::dialog_button(ui, "Restart Now").clicked() {
-                                // Save state and request restart
-                                let _ = config::save_persistent_state(&self.state.persistent);
-                                self.quit_requested = true;
-                                dismiss = true;
-                            }
-                            if crate::ui::widgets::dialog_button(ui, "Restart Later").clicked() {
-                                dismiss = true;
-                            }
-                        });
-                    });
-                });
-            if dismiss {
-                self.plugin_restart_pending = false;
-            }
         }
 
         // Rename tab dialog.
