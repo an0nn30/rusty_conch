@@ -89,8 +89,7 @@ pub fn show_bottom_panel(
             // Render the active tab's content.
             if let Some(idx) = *active_tab {
                 let widgets = panel_widgets.get(&idx).map(|v| v.as_slice()).unwrap_or(&[]);
-                let name = panel_names.get(&idx).map(|s| s.as_str()).unwrap_or("Panel");
-                let inner = render_panel_widgets(ui, idx, name, widgets);
+                let inner = render_panel_widgets(ui, idx, widgets);
                 if !matches!(inner, BottomPanelAction::None) {
                     action = inner;
                 }
@@ -100,11 +99,10 @@ pub fn show_bottom_panel(
     action
 }
 
-/// Render a panel plugin's declarative widgets (shared rendering logic).
+/// Render a panel plugin's declarative widgets.
 fn render_panel_widgets(
     ui: &mut egui::Ui,
     plugin_idx: usize,
-    _name: &str,
     widgets: &[conch_plugin::PanelWidget],
 ) -> BottomPanelAction {
     let mut action = BottomPanelAction::None;
@@ -116,90 +114,104 @@ fn render_panel_widgets(
         return action;
     }
 
-    egui::ScrollArea::vertical()
-        .id_salt(("bottom_panel_plugin", plugin_idx))
-        .show(ui, |ui| {
-            for widget in widgets {
-                match widget {
-                    conch_plugin::PanelWidget::Heading(text) => {
-                        ui.add_space(4.0);
-                        ui.strong(text);
-                        ui.add_space(2.0);
-                    }
-                    conch_plugin::PanelWidget::Text(text) => {
-                        ui.label(RichText::new(text).monospace().size(11.0));
-                    }
-                    conch_plugin::PanelWidget::Label(text) => {
-                        ui.label(text);
-                    }
-                    conch_plugin::PanelWidget::Separator => {
-                        ui.separator();
-                    }
-                    conch_plugin::PanelWidget::Table { columns, rows } => {
-                        let num_cols = columns.len();
-                        if num_cols > 0 {
-                            TableBuilder::new(ui)
-                                .striped(true)
-                                .resizable(true)
-                                .columns(Column::remainder().at_least(40.0), num_cols)
-                                .header(16.0, |mut header| {
-                                    for col in columns {
-                                        header.col(|ui| {
-                                            ui.label(RichText::new(col).strong().size(10.0));
-                                        });
-                                    }
-                                })
-                                .body(|body| {
-                                    body.rows(16.0, rows.len(), |mut row| {
-                                        let idx = row.index();
-                                        if let Some(cells) = rows.get(idx) {
-                                            for cell in cells {
-                                                row.col(|ui| {
-                                                    ui.label(
-                                                        RichText::new(cell).size(11.0).monospace(),
-                                                    );
-                                                });
-                                            }
-                                        }
+    // Check if any widget is ScrollText — if so, split rendering to avoid
+    // nested vertical ScrollAreas (inner would get unbounded height from outer).
+    let has_scroll_text = widgets.iter().any(|w| matches!(w, conch_plugin::PanelWidget::ScrollText(_)));
+
+    let render_regular = |ui: &mut egui::Ui, action: &mut BottomPanelAction| {
+        for widget in widgets {
+            match widget {
+                conch_plugin::PanelWidget::ScrollText(_) => {} // rendered separately
+                conch_plugin::PanelWidget::Heading(text) => {
+                    ui.add_space(4.0);
+                    ui.strong(text);
+                    ui.add_space(2.0);
+                }
+                conch_plugin::PanelWidget::Text(text) => {
+                    ui.label(RichText::new(text).monospace().size(11.0));
+                }
+                conch_plugin::PanelWidget::Label(text) => {
+                    ui.label(text);
+                }
+                conch_plugin::PanelWidget::Separator => {
+                    ui.separator();
+                }
+                conch_plugin::PanelWidget::Table { columns, rows } => {
+                    let num_cols = columns.len();
+                    if num_cols > 0 {
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .columns(Column::remainder().at_least(40.0), num_cols)
+                            .header(16.0, |mut header| {
+                                for col in columns {
+                                    header.col(|ui| {
+                                        ui.label(RichText::new(col).strong().size(10.0));
                                     });
-                                });
-                        }
-                    }
-                    conch_plugin::PanelWidget::Progress { label, fraction, text } => {
-                        ui.label(RichText::new(label).size(11.0));
-                        let bar = egui::ProgressBar::new(*fraction)
-                            .text(text)
-                            .desired_width(ui.available_width());
-                        ui.add(bar);
-                    }
-                    conch_plugin::PanelWidget::Button { id, label } => {
-                        if ui.button(label).clicked() {
-                            action = BottomPanelAction::PanelButtonClick {
-                                plugin_idx,
-                                button_id: id.clone(),
-                            };
-                        }
-                    }
-                    conch_plugin::PanelWidget::KeyValue { key, value } => {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(key).strong().size(11.0));
-                            ui.label(RichText::new(value).size(11.0).monospace());
-                        });
-                    }
-                    conch_plugin::PanelWidget::ScrollText(lines) => {
-                        egui::ScrollArea::vertical()
-                            .id_salt(("scroll_text", plugin_idx))
-                            .stick_to_bottom(true)
-                            .max_height(ui.available_height().max(100.0))
-                            .show(ui, |ui| {
-                                for line in lines {
-                                    ui.label(RichText::new(line).monospace().size(11.0));
                                 }
+                            })
+                            .body(|body| {
+                                body.rows(16.0, rows.len(), |mut row| {
+                                    let idx = row.index();
+                                    if let Some(cells) = rows.get(idx) {
+                                        for cell in cells {
+                                            row.col(|ui| {
+                                                ui.label(
+                                                    RichText::new(cell).size(11.0).monospace(),
+                                                );
+                                            });
+                                        }
+                                    }
+                                });
                             });
                     }
                 }
+                conch_plugin::PanelWidget::Progress { label, fraction, text } => {
+                    ui.label(RichText::new(label).size(11.0));
+                    let bar = egui::ProgressBar::new(*fraction)
+                        .text(text)
+                        .desired_width(ui.available_width());
+                    ui.add(bar);
+                }
+                conch_plugin::PanelWidget::Button { id, label } => {
+                    if ui.button(label).clicked() {
+                        *action = BottomPanelAction::PanelButtonClick {
+                            plugin_idx,
+                            button_id: id.clone(),
+                        };
+                    }
+                }
+                conch_plugin::PanelWidget::KeyValue { key, value } => {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(key).strong().size(11.0));
+                        ui.label(RichText::new(value).size(11.0).monospace());
+                    });
+                }
             }
-        });
+        }
+    };
+
+    if has_scroll_text {
+        render_regular(ui, &mut action);
+        for widget in widgets {
+            if let conch_plugin::PanelWidget::ScrollText(lines) = widget {
+                egui::ScrollArea::vertical()
+                    .id_salt(("bottom_scroll_text", plugin_idx))
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for line in lines {
+                            ui.label(RichText::new(line).monospace().size(11.0));
+                        }
+                    });
+            }
+        }
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt(("bottom_panel_plugin", plugin_idx))
+            .show(ui, |ui| {
+                render_regular(ui, &mut action);
+            });
+    }
 
     action
 }
