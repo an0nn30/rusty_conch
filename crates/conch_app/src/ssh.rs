@@ -35,6 +35,10 @@ impl ConchApp {
             password_buf: String::new(),
             password_focus: false,
             pending_auth: None,
+            needs_fingerprint: false,
+            fingerprint_display: String::new(),
+            fingerprint_host: String::new(),
+            trust_tx: None,
         });
 
         self.state.tab_order.push(id);
@@ -43,6 +47,8 @@ impl ConchApp {
         let host_clone = host.clone();
         let term_config = build_term_config(&self.state.user_config.terminal.cursor);
         self.rt.spawn(async move {
+            let (fp_tx, fp_rx) = tokio::sync::oneshot::channel::<conch_session::FingerprintRequest>();
+
             let params = conch_session::ConnectParams {
                 host: host_clone,
                 port,
@@ -52,43 +58,68 @@ impl ConchApp {
                 proxy_command,
                 proxy_jump,
             };
-            let outcome = match SshSession::connect(&params, DEFAULT_COLS, DEFAULT_ROWS, term_config).await {
-                Ok(conch_session::SshConnectResult::Connected(session)) => {
-                    SshConnectOutcome::Connected(session)
-                }
-                Ok(result @ conch_session::SshConnectResult::NeedsPassword { .. }) => {
-                    SshConnectOutcome::NeedsPassword(result)
-                }
-                Err(e) => {
-                    let ssh_auth_sock = std::env::var("SSH_AUTH_SOCK")
-                        .unwrap_or_else(|_| "(not set)".into());
-                    let home = dirs::home_dir()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "(not set)".into());
-                    let key_status = [
-                        "id_ed25519", "id_ecdsa", "id_rsa",
-                    ]
-                    .iter()
-                    .map(|name| {
-                        let path = dirs::home_dir()
-                            .unwrap_or_default()
-                            .join(format!(".ssh/{name}"));
-                        let exists = if path.exists() { "found" } else { "missing" };
-                        format!("  ~/.ssh/{name}: {exists}")
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
 
-                    SshConnectOutcome::Failed(format!(
-                        "{host}: {e:#}\n\n\
-                         --- Diagnostics ---\n\
-                         SSH_AUTH_SOCK: {ssh_auth_sock}\n\
-                         HOME: {home}\n\
-                         Keys:\n{key_status}"
-                    ))
+            // Spawn the actual connection in a subtask. It may block inside
+            // check_server_key waiting for the user to approve the host fingerprint.
+            let connect_task = tokio::spawn(async move {
+                SshSession::connect(&params, DEFAULT_COLS, DEFAULT_ROWS, term_config, fp_tx).await
+            });
+
+            // Race: fingerprint approval request vs connection completion.
+            let mut connect_task = connect_task;
+            tokio::select! {
+                fp_result = fp_rx => {
+                    if let Ok(fp_req) = fp_result {
+                        // Host key not in known_hosts — ask the user.
+                        let _ = tx.send(SshConnectOutcome::NeedsFingerprint(fp_req));
+                    }
+                    // Now wait for the connection task to finish (after the user decides,
+                    // or if fp_tx was dropped without sending).
+                    let outcome = match connect_task.await {
+                        Ok(Ok(r)) => connect_result_to_outcome(r),
+                        Ok(Err(e)) => SshConnectOutcome::Failed(format!("{host}: {e:#}")),
+                        Err(e) => SshConnectOutcome::Failed(format!("{host}: task error: {e}")),
+                    };
+                    let _ = tx.send(outcome);
                 }
-            };
-            let _ = tx.send(outcome);
+                result = &mut connect_task => {
+                    // Connection completed without needing a fingerprint prompt
+                    // (host was already in known_hosts).
+                    let outcome = match result {
+                        Ok(Ok(r)) => connect_result_to_outcome(r),
+                        Ok(Err(e)) => {
+                            let ssh_auth_sock = std::env::var("SSH_AUTH_SOCK")
+                                .unwrap_or_else(|_| "(not set)".into());
+                            let home = dirs::home_dir()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|| "(not set)".into());
+                            let key_status = [
+                                "id_ed25519", "id_ecdsa", "id_rsa",
+                            ]
+                            .iter()
+                            .map(|name| {
+                                let path = dirs::home_dir()
+                                    .unwrap_or_default()
+                                    .join(format!(".ssh/{name}"));
+                                let exists = if path.exists() { "found" } else { "missing" };
+                                format!("  ~/.ssh/{name}: {exists}")
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+
+                            SshConnectOutcome::Failed(format!(
+                                "{host}: {e:#}\n\n\
+                                 --- Diagnostics ---\n\
+                                 SSH_AUTH_SOCK: {ssh_auth_sock}\n\
+                                 HOME: {home}\n\
+                                 Keys:\n{key_status}"
+                            ))
+                        }
+                        Err(e) => SshConnectOutcome::Failed(format!("{host}: task error: {e}")),
+                    };
+                    let _ = tx.send(outcome);
+                }
+            }
         });
 
         self.pending_ssh_connections.push(PendingSsh { id, rx });
@@ -175,15 +206,29 @@ impl ConchApp {
     }
 }
 
-/// Action from the connecting/error/password screen.
+/// Convert an `SshConnectResult` to an `SshConnectOutcome`.
+fn connect_result_to_outcome(result: conch_session::SshConnectResult) -> SshConnectOutcome {
+    match result {
+        conch_session::SshConnectResult::Connected(session) => {
+            SshConnectOutcome::Connected(session)
+        }
+        result @ conch_session::SshConnectResult::NeedsPassword { .. } => {
+            SshConnectOutcome::NeedsPassword(result)
+        }
+    }
+}
+
+/// Action from the connecting/error/password/fingerprint screen.
 pub(crate) enum ConnectingScreenAction {
     None,
     Close,
     SubmitPassword(String),
+    /// User approved (`true`) or rejected (`false`) the unknown host key.
+    TrustFingerprint(bool),
 }
 
 /// Render the "Connecting to..." screen with a bouncing progress indicator,
-/// password prompt, or error screen.
+/// password prompt, fingerprint prompt, or error screen.
 pub(crate) fn show_connecting_screen(ui: &mut egui::Ui, info: &mut PendingSshInfo) -> ConnectingScreenAction {
     let rect = ui.available_rect_before_wrap();
 
@@ -195,6 +240,97 @@ pub(crate) fn show_connecting_screen(ui: &mut egui::Ui, info: &mut PendingSshInf
     ui.painter().rect_filled(rect, 0.0, bg);
 
     let center = rect.center();
+
+    // --- Fingerprint trust prompt (unknown host key) ---
+    if info.needs_fingerprint {
+        let content_width = (rect.width() * 0.7).min(550.0);
+        let content_rect = egui::Rect::from_center_size(
+            center,
+            egui::Vec2::new(content_width, rect.height() * 0.7),
+        );
+        let mut action = ConnectingScreenAction::None;
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(
+                    egui::RichText::new("Unknown Host Key")
+                        .size(22.0),
+                );
+                ui.add_space(8.0);
+                let subtitle = if ui.visuals().dark_mode {
+                    egui::Color32::from_gray(160)
+                } else {
+                    egui::Color32::from_gray(80)
+                };
+                ui.label(
+                    egui::RichText::new(format!(
+                        "The authenticity of host '{}' can't be established.",
+                        info.fingerprint_host
+                    ))
+                    .size(14.0)
+                    .color(subtitle),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(&info.detail)
+                        .size(13.0)
+                        .color(subtitle),
+                );
+                ui.add_space(16.0);
+
+                // Fingerprint display in monospace
+                let fp_color = if ui.visuals().dark_mode {
+                    egui::Color32::from_gray(220)
+                } else {
+                    egui::Color32::from_gray(30)
+                };
+                let fp_bg = if ui.visuals().dark_mode {
+                    egui::Color32::from_gray(45)
+                } else {
+                    egui::Color32::from_gray(225)
+                };
+                egui::Frame::new()
+                    .fill(fp_bg)
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(&info.fingerprint_display)
+                                .size(14.0)
+                                .family(egui::FontFamily::Monospace)
+                                .color(fp_color),
+                        );
+                    });
+
+                ui.add_space(16.0);
+
+                let warn_color = if ui.visuals().dark_mode {
+                    egui::Color32::from_gray(140)
+                } else {
+                    egui::Color32::from_gray(100)
+                };
+                ui.label(
+                    egui::RichText::new(
+                        "If you trust this host, clicking Trust will save the key\n\
+                         to your known_hosts file for future connections."
+                    )
+                    .size(12.0)
+                    .color(warn_color),
+                );
+
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Trust").clicked() {
+                        action = ConnectingScreenAction::TrustFingerprint(true);
+                    }
+                    if ui.button("Reject").clicked() {
+                        action = ConnectingScreenAction::TrustFingerprint(false);
+                    }
+                });
+            });
+        });
+        return action;
+    }
 
     // --- Password prompt (server reachable, needs password) ---
     if info.needs_password {

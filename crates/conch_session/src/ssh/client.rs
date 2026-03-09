@@ -4,10 +4,23 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use russh::client::{self, Handle};
-use russh::keys::{self, PrivateKeyWithHashAlg, agent};
+use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg, agent};
 use russh::Channel;
+use tokio::sync::oneshot;
 
 use conch_core::models::server::ServerEntry;
+
+/// Sent to the UI when an unknown SSH host key is encountered.
+/// The UI should display the fingerprint and send `true` (trust) or `false` (reject)
+/// via `trust_tx`.
+pub struct FingerprintRequest {
+    /// The host being connected to.
+    pub host: String,
+    /// The key fingerprint to display, e.g. `"SHA256:abc123..."`.
+    pub fingerprint: String,
+    /// Send `true` to trust and save the key, `false` to reject the connection.
+    pub trust_tx: oneshot::Sender<bool>,
+}
 
 /// SSH connection parameters.
 pub struct ConnectParams {
@@ -98,21 +111,28 @@ impl PendingAuth {
 }
 
 /// Establish TCP+SSH connection to a server (shared between connect_shell and connect_tunnel).
-async fn establish_connection(params: &ConnectParams) -> Result<Handle<ClientHandler>> {
+async fn establish_connection(
+    params: &ConnectParams,
+    fp_tx: Option<oneshot::Sender<FingerprintRequest>>,
+) -> Result<Handle<ClientHandler>> {
     let effective_proxy = params
         .proxy_command
         .clone()
         .or_else(|| {
             params.proxy_jump.as_ref().map(|jump| {
-                format!("ssh -W %h:%p {jump}")
+                // BatchMode=yes prevents the external ssh process from opening any
+                // interactive prompts (which can spawn cmd windows on Windows).
+                // Host key verification for the jump hop itself is not yet interactive;
+                // users should pre-accept the jump host key via a regular SSH session.
+                format!("ssh -o BatchMode=yes -W %h:%p {jump}")
             })
         });
 
     if let Some(proxy_cmd) = &effective_proxy {
-        super::proxy::connect_via_proxy(proxy_cmd, params).await
+        super::proxy::connect_via_proxy(proxy_cmd, params, fp_tx).await
     } else {
         let config = Arc::new(client::Config::default());
-        let handler = ClientHandler;
+        let handler = ClientHandler::new(params.host.clone(), params.port, fp_tx);
 
         let addr = format!("{}:{}", params.host, params.port);
         let sock_addr = addr
@@ -128,12 +148,14 @@ async fn establish_connection(params: &ConnectParams) -> Result<Handle<ClientHan
 }
 
 /// Connect to an SSH server and open an interactive shell.
+/// `fp_tx` is used to send fingerprint approval requests to the UI for unknown hosts.
 pub async fn connect_shell(
     params: &ConnectParams,
     cols: u32,
     rows: u32,
+    fp_tx: oneshot::Sender<FingerprintRequest>,
 ) -> Result<ShellConnectResult> {
-    let mut handle = establish_connection(params).await?;
+    let mut handle = establish_connection(params, Some(fp_tx)).await?;
 
     match authenticate(&mut handle, &params.user, &params.identity_file, &params.password).await? {
         AuthResult::Ok => {
@@ -313,13 +335,14 @@ async fn try_agent_auth(
 
 /// Connect and authenticate to an SSH server for tunnel use only (no PTY/shell).
 /// Returns the raw handle for port forwarding.
+/// Unknown host keys are auto-accepted for tunnels; changed keys are rejected.
 pub async fn connect_tunnel(params: &ConnectParams) -> Result<Arc<Handle<ClientHandler>>> {
     log::debug!(
         "connect_tunnel: resolving {}:{} (proxy_command={:?}, proxy_jump={:?})",
         params.host, params.port, params.proxy_command, params.proxy_jump,
     );
 
-    let mut handle = establish_connection(params).await?;
+    let mut handle = establish_connection(params, None).await?;
 
     log::debug!("connect_tunnel: TCP connected, authenticating as '{}'", params.user);
     match authenticate(&mut handle, &params.user, &params.identity_file, &params.password).await? {
@@ -345,17 +368,105 @@ fn expand_tilde(path: &std::path::Path) -> PathBuf {
     path.to_path_buf()
 }
 
-/// Client handler for russh — accepts all host keys (for now).
-pub struct ClientHandler;
+/// Client handler for russh — checks known_hosts and prompts the user for unknown keys.
+pub struct ClientHandler {
+    /// Channel to send a fingerprint approval request to the UI (interactive sessions only).
+    fp_tx: Option<oneshot::Sender<FingerprintRequest>>,
+    /// The target host, for known_hosts lookup and error messages.
+    host: String,
+    /// The target port, for known_hosts lookup.
+    port: u16,
+}
+
+impl ClientHandler {
+    /// Create a handler for interactive sessions that will prompt the user for unknown keys.
+    pub(super) fn new(
+        host: String,
+        port: u16,
+        fp_tx: Option<oneshot::Sender<FingerprintRequest>>,
+    ) -> Self {
+        Self { fp_tx, host, port }
+    }
+}
 
 impl client::Handler for ClientHandler {
     type Error = anyhow::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::PublicKey,
+        server_public_key: &russh::keys::PublicKey,
     ) -> Result<bool, Self::Error> {
-        // TODO: Implement known_hosts checking
-        Ok(true)
+        // Check against ~/.ssh/known_hosts first.
+        match keys::check_known_hosts(&self.host, self.port, server_public_key) {
+            Ok(true) => {
+                // Host is known and key matches — trusted.
+                return Ok(true);
+            }
+            Err(e) => {
+                // Key exists in known_hosts but DOES NOT MATCH — potential MITM!
+                return Err(anyhow::anyhow!(
+                    "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\n\n\
+                     The host key for '{}:{}' has changed since it was last seen.\n\
+                     This may indicate a man-in-the-middle attack or a server\n\
+                     that was reinstalled with a new key.\n\n\
+                     Details: {}\n\n\
+                     To connect anyway, remove the old entry from ~/.ssh/known_hosts.",
+                    self.host, self.port, e
+                ));
+            }
+            Ok(false) => {
+                // Host not in known_hosts — need user approval.
+            }
+        }
+
+        let fingerprint = format!("{}", server_public_key.fingerprint(HashAlg::Sha256));
+
+        match self.fp_tx.take() {
+            Some(fp_tx) => {
+                // Interactive session: ask the user.
+                let (trust_tx, trust_rx) = oneshot::channel::<bool>();
+                let req = FingerprintRequest {
+                    host: self.host.clone(),
+                    fingerprint,
+                    trust_tx,
+                };
+                // If the channel is closed (UI gone), reject.
+                if fp_tx.send(req).is_err() {
+                    return Ok(false);
+                }
+                match trust_rx.await {
+                    Ok(true) => {
+                        // User trusted the key — persist it to known_hosts.
+                        if let Err(e) = keys::known_hosts::learn_known_hosts(
+                            &self.host,
+                            self.port,
+                            server_public_key,
+                        ) {
+                            log::warn!("Failed to save host key to known_hosts: {e}");
+                        }
+                        Ok(true)
+                    }
+                    Ok(false) | Err(_) => Ok(false),
+                }
+            }
+            None => {
+                // Non-interactive (tunnel): auto-accept and log. We still persist so that
+                // subsequent interactive sessions don't need to prompt again.
+                log::info!(
+                    "Auto-accepting unverified host key for {}:{} ({})",
+                    self.host,
+                    self.port,
+                    fingerprint
+                );
+                if let Err(e) = keys::known_hosts::learn_known_hosts(
+                    &self.host,
+                    self.port,
+                    server_public_key,
+                ) {
+                    log::warn!("Failed to save host key to known_hosts: {e}");
+                }
+                Ok(true)
+            }
+        }
     }
 }

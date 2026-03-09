@@ -3,8 +3,12 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use russh::client;
 use tokio::process::Command;
+use tokio::sync::oneshot;
 
-use super::client::{ClientHandler, ConnectParams};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+use super::client::{ClientHandler, ConnectParams, FingerprintRequest};
 
 /// Connect to an SSH server via a ProxyCommand.
 ///
@@ -13,6 +17,7 @@ use super::client::{ClientHandler, ConnectParams};
 pub async fn connect_via_proxy(
     proxy_cmd: &str,
     params: &ConnectParams,
+    fp_tx: Option<oneshot::Sender<FingerprintRequest>>,
 ) -> Result<client::Handle<ClientHandler>> {
     // Expand %h and %p placeholders
     let expanded = proxy_cmd
@@ -48,6 +53,8 @@ pub async fn connect_via_proxy(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
+        // Prevent the subprocess from creating a new console window on Windows.
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .spawn()
         .context("Failed to spawn ProxyCommand")?;
 
@@ -58,7 +65,7 @@ pub async fn connect_via_proxy(
     let stream = tokio::io::join(stdout, stdin);
 
     let config = Arc::new(client::Config::default());
-    let handler = ClientHandler;
+    let handler = ClientHandler::new(params.host.clone(), params.port, fp_tx);
 
     let handle = client::connect_stream(config, stream, handler)
         .await
