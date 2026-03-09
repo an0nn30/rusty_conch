@@ -48,7 +48,7 @@ impl FileWatcher {
 
         let mut watcher = match RecommendedWatcher::new(
             move |res| { let _ = tx.send(res); },
-            notify::Config::default().with_poll_interval(Duration::from_secs(2)),
+            notify::Config::default(),
         ) {
             Ok(w) => w,
             Err(e) => {
