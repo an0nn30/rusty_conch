@@ -832,23 +832,25 @@ impl ConchApp {
 
     /// Rescan plugin directories and detect additions/removals.
     fn live_reload_plugins(&mut self) {
-        let old_names: Vec<String> = self
+        use std::collections::HashSet;
+
+        let old_names: HashSet<String> = self
             .discovered_plugins
             .iter()
             .map(|p| p.name.clone())
             .collect();
 
         let new_plugins = scan_plugin_dirs();
-        let new_names: Vec<String> = new_plugins.iter().map(|p| p.name.clone()).collect();
+        let new_names: HashSet<String> = new_plugins.iter().map(|p| p.name.clone()).collect();
 
         let added: Vec<&str> = new_names
             .iter()
-            .filter(|n| !old_names.contains(n))
+            .filter(|n| !old_names.contains(n.as_str()))
             .map(|s| s.as_str())
             .collect();
         let removed: Vec<&str> = old_names
             .iter()
-            .filter(|n| !new_names.contains(n))
+            .filter(|n| !new_names.contains(n.as_str()))
             .map(|s| s.as_str())
             .collect();
 
@@ -911,20 +913,22 @@ impl ConchApp {
 
     /// Reload SSH config (~/.ssh/config) and update the session panel.
     fn live_reload_ssh_config(&mut self) {
+        use std::collections::HashSet;
+
         let old_hosts = self.state.ssh_config_hosts.clone();
-        let old_names: Vec<String> = old_hosts.iter().map(|h| h.name.clone()).collect();
+        let old_names: HashSet<String> = old_hosts.iter().map(|h| h.name.clone()).collect();
 
         match ssh_config::parse_ssh_config() {
             Ok(hosts) => {
-                let new_names: Vec<String> = hosts.iter().map(|h| h.name.clone()).collect();
+                let new_names: HashSet<String> = hosts.iter().map(|h| h.name.clone()).collect();
                 let added: Vec<&str> = new_names
                     .iter()
-                    .filter(|n| !old_names.contains(n))
+                    .filter(|n| !old_names.contains(n.as_str()))
                     .map(|s| s.as_str())
                     .collect();
                 let removed: Vec<&str> = old_names
                     .iter()
-                    .filter(|n| !new_names.contains(n))
+                    .filter(|n| !new_names.contains(n.as_str()))
                     .map(|s| s.as_str())
                     .collect();
 
