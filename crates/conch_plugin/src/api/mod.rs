@@ -37,6 +37,7 @@ pub enum PanelWidget {
     Progress { label: String, fraction: f32, text: String },
     Button { id: String, label: String },
     KeyValue { key: String, value: String },
+    ScrollText(Vec<String>),
 }
 
 /// Metadata about a session, returned to plugins.

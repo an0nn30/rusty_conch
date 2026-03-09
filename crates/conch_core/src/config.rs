@@ -497,9 +497,14 @@ pub struct LayoutConfig {
     /// Persisted UI zoom factor (0 or 1.0 = default).
     #[serde(default = "default_zoom")]
     pub zoom_factor: f32,
+    #[serde(default)]
+    pub bottom_panel_collapsed: bool,
+    #[serde(default = "default_bottom_panel_height")]
+    pub bottom_panel_height: f32,
 }
 
 fn default_zoom() -> f32 { 1.0 }
+fn default_bottom_panel_height() -> f32 { 200.0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
@@ -518,6 +523,8 @@ impl Default for LayoutConfig {
             window_width: 0.0,
             window_height: 0.0,
             zoom_factor: 1.0,
+            bottom_panel_collapsed: false,
+            bottom_panel_height: default_bottom_panel_height(),
         }
     }
 }

@@ -218,6 +218,7 @@ pub struct PluginDisplayInfo {
     pub name: String,
     pub description: String,
     pub is_panel: bool,
+    pub is_bottom_panel: bool,
     pub is_loaded: bool,
 }
 
@@ -329,7 +330,7 @@ fn show_plugins_panel(
     // Enter on search bar → run first matching loaded action plugin
     if search_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
         if let Some(&(orig_idx, plugin)) = filtered.first() {
-            if !plugin.is_panel && plugin.is_loaded {
+            if !plugin.is_panel && !plugin.is_bottom_panel && plugin.is_loaded {
                 action = SidebarAction::RunPlugin(orig_idx);
             }
         }
@@ -373,7 +374,13 @@ fn show_plugins_panel(
                                 // Name + type badge
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(&plugin.name).size(12.0));
-                                    if plugin.is_panel {
+                                    if plugin.is_bottom_panel {
+                                        ui.label(
+                                            egui::RichText::new("bottom")
+                                                .size(9.0)
+                                                .color(Color32::from_rgb(180, 140, 80)),
+                                        );
+                                    } else if plugin.is_panel {
                                         ui.label(
                                             egui::RichText::new("panel")
                                                 .size(9.0)
@@ -962,6 +969,17 @@ fn show_panel_plugin(
                             ui.label(egui::RichText::new(key).strong().size(11.0));
                             ui.label(egui::RichText::new(value).size(11.0).monospace());
                         });
+                    }
+                    conch_plugin::PanelWidget::ScrollText(lines) => {
+                        egui::ScrollArea::vertical()
+                            .id_salt(("scroll_text", plugin_idx))
+                            .stick_to_bottom(true)
+                            .max_height(ui.available_height().max(100.0))
+                            .show(ui, |ui| {
+                                for line in lines {
+                                    ui.label(egui::RichText::new(line).monospace().size(11.0));
+                                }
+                            });
                     }
                 }
             }

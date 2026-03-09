@@ -60,24 +60,30 @@ between render cycles. Changes are sent back via
 
 ---
 
-## Phase 3: Bottom Panels
+## Phase 3: Bottom Panels (complete)
 
-**Goal:** Allow plugins to create dockable panels below the terminal area,
-suitable for log tailing, build output, and persistent status displays.
+**Status:** Fully implemented.
 
-### Panel placement
+Bottom panel plugins render in a resizable area below the terminal, ideal for
+log tailing, container monitoring, build output, and other wide-format content.
 
-```lua
--- plugin-placement: bottom
-```
+### Features implemented
 
-- Bottom panels render as a resizable horizontal strip under the terminal.
-- Multiple bottom panels are shown as tabs within the strip.
-- The same declarative widget set from Phase 1/2 applies.
-- Adds a `ui.panel_scroll_text(lines)` widget optimized for streaming output.
+- Plugin type declaration: `-- plugin-type: bottom-panel`
+- `PluginType::BottomPanel` variant — same lifecycle as sidebar panels (`setup`, `render`, `on_click`, `on_keybind`)
+- Tabbed bottom panel area with multiple concurrent panels
+- Resizable height (drag handle, range 80–500px)
+- Collapsible via View menu toggle or close button
+- Height and collapsed state persisted in `state.toml`
+- `ui.panel_scroll_text(lines)` widget — scrollable monospace area that auto-scrolls to bottom
+- "bottom" badge in the Plugins sidebar list
+- Shared state infrastructure: bottom panels reuse `panel_widgets`, `panel_names`, `panel_button_events`, `panel_event_waiters` (keyed by plugin index)
+- Activate/deactivate on load/unload with persistence
+- Keybinding support: `open_panel` action shows/focuses the bottom panel
 
 ### Architecture
 
-- `SidebarTab` concept extended with a `BottomPanel` area.
-- Bottom panel height is user-resizable and persisted.
-- A panel can be dragged between sidebar and bottom positions.
+- `BottomPanel` is a separate `PluginType`, not a placement modifier — simpler to reason about
+- Bottom panel area uses `egui::TopBottomPanel::bottom()` inserted before `CentralPanel`
+- Tab bar at top of the panel strip, content rendered below
+- No drag-between-positions yet (deferred to future work)

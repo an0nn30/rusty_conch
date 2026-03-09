@@ -9,6 +9,7 @@ pub enum PluginType {
     #[default]
     Action,
     Panel,
+    BottomPanel,
 }
 
 /// A keybinding declared by a plugin.
@@ -176,6 +177,7 @@ fn parse_plugin_header_inner(contents: &str, path: &Path) -> PluginMeta {
         } else if let Some(val) = comment.strip_prefix("plugin-type:") {
             match val.trim() {
                 "panel" => plugin_type = PluginType::Panel,
+                "bottom-panel" => plugin_type = PluginType::BottomPanel,
                 _ => {}
             }
         } else if let Some(val) = comment.strip_prefix("plugin-keybind:") {

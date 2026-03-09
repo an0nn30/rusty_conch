@@ -8,6 +8,7 @@ use conch_session::SftpCmd;
 
 use crate::app::ConchApp;
 use crate::sessions::load_local_entries;
+use crate::ui::bottom_panel::BottomPanelAction;
 use crate::ui::dialogs::new_connection::NewConnectionForm;
 use crate::ui::session_panel::{ServerAddress, SessionPanelAction};
 use crate::ui::sidebar::{self, SidebarAction};
@@ -316,6 +317,18 @@ impl ConchApp {
                     Some(NewConnectionForm::with_defaults());
             }
             SessionPanelAction::None => {}
+        }
+    }
+
+    pub(crate) fn handle_bottom_panel_action(&mut self, action: BottomPanelAction) {
+        match action {
+            BottomPanelAction::PanelButtonClick { plugin_idx, button_id } => {
+                self.send_panel_button_event(plugin_idx, button_id);
+            }
+            BottomPanelAction::DeactivatePanel(idx) => {
+                self.deactivate_bottom_panel_plugin(idx);
+            }
+            BottomPanelAction::None => {}
         }
     }
 }

@@ -436,6 +436,10 @@ impl ConchApp {
             self.activate_panel_plugin(idx);
             return;
         }
+        if meta.plugin_type == PluginType::BottomPanel {
+            self.activate_bottom_panel_plugin(idx);
+            return;
+        }
         let (ctx, commands_rx) = PluginContext::new();
         let path = meta.path.clone();
         self.rt.spawn(async move {
@@ -504,6 +508,71 @@ impl ConchApp {
         self.plugin_icons.remove(&idx);
         // Switch back to Plugins tab
         self.state.sidebar_tab = crate::ui::sidebar::SidebarTab::Plugins;
+    }
+
+    /// Activate a bottom-panel plugin: start it and add a bottom panel tab.
+    pub(crate) fn activate_bottom_panel_plugin(&mut self, idx: usize) {
+        // Don't activate twice
+        if self.panel_names.contains_key(&idx) {
+            // Just switch to the tab
+            self.active_bottom_panel = Some(idx);
+            self.show_bottom_panel = true;
+            return;
+        }
+        let Some(meta) = self.discovered_plugins.get(idx).cloned() else {
+            return;
+        };
+        let (ctx, commands_rx) = PluginContext::new();
+        let path = meta.path.clone();
+        let name = meta.name.clone();
+        let icon_path = meta.icon.clone();
+        self.rt.spawn(async move {
+            if let Err(e) = run_panel_plugin(&path, ctx).await {
+                log::error!("Bottom panel plugin '{}' failed: {e}", path.display());
+            }
+        });
+        self.running_plugins.push(RunningPlugin {
+            meta,
+            discovered_idx: Some(idx),
+            commands_rx,
+            pending_dialogs: Vec::new(),
+        });
+        self.panel_names.insert(idx, name);
+        self.panel_widgets.insert(idx, Vec::new());
+        if let Some(icon_path) = &icon_path {
+            if let Some(bytes) = load_icon_bytes(icon_path) {
+                self.pending_plugin_icons.push((idx, bytes));
+            }
+        }
+        // Add to bottom panel tabs and select it
+        if !self.bottom_panel_tabs.contains(&idx) {
+            self.bottom_panel_tabs.push(idx);
+        }
+        self.active_bottom_panel = Some(idx);
+        self.show_bottom_panel = true;
+    }
+
+    /// Deactivate a bottom-panel plugin: stop it and remove its tab.
+    pub(crate) fn deactivate_bottom_panel_plugin(&mut self, idx: usize) {
+        if let Some(meta) = self.discovered_plugins.get(idx) {
+            let path = meta.path.clone();
+            if let Some(pos) = self.running_plugins.iter().position(|rp| rp.meta.path == path) {
+                self.running_plugins.remove(pos);
+            }
+        }
+        self.panel_names.remove(&idx);
+        self.panel_widgets.remove(&idx);
+        self.panel_button_events.remove(&idx);
+        self.panel_event_waiters.remove(&idx);
+        self.plugin_icons.remove(&idx);
+        self.bottom_panel_tabs.retain(|&i| i != idx);
+        // Select another tab or hide the panel
+        if self.active_bottom_panel == Some(idx) {
+            self.active_bottom_panel = self.bottom_panel_tabs.first().copied();
+        }
+        if self.bottom_panel_tabs.is_empty() {
+            self.show_bottom_panel = false;
+        }
     }
 
     /// Send a button click event to a panel plugin.
@@ -595,6 +664,9 @@ impl ConchApp {
                         let _ = conch_core::config::save_persistent_state(&self.state.persistent);
                     }
                     self.state.sidebar_tab = crate::ui::sidebar::SidebarTab::PluginPanel(plugin_idx);
+                } else if meta.plugin_type == PluginType::BottomPanel {
+                    self.active_bottom_panel = Some(plugin_idx);
+                    self.show_bottom_panel = true;
                 }
             }
             "run" => {
@@ -664,6 +736,8 @@ impl ConchApp {
         // Collect panel changes to apply (avoid borrow conflict).
         let mut to_activate = Vec::new();
         let mut to_deactivate = Vec::new();
+        let mut to_activate_bottom = Vec::new();
+        let mut to_deactivate_bottom = Vec::new();
         for (i, meta) in self.discovered_plugins.iter().enumerate() {
             let filename = meta.path.file_name()
                 .unwrap_or_default()
@@ -678,6 +752,12 @@ impl ConchApp {
                 } else if !now_loaded && was_loaded {
                     to_deactivate.push(i);
                 }
+            } else if meta.plugin_type == PluginType::BottomPanel {
+                if now_loaded && !was_loaded {
+                    to_activate_bottom.push(i);
+                } else if !now_loaded && was_loaded {
+                    to_deactivate_bottom.push(i);
+                }
             }
         }
         for idx in to_deactivate {
@@ -685,6 +765,12 @@ impl ConchApp {
         }
         for idx in to_activate {
             self.activate_panel_plugin(idx);
+        }
+        for idx in to_deactivate_bottom {
+            self.deactivate_bottom_panel_plugin(idx);
+        }
+        for idx in to_activate_bottom {
+            self.activate_bottom_panel_plugin(idx);
         }
 
         // Re-resolve plugin keybindings with new load state
@@ -698,7 +784,9 @@ impl ConchApp {
     pub(crate) fn activate_loaded_panel_plugins(&mut self) {
         let loaded = self.state.persistent.loaded_plugins.clone();
         for (i, meta) in self.discovered_plugins.iter().enumerate() {
-            if meta.plugin_type != PluginType::Panel {
+            let is_panel = meta.plugin_type == PluginType::Panel;
+            let is_bottom = meta.plugin_type == PluginType::BottomPanel;
+            if !is_panel && !is_bottom {
                 continue;
             }
             let filename = meta.path.file_name()
@@ -727,6 +815,13 @@ impl ConchApp {
                 if let Some(icon_path) = &meta.icon {
                     if let Some(bytes) = load_icon_bytes(icon_path) {
                         self.pending_plugin_icons.push((i, bytes));
+                    }
+                }
+                // Bottom panels get added to the bottom panel tabs
+                if is_bottom && !self.bottom_panel_tabs.contains(&i) {
+                    self.bottom_panel_tabs.push(i);
+                    if self.active_bottom_panel.is_none() {
+                        self.active_bottom_panel = Some(i);
                     }
                 }
             }

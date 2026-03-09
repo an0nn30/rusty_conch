@@ -211,7 +211,17 @@ pub struct ConchApp {
     pub(crate) pending_clipboard: Option<String>,
     pub(crate) selected_plugin: Option<usize>,
 
-    // Panel plugins
+    // Bottom panel plugins
+    /// Indices of active bottom-panel plugins (tab order).
+    pub(crate) bottom_panel_tabs: Vec<usize>,
+    /// Which bottom panel tab is currently selected.
+    pub(crate) active_bottom_panel: Option<usize>,
+    /// Whether the bottom panel strip is visible.
+    pub(crate) show_bottom_panel: bool,
+    /// Height of the bottom panel strip in logical pixels.
+    pub(crate) bottom_panel_height: f32,
+
+    // Panel plugins (shared state for both sidebar and bottom panels)
     /// Widget lists for active panel plugins, keyed by discovered_plugins index.
     pub(crate) panel_widgets: std::collections::HashMap<usize, Vec<conch_plugin::PanelWidget>>,
     /// Panel plugin names, keyed by discovered_plugins index.
@@ -322,6 +332,9 @@ impl ConchApp {
             crate::macos_menu::setup_menu_bar(&plugins);
         }
 
+        let bottom_panel_collapsed = state.persistent.layout.bottom_panel_collapsed;
+        let bottom_panel_height = state.persistent.layout.bottom_panel_height;
+
         let mut app = Self {
             state,
             rt,
@@ -373,6 +386,10 @@ impl ConchApp {
             plugin_progress: None,
             pending_clipboard: None,
             selected_plugin: None,
+            bottom_panel_tabs: Vec::new(),
+            active_bottom_panel: None,
+            show_bottom_panel: !bottom_panel_collapsed,
+            bottom_panel_height: bottom_panel_height,
             panel_widgets: std::collections::HashMap::new(),
             panel_names: std::collections::HashMap::new(),
             panel_button_events: std::collections::HashMap::new(),
@@ -1190,6 +1207,13 @@ impl eframe::App for ConchApp {
                                 self.toggle_right_sidebar();
                                 ui.close_menu();
                             }
+                            if !self.bottom_panel_tabs.is_empty() {
+                                let bottom_check = if self.show_bottom_panel { "✓ " } else { "   " };
+                                if ui.button(format!("{bottom_check}Bottom Panel")).clicked() {
+                                    self.show_bottom_panel = !self.show_bottom_panel;
+                                    ui.close_menu();
+                                }
+                            }
                             ui.separator();
                             if ui.button("Preferences...").clicked() {
                                 self.preferences_form =
@@ -1280,6 +1304,7 @@ impl eframe::App for ConchApp {
                         name: meta.name.clone(),
                         description: meta.description.clone(),
                         is_panel: meta.plugin_type == conch_plugin::PluginType::Panel,
+                        is_bottom_panel: meta.plugin_type == conch_plugin::PluginType::BottomPanel,
                         is_loaded,
                     }
                 })
@@ -1594,6 +1619,20 @@ impl eframe::App for ConchApp {
                 }
             });
         } // end tab bar (multi-tab only)
+
+        // Bottom panel (bottom-panel plugins).
+        if self.show_bottom_panel && !self.bottom_panel_tabs.is_empty() {
+            let bp_action = crate::ui::bottom_panel::show_bottom_panel(
+                ctx,
+                &self.bottom_panel_tabs,
+                &mut self.active_bottom_panel,
+                &self.panel_widgets,
+                &self.panel_names,
+                &mut self.bottom_panel_height,
+                &mut self.show_bottom_panel,
+            );
+            self.handle_bottom_panel_action(bp_action);
+        }
 
         // Central panel (active terminal or connecting screen).
         let font_size = self.state.user_config.font.size;
@@ -1932,6 +1971,8 @@ impl ConchApp {
             self.state.persistent.layout.window_height = rect.height();
         }
         self.state.persistent.layout.zoom_factor = ctx.zoom_factor();
+        self.state.persistent.layout.bottom_panel_collapsed = !self.show_bottom_panel;
+        self.state.persistent.layout.bottom_panel_height = self.bottom_panel_height;
         let _ = config::save_persistent_state(&self.state.persistent);
     }
 

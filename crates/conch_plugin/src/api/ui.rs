@@ -331,6 +331,20 @@ pub fn register(lua: &Lua, ctx: PluginContext) -> LuaResult<()> {
         })?,
     )?;
 
+    // ui.panel_scroll_text(lines) — scrollable monospace text area (sticks to bottom)
+    ui.set(
+        "panel_scroll_text",
+        lua.create_function(|lua, lines: mlua::Table| {
+            let widgets: mlua::Table = lua.named_registry_value("__panel_widgets")?;
+            let len = widgets.len()? + 1;
+            let w = lua.create_table()?;
+            w.set("type", "scroll_text")?;
+            w.set("lines", lines)?;
+            widgets.set(len, w)?;
+            Ok(())
+        })?,
+    )?;
+
     // ui.set_refresh(seconds) — set panel refresh interval
     let ctx_refresh = ctx.clone();
     ui.set(
@@ -390,6 +404,13 @@ pub fn collect_panel_widgets(lua: &Lua) -> LuaResult<Vec<PanelWidget>> {
                 key: entry.get("key")?,
                 value: entry.get("value")?,
             },
+            "scroll_text" => {
+                let lines_table: mlua::Table = entry.get("lines")?;
+                let lines: Vec<String> = lines_table
+                    .sequence_values::<String>()
+                    .collect::<Result<_, _>>()?;
+                PanelWidget::ScrollText(lines)
+            }
             _ => continue,
         };
         widgets.push(widget);
