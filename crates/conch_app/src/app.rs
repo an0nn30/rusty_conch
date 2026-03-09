@@ -1070,14 +1070,23 @@ impl eframe::App for ConchApp {
                     // Per-window actions: route to the focused extra window if any.
                     MenuAction::NewLocalTerminal
                     | MenuAction::ToggleLeftSidebar
-                    | MenuAction::ToggleRightSidebar => {
+                    | MenuAction::ToggleRightSidebar
+                    | MenuAction::ToggleBottomPanel => {
                         if let Some(idx) = self.focused_extra_window {
                             if let Some(win) = self.extra_windows.get_mut(idx) {
                                 match action {
                                     MenuAction::NewLocalTerminal => {
                                         win.open_local_tab(&self.state.user_config);
                                     }
-                                    // Extra windows don't have sidebars — ignore.
+                                    MenuAction::ToggleLeftSidebar => {
+                                        win.toggle_left_sidebar();
+                                    }
+                                    MenuAction::ToggleRightSidebar => {
+                                        win.toggle_right_sidebar();
+                                    }
+                                    MenuAction::ToggleBottomPanel => {
+                                        win.toggle_bottom_panel(&self.bottom_panel_tabs);
+                                    }
                                     _ => {}
                                 }
                             }
@@ -2224,21 +2233,83 @@ impl eframe::App for ConchApp {
         let mut extra = std::mem::take(&mut self.extra_windows);
         let mut focused_extra: Option<usize> = None;
         {
-            let user_config = &self.state.user_config;
-            let colors = &self.state.colors;
-            let shortcuts = &self.shortcuts;
-            let icon_cache = &self.icon_cache;
+            let loaded_plugins = &self.state.persistent.loaded_plugins;
+            let plugin_display: Vec<sidebar::PluginDisplayInfo> = self
+                .discovered_plugins
+                .iter()
+                .map(|meta| {
+                    let filename = meta.path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    let is_loaded = loaded_plugins.contains(&filename);
+                    sidebar::PluginDisplayInfo {
+                        name: meta.name.clone(),
+                        description: meta.description.clone(),
+                        is_panel: meta.plugin_type == conch_plugin::PluginType::Panel,
+                        is_bottom_panel: meta.plugin_type == conch_plugin::PluginType::BottomPanel,
+                        is_loaded,
+                    }
+                })
+                .collect();
+
+            let shared = crate::extra_window::SharedState {
+                user_config: &self.state.user_config,
+                colors: &self.state.colors,
+                shortcuts: &self.shortcuts,
+                icon_cache: &self.icon_cache,
+                sessions_config: &self.state.sessions_config,
+                ssh_config_hosts: &self.state.ssh_config_hosts,
+                plugin_display: &plugin_display,
+                plugin_output_lines: &self.plugin_output_lines,
+                panel_widgets: &self.panel_widgets,
+                panel_names: &self.panel_names,
+                plugin_icons: &self.plugin_icons,
+                use_native_menu: self.use_native_menu,
+                bottom_panel_tabs: &self.bottom_panel_tabs,
+                transfers: &self.transfers,
+            };
 
             for (idx, win) in extra.iter_mut().enumerate() {
                 if win.should_close {
                     continue;
                 }
-                let builder = egui::ViewportBuilder::default()
+                let mut builder = egui::ViewportBuilder::default()
                     .with_title(&win.title)
                     .with_inner_size([800.0, 600.0]);
+                // Apply same window decorations as the main window.
+                match shared.user_config.window.decorations {
+                    config::WindowDecorations::Full => {
+                        if cfg!(target_os = "macos") && !shared.use_native_menu {
+                            builder = builder
+                                .with_fullsize_content_view(true)
+                                .with_titlebar_shown(true)
+                                .with_title_shown(false);
+                        } else {
+                            builder = builder
+                                .with_title_shown(true)
+                                .with_titlebar_shown(true);
+                        }
+                    }
+                    config::WindowDecorations::Transparent => {
+                        builder = builder
+                            .with_fullsize_content_view(true)
+                            .with_titlebar_shown(true)
+                            .with_title_shown(false)
+                            .with_transparent(true);
+                    }
+                    config::WindowDecorations::Buttonless => {
+                        builder = builder
+                            .with_decorations(false)
+                            .with_transparent(true);
+                    }
+                    config::WindowDecorations::None => {
+                        builder = builder.with_decorations(false);
+                    }
+                }
                 let vid = win.viewport_id;
                 ctx.show_viewport_immediate(vid, builder, |vp_ctx, _class| {
-                    win.update(vp_ctx, user_config, colors, shortcuts, icon_cache);
+                    win.update(vp_ctx, &shared);
                 });
                 if win.is_focused {
                     focused_extra = Some(idx);
@@ -2246,6 +2317,60 @@ impl eframe::App for ConchApp {
             }
         }
         self.focused_extra_window = focused_extra;
+        // Process pending actions from extra windows.
+        for win in &mut extra {
+            for action in win.pending_actions.drain(..) {
+                use crate::extra_window::ExtraWindowAction;
+                match action {
+                    ExtraWindowAction::SpawnNewWindow => {
+                        self.spawn_extra_window();
+                    }
+                    ExtraWindowAction::QuitApp => {
+                        self.quit_requested = true;
+                    }
+                    ExtraWindowAction::OpenNewConnection => {
+                        self.state.new_connection_form =
+                            Some(crate::ui::dialogs::new_connection::NewConnectionForm::with_defaults());
+                    }
+                    ExtraWindowAction::OpenPreferences => {
+                        self.preferences_form =
+                            Some(crate::ui::dialogs::preferences::PreferencesForm::from_config(&self.state.user_config));
+                    }
+                    ExtraWindowAction::OpenAbout => {
+                        self.show_about = true;
+                    }
+                    ExtraWindowAction::OpenTunnelDialog => {
+                        self.tunnel_dialog = Some(crate::ui::dialogs::tunnels::TunnelManagerState::new());
+                    }
+                    ExtraWindowAction::OpenNotificationHistory => {
+                        self.notification_history_dialog = Some(
+                            crate::ui::dialogs::notification_history::NotificationHistoryState::new(),
+                        );
+                    }
+                    ExtraWindowAction::RunPlugin(idx) => {
+                        self.run_plugin_by_index(idx);
+                    }
+                    ExtraWindowAction::RefreshPlugins => {
+                        self.discovered_plugins = crate::plugins::scan_plugin_dirs();
+                    }
+                    ExtraWindowAction::ApplyPluginChanges(indices) => {
+                        self.apply_plugin_changes(indices);
+                    }
+                    ExtraWindowAction::PanelButtonClick { plugin_idx, button_id } => {
+                        self.send_panel_button_event(plugin_idx, button_id);
+                    }
+                    ExtraWindowAction::DeactivatePanel(idx) => {
+                        self.deactivate_bottom_panel_plugin(idx);
+                    }
+                    ExtraWindowAction::SessionPanelAction(spa) => {
+                        self.handle_session_panel_action(spa);
+                    }
+                    ExtraWindowAction::BottomPanelAction(bpa) => {
+                        self.handle_bottom_panel_action(bpa);
+                    }
+                }
+            }
+        }
         // Remove closed windows and put the rest back.
         extra.retain(|w| !w.should_close);
         self.extra_windows = extra;
