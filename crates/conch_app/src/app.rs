@@ -238,16 +238,51 @@ pub struct ConchApp {
 
 impl ConchApp {
     pub fn new(rt: Arc<Runtime>) -> Self {
+        let mut startup_warnings: Vec<String> = Vec::new();
+
         // Migration already ran in main(); load_user_config is idempotent.
-        let user_config = config::load_user_config().unwrap_or_else(|e| {
-            log::error!("Failed to load config.toml, using defaults: {e:#}");
+        let mut user_config = config::load_user_config().unwrap_or_else(|e| {
+            startup_warnings.push(format!(
+                "Failed to parse config.toml, using defaults: {e:#}"
+            ));
             config::UserConfig::default()
         });
+
+        // Check for unknown config sections.
+        startup_warnings.extend(config::validate_user_config_raw());
+
+        // Validate shell: if a custom program is set, check it exists.
+        if !user_config.terminal.shell.program.is_empty() {
+            let prog = &user_config.terminal.shell.program;
+            let exists = std::path::Path::new(prog).exists()
+                || which::which(prog).is_ok();
+            if !exists {
+                startup_warnings.push(format!(
+                    "Shell program '{}' not found — falling back to default login shell",
+                    prog,
+                ));
+                user_config.terminal.shell.program = String::new();
+                user_config.terminal.shell.args = Vec::new();
+            }
+        }
+
         let persistent = config::load_persistent_state().unwrap_or_default();
         let sessions_config = config::load_sessions().unwrap_or_default();
         let shortcuts = ResolvedShortcuts::from_config(&user_config.conch.keyboard);
 
         let mut state = AppState::new(user_config, persistent, sessions_config);
+
+        // Check if the configured theme was actually loaded (resolve_theme logs
+        // and falls back to Dracula, but we want a toast too).
+        if !state.user_config.colors.theme.eq_ignore_ascii_case("dracula") {
+            let themes = conch_core::color_scheme::list_themes();
+            if !themes.contains_key(&state.user_config.colors.theme) {
+                startup_warnings.push(format!(
+                    "Theme '{}' not found — using built-in Dracula",
+                    state.user_config.colors.theme,
+                ));
+            }
+        }
 
         state.ssh_config_hosts = ssh_config::parse_ssh_config().unwrap_or_default();
 
@@ -355,6 +390,18 @@ impl ConchApp {
 
         // Resolve plugin keybindings.
         app.resolve_plugin_keybinds();
+
+        // Queue startup warnings as toast notifications.
+        for msg in startup_warnings {
+            log::warn!("{msg}");
+            app.notifications.push(crate::notifications::Notification::simple(
+                msg,
+                Some("Configuration Warning".into()),
+                conch_plugin::NotificationLevel::Warning,
+                Some(10.0),
+                None,
+            ));
+        }
 
         app
     }
@@ -2017,7 +2064,18 @@ impl ConchApp {
                     .insert(0, key);
                 ctx.set_fonts(fonts);
             } else {
-                log::warn!("Could not find font '{}' on this system", font_family_name);
+                let msg = format!(
+                    "Font '{}' not found on this system — using default monospace font",
+                    font_family_name,
+                );
+                log::warn!("{msg}");
+                self.notifications.push(crate::notifications::Notification::simple(
+                    msg,
+                    Some("Configuration Warning".into()),
+                    conch_plugin::NotificationLevel::Warning,
+                    Some(10.0),
+                    None,
+                ));
             }
         }
 

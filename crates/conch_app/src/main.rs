@@ -173,7 +173,10 @@ fn main() -> eframe::Result<()> {
 
     // Load config early so we can size the window before creating the app.
     config::migrate_if_needed();
-    let user_config = config::load_user_config().unwrap_or_default();
+    let user_config = config::load_user_config().unwrap_or_else(|e| {
+        log::error!("Failed to load config.toml, using defaults: {e:#}");
+        config::UserConfig::default()
+    });
     let persistent = config::load_persistent_state().unwrap_or_default();
 
     // Use persisted window size if available, otherwise fall back to config-based sizing.
