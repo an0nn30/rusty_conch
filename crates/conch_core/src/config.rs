@@ -75,7 +75,7 @@ impl<'de> serde::Deserialize<'de> for WindowDecorations {
 }
 
 /// Window configuration (mirrors Alacritty `[window]`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindowConfig {
     #[serde(default)]
     pub dimensions: WindowDimensions,
@@ -86,7 +86,7 @@ pub struct WindowConfig {
 /// Startup window dimensions in character cells (Alacritty `[window.dimensions]`).
 ///
 /// A value of `0` for either field means "use the default".
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindowDimensions {
     #[serde(default = "default_columns")]
     pub columns: u16,
@@ -120,7 +120,7 @@ impl Default for WindowConfig {
 // ---------------------------------------------------------------------------
 
 /// Terminal configuration (mirrors Alacritty `[terminal]`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TerminalConfig {
     #[serde(default)]
     pub shell: TerminalShell,
@@ -134,7 +134,7 @@ pub struct TerminalConfig {
 }
 
 /// Cursor configuration (Alacritty `[terminal.cursor]`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CursorConfig {
     #[serde(default)]
     pub style: CursorStyleConfig,
@@ -153,7 +153,7 @@ impl Default for CursorConfig {
 }
 
 /// Cursor style (shape + blinking).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CursorStyleConfig {
     /// Cursor shape: "Block", "Underline", or "Beam".
     #[serde(default = "default_cursor_shape")]
@@ -210,7 +210,7 @@ impl Default for CursorStyleConfig {
 /// Shell program and arguments (Alacritty `[terminal.shell]`).
 ///
 /// An empty `program` means "use the default login shell ($SHELL)".
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TerminalShell {
     #[serde(default)]
     pub program: String,
@@ -266,7 +266,7 @@ impl Default for ConchConfig {
 }
 
 /// UI appearance settings (non-terminal).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiConfig {
     #[serde(default)]
     pub font_family: String,
@@ -293,7 +293,7 @@ impl Default for UiConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FontConfig {
     #[serde(default)]
     pub normal: FontFamily,
@@ -306,7 +306,7 @@ pub struct FontConfig {
 }
 
 /// Extra pixel offset applied to each character cell.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FontOffset {
     #[serde(default)]
     pub x: f32,
@@ -320,7 +320,7 @@ impl Default for FontOffset {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FontFamily {
     #[serde(default = "default_font_name")]
     pub family: String,
@@ -335,7 +335,7 @@ pub struct ColorsConfig {
     pub appearance_mode: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyboardConfig {
     #[serde(default = "default_new_tab")]
     pub new_tab: String,
@@ -547,7 +547,7 @@ pub fn config_dir() -> PathBuf {
         .join("conch")
 }
 
-fn config_path() -> PathBuf { config_dir().join("config.toml") }
+pub fn config_path() -> PathBuf { config_dir().join("config.toml") }
 fn state_path() -> PathBuf { config_dir().join("state.toml") }
 fn sessions_path() -> PathBuf { config_dir().join("sessions.toml") }
 

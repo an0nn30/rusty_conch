@@ -234,6 +234,9 @@ pub struct ConchApp {
 
     // IPC socket listener
     pub(crate) ipc_listener: Option<crate::ipc::IpcListener>,
+
+    // Live-reload file watcher
+    pub(crate) file_watcher: Option<crate::watcher::FileWatcher>,
 }
 
 impl ConchApp {
@@ -383,6 +386,7 @@ impl ConchApp {
             pending_plugin_icons: Vec::new(),
             notifications: crate::notifications::NotificationManager::new(),
             ipc_listener: crate::ipc::IpcListener::start(),
+            file_watcher: crate::watcher::FileWatcher::start(),
         };
 
         // Activate panel plugins that were loaded in the previous session.
@@ -669,6 +673,304 @@ impl ConchApp {
         // Flush any pending plugin icon textures.
         if !self.pending_plugin_icons.is_empty() {
             self.flush_pending_icons(ctx);
+        }
+
+        // Poll file watcher for live-reload.
+        self.poll_file_watcher();
+    }
+
+    /// Handle live-reload events from the file watcher.
+    fn poll_file_watcher(&mut self) {
+        let Some(ref mut watcher) = self.file_watcher else {
+            return;
+        };
+        let changes = watcher.poll();
+        if changes.is_empty() {
+            return;
+        }
+
+        use crate::watcher::FileChangeKind;
+
+        for change in changes {
+            match change.kind {
+                FileChangeKind::Config => self.live_reload_config(),
+                FileChangeKind::Themes => self.live_reload_theme(change.path.as_deref()),
+                FileChangeKind::Plugins => self.live_reload_plugins(),
+                FileChangeKind::SshConfig => self.live_reload_ssh_config(),
+            }
+        }
+    }
+
+    /// Reload config.toml and apply changes (font, theme, shortcuts, etc.).
+    fn live_reload_config(&mut self) {
+        let new_config = match config::load_user_config() {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Live-reload: failed to parse config.toml: {e:#}");
+                self.notifications.push(crate::notifications::Notification::simple(
+                    format!("Failed to reload config.toml: {e:#}"),
+                    Some("Config Reload Error".into()),
+                    conch_plugin::NotificationLevel::Error,
+                    Some(8.0),
+                    None,
+                ));
+                return;
+            }
+        };
+
+        let mut what_changed = Vec::new();
+
+        // Font change.
+        if new_config.font != self.state.user_config.font {
+            what_changed.push("font");
+            self.cell_size_measured = false;
+            self.style_applied = false;
+        }
+
+        // Theme change.
+        if new_config.colors.theme != self.state.user_config.colors.theme {
+            what_changed.push("theme");
+            let scheme = conch_core::color_scheme::resolve_theme(&new_config.colors.theme);
+            self.state.colors = crate::terminal::color::ResolvedColors::from_scheme(&scheme);
+        }
+
+        // Appearance mode change.
+        if new_config.colors.appearance_mode != self.state.user_config.colors.appearance_mode {
+            what_changed.push("appearance");
+            self.style_applied = false;
+        }
+
+        // Keyboard shortcuts change.
+        if new_config.conch.keyboard != self.state.user_config.conch.keyboard {
+            what_changed.push("keyboard shortcuts");
+            self.shortcuts = ResolvedShortcuts::from_config(&new_config.conch.keyboard);
+            self.resolve_plugin_keybinds();
+        }
+
+        // Detect settings that require a restart to take effect.
+        let mut restart_needed = Vec::new();
+
+        if new_config.terminal.shell != self.state.user_config.terminal.shell {
+            restart_needed.push("shell program");
+        }
+        if new_config.terminal.env != self.state.user_config.terminal.env {
+            restart_needed.push("terminal environment");
+        }
+        if new_config.terminal.cursor != self.state.user_config.terminal.cursor {
+            restart_needed.push("cursor style");
+        }
+        if new_config.window != self.state.user_config.window {
+            restart_needed.push("window settings");
+        }
+        if new_config.conch.ui != self.state.user_config.conch.ui {
+            restart_needed.push("UI settings");
+        }
+
+        self.state.user_config = new_config;
+
+        if !what_changed.is_empty() {
+            let summary = what_changed.join(", ");
+            log::info!("Live-reload: config updated ({summary})");
+            self.notifications.push(crate::notifications::Notification::simple(
+                format!("Configuration reloaded: {summary}"),
+                Some("Config Reloaded".into()),
+                conch_plugin::NotificationLevel::Info,
+                None,
+                None,
+            ));
+        }
+
+        if !restart_needed.is_empty() {
+            let summary = restart_needed.join(", ");
+            log::info!("Live-reload: restart required for {summary}");
+            self.notifications.push(crate::notifications::Notification::simple(
+                format!("Restart required to apply: {summary}"),
+                Some("Restart Required".into()),
+                conch_plugin::NotificationLevel::Warning,
+                Some(10.0),
+                None,
+            ));
+        }
+    }
+
+    /// Reload the active theme (theme file changed on disk).
+    fn live_reload_theme(&mut self, changed_path: Option<&std::path::Path>) {
+        // Only reload if the changed file is the active theme (or path unknown).
+        if let Some(path) = changed_path {
+            let active_theme = &self.state.user_config.colors.theme;
+            let changed_stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if !changed_stem.eq_ignore_ascii_case(active_theme) {
+                log::debug!(
+                    "Live-reload: ignoring theme file change for '{}' (active: '{}')",
+                    changed_stem,
+                    active_theme,
+                );
+                return;
+            }
+        }
+
+        let scheme = conch_core::color_scheme::resolve_theme(
+            &self.state.user_config.colors.theme,
+        );
+        self.state.colors = crate::terminal::color::ResolvedColors::from_scheme(&scheme);
+        log::info!("Live-reload: theme '{}' reloaded", self.state.user_config.colors.theme);
+        self.notifications.push(crate::notifications::Notification::simple(
+            format!("Theme '{}' reloaded", self.state.user_config.colors.theme),
+            Some("Theme Reloaded".into()),
+            conch_plugin::NotificationLevel::Info,
+            None,
+            None,
+        ));
+    }
+
+    /// Rescan plugin directories and detect additions/removals.
+    fn live_reload_plugins(&mut self) {
+        use std::collections::HashSet;
+
+        let old_names: HashSet<String> = self
+            .discovered_plugins
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+
+        let new_plugins = scan_plugin_dirs();
+        let new_names: HashSet<String> = new_plugins.iter().map(|p| p.name.clone()).collect();
+
+        let added: Vec<&str> = new_names
+            .iter()
+            .filter(|n| !old_names.contains(n.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+        let removed: Vec<&str> = old_names
+            .iter()
+            .filter(|n| !new_names.contains(n.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+
+        if added.is_empty() && removed.is_empty() {
+            return;
+        }
+
+        // Check if any removed plugin is currently loaded and running.
+        let loaded = &self.state.persistent.loaded_plugins;
+        let removed_active: Vec<&str> = removed
+            .iter()
+            .filter(|name| {
+                // Find the old plugin meta to get its filename.
+                self.discovered_plugins.iter().any(|p| {
+                    &p.name == *name
+                        && loaded.contains(
+                            &p.path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned(),
+                        )
+                })
+            })
+            .copied()
+            .collect();
+
+        self.discovered_plugins = new_plugins;
+        self.pending_plugin_loads.clear();
+
+        let mut msgs = Vec::new();
+        if !added.is_empty() {
+            msgs.push(format!("Added: {}", added.join(", ")));
+        }
+        if !removed.is_empty() {
+            msgs.push(format!("Removed: {}", removed.join(", ")));
+        }
+        let summary = msgs.join(". ");
+
+        log::info!("Live-reload: plugins changed — {summary}");
+        self.notifications.push(crate::notifications::Notification::simple(
+            summary,
+            Some("Plugins Updated".into()),
+            conch_plugin::NotificationLevel::Info,
+            Some(8.0),
+            None,
+        ));
+
+        if !removed_active.is_empty() {
+            let names = removed_active.join(", ");
+            self.notifications.push(crate::notifications::Notification::simple(
+                format!("{names} — plugin will remain active until restart"),
+                Some("Active Plugin Removed".into()),
+                conch_plugin::NotificationLevel::Warning,
+                Some(10.0),
+                None,
+            ));
+        }
+    }
+
+    /// Reload SSH config (~/.ssh/config) and update the session panel.
+    fn live_reload_ssh_config(&mut self) {
+        use std::collections::HashSet;
+
+        let old_hosts = self.state.ssh_config_hosts.clone();
+        let old_names: HashSet<String> = old_hosts.iter().map(|h| h.name.clone()).collect();
+
+        match ssh_config::parse_ssh_config() {
+            Ok(hosts) => {
+                let new_names: HashSet<String> = hosts.iter().map(|h| h.name.clone()).collect();
+                let added: Vec<&str> = new_names
+                    .iter()
+                    .filter(|n| !old_names.contains(n.as_str()))
+                    .map(|s| s.as_str())
+                    .collect();
+                let removed: Vec<&str> = old_names
+                    .iter()
+                    .filter(|n| !new_names.contains(n.as_str()))
+                    .map(|s| s.as_str())
+                    .collect();
+
+                // Detect property changes (host, port, user, etc.) when names stay the same.
+                let properties_changed = hosts != old_hosts && added.is_empty() && removed.is_empty();
+
+                self.state.ssh_config_hosts = hosts;
+
+                if !added.is_empty() || !removed.is_empty() {
+                    let mut parts = Vec::new();
+                    if !added.is_empty() {
+                        parts.push(format!("Added: {}", added.join(", ")));
+                    }
+                    if !removed.is_empty() {
+                        parts.push(format!("Removed: {}", removed.join(", ")));
+                    }
+                    let summary = parts.join(". ");
+                    log::info!("Live-reload: SSH config updated — {summary}");
+                    self.notifications.push(crate::notifications::Notification::simple(
+                        summary,
+                        Some("SSH Config Reloaded".into()),
+                        conch_plugin::NotificationLevel::Info,
+                        None,
+                        None,
+                    ));
+                } else if properties_changed {
+                    log::info!("Live-reload: SSH host properties updated");
+                    self.notifications.push(crate::notifications::Notification::simple(
+                        "SSH host properties updated".into(),
+                        Some("SSH Config Reloaded".into()),
+                        conch_plugin::NotificationLevel::Info,
+                        None,
+                        None,
+                    ));
+                }
+            }
+            Err(e) => {
+                log::warn!("Live-reload: failed to parse SSH config: {e}");
+                self.notifications.push(crate::notifications::Notification::simple(
+                    format!("Failed to reload SSH config: {e}"),
+                    Some("SSH Config Error".into()),
+                    conch_plugin::NotificationLevel::Warning,
+                    Some(8.0),
+                    None,
+                ));
+            }
         }
     }
 }
