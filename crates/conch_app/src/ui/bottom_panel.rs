@@ -5,6 +5,11 @@ use std::collections::HashMap;
 use egui::{Context, RichText};
 use egui_extras::{Column, TableBuilder};
 
+/// Minimum height of the bottom panel in logical pixels.
+const BOTTOM_PANEL_MIN_HEIGHT: f32 = 80.0;
+/// Maximum height of the bottom panel in logical pixels.
+const BOTTOM_PANEL_MAX_HEIGHT: f32 = 500.0;
+
 /// Actions that can be triggered by the bottom panel.
 pub enum BottomPanelAction {
     None,
@@ -31,7 +36,7 @@ pub fn show_bottom_panel(
     egui::TopBottomPanel::bottom("bottom_panel")
         .resizable(true)
         .default_height(*height)
-        .height_range(80.0..=500.0)
+        .height_range(BOTTOM_PANEL_MIN_HEIGHT..=BOTTOM_PANEL_MAX_HEIGHT)
         .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::ZERO))
         .show(ctx, |ui| {
             // Track the actual height after user resize.
