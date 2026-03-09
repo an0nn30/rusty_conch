@@ -82,6 +82,8 @@ pub fn show_notification_history(
                 .show(ui, |ui| {
                     let col_widths = column_widths(avail.x);
 
+                    let left = egui::Layout::left_to_right(egui::Align::Center);
+
                     egui::Grid::new("notification_history_table")
                         .num_columns(4)
                         .spacing([0.0, 0.0])
@@ -93,9 +95,12 @@ pub fn show_notification_history(
                                 .iter()
                                 .zip(col_widths.iter())
                             {
-                                ui.add_sized(
-                                    [*w, 22.0],
-                                    egui::Label::new(RichText::new(*header).strong()),
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(*w, 22.0),
+                                    left,
+                                    |ui| {
+                                        ui.label(RichText::new(*header).strong());
+                                    },
                                 );
                             }
                             ui.end_row();
@@ -114,24 +119,30 @@ pub fn show_notification_history(
                                     conch_plugin::NotificationLevel::Warning => "▲",
                                     conch_plugin::NotificationLevel::Error => "✕",
                                 };
-                                let resp = ui.add_sized(
-                                    [col_widths[0], 22.0],
-                                    egui::SelectableLabel::new(
-                                        selected,
-                                        RichText::new(level_label).color(accent).size(11.0),
-                                    ),
+                                let resp = ui.allocate_ui_with_layout(
+                                    egui::vec2(col_widths[0], 22.0),
+                                    left,
+                                    |ui| {
+                                        ui.add(egui::SelectableLabel::new(
+                                            selected,
+                                            RichText::new(level_label).color(accent).size(11.0),
+                                        ))
+                                    },
                                 );
-                                clicked |= resp.clicked();
+                                clicked |= resp.inner.clicked();
 
                                 // Source column.
-                                let resp = ui.add_sized(
-                                    [col_widths[1], 22.0],
-                                    egui::SelectableLabel::new(
-                                        selected,
-                                        RichText::new(&entry.source).size(11.0),
-                                    ),
+                                let resp = ui.allocate_ui_with_layout(
+                                    egui::vec2(col_widths[1], 22.0),
+                                    left,
+                                    |ui| {
+                                        ui.add(egui::SelectableLabel::new(
+                                            selected,
+                                            RichText::new(&entry.source).size(11.0),
+                                        ))
+                                    },
                                 );
-                                clicked |= resp.clicked();
+                                clicked |= resp.inner.clicked();
 
                                 // Content column — truncate long messages.
                                 let body = if entry.body.len() > 80 {
@@ -139,25 +150,31 @@ pub fn show_notification_history(
                                 } else {
                                     entry.body.clone()
                                 };
-                                let resp = ui.add_sized(
-                                    [col_widths[2], 22.0],
-                                    egui::SelectableLabel::new(
-                                        selected,
-                                        RichText::new(body).size(11.0),
-                                    ),
+                                let resp = ui.allocate_ui_with_layout(
+                                    egui::vec2(col_widths[2], 22.0),
+                                    left,
+                                    |ui| {
+                                        ui.add(egui::SelectableLabel::new(
+                                            selected,
+                                            RichText::new(body).size(11.0),
+                                        ))
+                                    },
                                 );
-                                clicked |= resp.clicked();
+                                clicked |= resp.inner.clicked();
 
                                 // Time column.
                                 let time_str = format_time(entry.timestamp);
-                                let resp = ui.add_sized(
-                                    [col_widths[3], 22.0],
-                                    egui::SelectableLabel::new(
-                                        selected,
-                                        RichText::new(time_str).size(11.0).weak(),
-                                    ),
+                                let resp = ui.allocate_ui_with_layout(
+                                    egui::vec2(col_widths[3], 22.0),
+                                    left,
+                                    |ui| {
+                                        ui.add(egui::SelectableLabel::new(
+                                            selected,
+                                            RichText::new(time_str).size(11.0).weak(),
+                                        ))
+                                    },
                                 );
-                                clicked |= resp.clicked();
+                                clicked |= resp.inner.clicked();
 
                                 if clicked {
                                     state.selected = Some(i);
