@@ -18,6 +18,8 @@ pub(crate) enum FileChangeKind {
 /// Debounced file change event.
 pub(crate) struct FileChange {
     pub kind: FileChangeKind,
+    /// The path that triggered the change (if available).
+    pub path: Option<PathBuf>,
 }
 
 /// Manages file watchers and debounces change events.
@@ -152,7 +154,8 @@ impl FileWatcher {
     /// Drain pending events and return debounced change kinds.
     pub(crate) fn poll(&mut self) -> Vec<FileChange> {
         let now = Instant::now();
-        let mut triggered = std::collections::HashSet::new();
+        let mut triggered: std::collections::HashMap<FileChangeKind, Option<PathBuf>> =
+            std::collections::HashMap::new();
 
         while let Ok(event_result) = self.rx.try_recv() {
             let Ok(event) = event_result else { continue };
@@ -165,7 +168,7 @@ impl FileWatcher {
                         .map(|last| now.duration_since(*last) >= DEBOUNCE)
                         .unwrap_or(true);
                     if should_emit {
-                        triggered.insert(kind.clone());
+                        triggered.insert(kind.clone(), Some(path.clone()));
                         self.last_event.insert(kind, now);
                     }
                 }
@@ -174,7 +177,7 @@ impl FileWatcher {
 
         triggered
             .into_iter()
-            .map(|kind| FileChange { kind })
+            .map(|(kind, path)| FileChange { kind, path })
             .collect()
     }
 }

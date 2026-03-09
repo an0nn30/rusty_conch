@@ -694,7 +694,7 @@ impl ConchApp {
         for change in changes {
             match change.kind {
                 FileChangeKind::Config => self.live_reload_config(),
-                FileChangeKind::Themes => self.live_reload_theme(),
+                FileChangeKind::Themes => self.live_reload_theme(change.path.as_deref()),
                 FileChangeKind::Plugins => self.live_reload_plugins(),
                 FileChangeKind::SshConfig => self.live_reload_ssh_config(),
             }
@@ -798,7 +798,24 @@ impl ConchApp {
     }
 
     /// Reload the active theme (theme file changed on disk).
-    fn live_reload_theme(&mut self) {
+    fn live_reload_theme(&mut self, changed_path: Option<&std::path::Path>) {
+        // Only reload if the changed file is the active theme (or path unknown).
+        if let Some(path) = changed_path {
+            let active_theme = &self.state.user_config.colors.theme;
+            let changed_stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if !changed_stem.eq_ignore_ascii_case(active_theme) {
+                log::debug!(
+                    "Live-reload: ignoring theme file change for '{}' (active: '{}')",
+                    changed_stem,
+                    active_theme,
+                );
+                return;
+            }
+        }
+
         let scheme = conch_core::color_scheme::resolve_theme(
             &self.state.user_config.colors.theme,
         );
