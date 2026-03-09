@@ -751,6 +751,25 @@ impl ConchApp {
             self.resolve_plugin_keybinds();
         }
 
+        // Detect settings that require a restart to take effect.
+        let mut restart_needed = Vec::new();
+
+        if new_config.terminal.shell != self.state.user_config.terminal.shell {
+            restart_needed.push("shell program");
+        }
+        if new_config.terminal.env != self.state.user_config.terminal.env {
+            restart_needed.push("terminal environment");
+        }
+        if new_config.terminal.cursor != self.state.user_config.terminal.cursor {
+            restart_needed.push("cursor style");
+        }
+        if new_config.window != self.state.user_config.window {
+            restart_needed.push("window settings");
+        }
+        if new_config.conch.ui != self.state.user_config.conch.ui {
+            restart_needed.push("UI settings");
+        }
+
         self.state.user_config = new_config;
 
         if !what_changed.is_empty() {
@@ -761,6 +780,18 @@ impl ConchApp {
                 Some("Config Reloaded".into()),
                 conch_plugin::NotificationLevel::Info,
                 None,
+                None,
+            ));
+        }
+
+        if !restart_needed.is_empty() {
+            let summary = restart_needed.join(", ");
+            log::info!("Live-reload: restart required for {summary}");
+            self.notifications.push(crate::notifications::Notification::simple(
+                format!("Restart required to apply: {summary}"),
+                Some("Restart Required".into()),
+                conch_plugin::NotificationLevel::Warning,
+                Some(10.0),
                 None,
             ));
         }
