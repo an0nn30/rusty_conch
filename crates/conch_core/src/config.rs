@@ -568,6 +568,34 @@ pub fn load_user_config() -> Result<UserConfig> {
     Ok(config)
 }
 
+/// Known top-level keys and their known sub-keys in config.toml.
+const KNOWN_TOP_LEVEL_KEYS: &[&str] = &["window", "font", "colors", "terminal", "conch"];
+
+/// Validate the raw config.toml and return warnings for unknown sections/keys.
+/// This does NOT prevent the config from loading — it just reports issues.
+pub fn validate_user_config_raw() -> Vec<String> {
+    let mut warnings = Vec::new();
+    let path = config_path();
+    if !path.exists() {
+        return warnings;
+    }
+    let Ok(contents) = fs::read_to_string(&path) else {
+        return warnings;
+    };
+    let Ok(table) = contents.parse::<toml::Table>() else {
+        return warnings;
+    };
+    for key in table.keys() {
+        if !KNOWN_TOP_LEVEL_KEYS.contains(&key.as_str()) {
+            warnings.push(format!(
+                "Unknown config section [{}] in config.toml — this section will be ignored",
+                key,
+            ));
+        }
+    }
+    warnings
+}
+
 pub fn save_user_config(config: &UserConfig) -> Result<()> {
     let dir = config_dir();
     if !dir.exists() { fs::create_dir_all(&dir)?; }
