@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::connector::EventProxy;
 use crate::sftp::SftpFileProvider;
-use super::client::{ConnectParams, ClientHandler, ShellConnectResult, SshConnection, connect_shell};
+use super::client::{ConnectParams, ClientHandler, FingerprintRequest, ShellConnectResult, SshConnection, connect_shell};
 
 /// SSH terminal session — bridges an async SSH channel to alacritty_terminal's Term.
 pub struct SshSession {
@@ -68,11 +68,15 @@ pub enum SshConnectResult {
 
 impl SshSession {
     /// Connect to an SSH server and set up the terminal bridge.
+    ///
+    /// `fp_tx` is used to send host-key fingerprint approval requests to the UI
+    /// when the server's key is not in `~/.ssh/known_hosts`.
     pub async fn connect(
         params: &ConnectParams,
         cols: u16,
         rows: u16,
         term_config: term::Config,
+        fp_tx: tokio::sync::oneshot::Sender<FingerprintRequest>,
     ) -> Result<SshConnectResult> {
         let (event_proxy, event_rx) = EventProxy::new();
 
@@ -85,7 +89,7 @@ impl SshSession {
         let term = Arc::new(FairMutex::new(term));
 
         // Connect SSH
-        let result = connect_shell(params, cols as u32, rows as u32)
+        let result = connect_shell(params, cols as u32, rows as u32, fp_tx)
             .await
             .context("Failed to establish SSH shell session")?;
 

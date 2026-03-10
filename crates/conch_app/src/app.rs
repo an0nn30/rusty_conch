@@ -59,6 +59,8 @@ pub(crate) enum SshConnectOutcome {
     Connected(SshSession),
     NeedsPassword(conch_session::SshConnectResult),
     WrongPassword(conch_session::SshConnectResult),
+    /// The server's host key is not in known_hosts — UI must prompt the user.
+    NeedsFingerprint(conch_session::FingerprintRequest),
     Failed(String),
 }
 
@@ -86,6 +88,14 @@ pub(crate) struct PendingSshInfo {
     pub(crate) password_focus: bool,
     /// Pending auth state held while waiting for password input.
     pub(crate) pending_auth: Option<conch_session::SshConnectResult>,
+    /// True when waiting for user to approve an unknown host key fingerprint.
+    pub(crate) needs_fingerprint: bool,
+    /// The fingerprint string to display, e.g. "SHA256:abc123...".
+    pub(crate) fingerprint_display: String,
+    /// The host name associated with the fingerprint prompt.
+    pub(crate) fingerprint_host: String,
+    /// Channel to send the user's trust decision back to the SSH handler.
+    pub(crate) trust_tx: Option<tokio::sync::oneshot::Sender<bool>>,
 }
 
 /// A resolved plugin keybinding ready for matching.
@@ -480,11 +490,27 @@ impl ConchApp {
         let mut completed: Vec<(usize, Uuid, SshConnectOutcome)> = Vec::new();
         for (i, pending) in self.pending_ssh_connections.iter().enumerate() {
             match pending.rx.try_recv() {
+                Ok(SshConnectOutcome::NeedsFingerprint(fp_req)) => {
+                    // Fingerprint approval needed — update the info but keep watching
+                    // the channel for the final result (after user approves/rejects).
+                    if let Some(info) = self.pending_ssh_info.get_mut(&pending.id) {
+                        info.needs_fingerprint = true;
+                        info.fingerprint_display = fp_req.fingerprint;
+                        info.fingerprint_host = fp_req.host;
+                        info.trust_tx = Some(fp_req.trust_tx);
+                    }
+                }
                 Ok(outcome) => completed.push((i, pending.id, outcome)),
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    log::error!("SSH connection channel dropped");
-                    completed.push((i, pending.id, SshConnectOutcome::Failed("Connection channel dropped".into())));
+                    // Only treat as error if we still have info for this connection
+                    // (user rejection already cleaned up the info entry).
+                    if self.pending_ssh_info.contains_key(&pending.id) {
+                        log::error!("SSH connection channel dropped");
+                        completed.push((i, pending.id, SshConnectOutcome::Failed("Connection channel dropped".into())));
+                    } else {
+                        completed.push((i, pending.id, SshConnectOutcome::Failed(String::new())));
+                    }
                 }
             }
         }
@@ -542,9 +568,16 @@ impl ConchApp {
                         info.pending_auth = Some(pending_result);
                     }
                 }
+                SshConnectOutcome::NeedsFingerprint(_) => {
+                    // Handled above in the polling loop — should not appear here.
+                    unreachable!("NeedsFingerprint should be handled before completed vec");
+                }
                 SshConnectOutcome::Failed(err) => {
-                    log::error!("SSH connection failed: {err}");
+                    if !err.is_empty() {
+                        log::error!("SSH connection failed: {err}");
+                    }
                     // Connection failed — keep the tab but show the error.
+                    // If info was already removed (e.g. user rejected fingerprint), skip.
                     if let Some(info) = self.pending_ssh_info.get_mut(&id) {
                         info.error = Some(err);
                     }
@@ -2100,7 +2133,7 @@ impl eframe::App for ConchApp {
                         );
                     } else if let Some(info) = self.pending_ssh_info.get_mut(&id) {
                         // Connecting, password prompt, or error screen.
-                        let is_connecting = info.error.is_none() && !info.needs_password;
+                        let is_connecting = info.error.is_none() && !info.needs_password && !info.needs_fingerprint;
                         match show_connecting_screen(ui, info) {
                             ssh::ConnectingScreenAction::Close => {
                                 self.pending_ssh_info.remove(&id);
@@ -2139,6 +2172,29 @@ impl eframe::App for ConchApp {
                                                 conch_session::SshConnectResult::Connected(_) => unreachable!(),
                                             }
                                         });
+                                    }
+                                }
+                            }
+                            ssh::ConnectingScreenAction::TrustFingerprint(trusted) => {
+                                if let Some(info) = self.pending_ssh_info.get_mut(&id) {
+                                    // Send the user's decision to the SSH handler.
+                                    if let Some(trust_tx) = info.trust_tx.take() {
+                                        let _ = trust_tx.send(trusted);
+                                    }
+                                    info.needs_fingerprint = false;
+
+                                    if trusted {
+                                        // Return to the "Connecting..." progress screen
+                                        // while auth proceeds.
+                                        info.started = Instant::now();
+                                    } else {
+                                        // User rejected — close the tab immediately.
+                                        self.pending_ssh_info.remove(&id);
+                                        self.pending_ssh_connections.retain(|p| p.id != id);
+                                        self.state.tab_order.retain(|&tab_id| tab_id != id);
+                                        if self.state.active_tab == Some(id) {
+                                            self.state.active_tab = self.state.tab_order.last().copied();
+                                        }
                                     }
                                 }
                             }
