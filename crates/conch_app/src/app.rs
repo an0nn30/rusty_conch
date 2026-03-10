@@ -868,6 +868,9 @@ impl ConchApp {
 
     /// Rescan plugin directories and detect additions/removals.
     fn live_reload_plugins(&mut self) {
+        if !self.state.user_config.conch.plugins_enabled {
+            return;
+        }
         use std::collections::HashSet;
 
         let old_names: HashSet<String> = self
