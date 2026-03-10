@@ -122,6 +122,69 @@ impl ConchApp {
             SidebarAction::SelectFile(path) => {
                 log::info!("File selected: {}", path.display());
             }
+            SidebarAction::NavigateLocal2(path) => {
+                let old = self.state.file_browser.local2_path.clone();
+                self.state.file_browser.local2_back_stack.push(old);
+                self.state.file_browser.local2_forward_stack.clear();
+                self.state.file_browser.local2_entries = load_local_entries(&path);
+                self.state.file_browser.local2_path_edit = path.to_string_lossy().into_owned();
+                self.state.file_browser.local2_path = path;
+                self.state.file_browser.local2_selected = None;
+            }
+            SidebarAction::GoBackLocal2 => {
+                if let Some(prev) = self.state.file_browser.local2_back_stack.pop() {
+                    let current = self.state.file_browser.local2_path.clone();
+                    self.state.file_browser.local2_forward_stack.push(current);
+                    self.state.file_browser.local2_entries = load_local_entries(&prev);
+                    self.state.file_browser.local2_path_edit = prev.to_string_lossy().into_owned();
+                    self.state.file_browser.local2_path = prev;
+                    self.state.file_browser.local2_selected = None;
+                }
+            }
+            SidebarAction::GoForwardLocal2 => {
+                if let Some(next) = self.state.file_browser.local2_forward_stack.pop() {
+                    let current = self.state.file_browser.local2_path.clone();
+                    self.state.file_browser.local2_back_stack.push(current);
+                    self.state.file_browser.local2_entries = load_local_entries(&next);
+                    self.state.file_browser.local2_path_edit = next.to_string_lossy().into_owned();
+                    self.state.file_browser.local2_path = next;
+                    self.state.file_browser.local2_selected = None;
+                }
+            }
+            SidebarAction::RefreshLocal2 => {
+                let path = self.state.file_browser.local2_path.clone();
+                self.state.file_browser.local2_entries = load_local_entries(&path);
+                self.state.file_browser.local2_selected = None;
+            }
+            SidebarAction::GoHomeLocal2 => {
+                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+                let old = self.state.file_browser.local2_path.clone();
+                self.state.file_browser.local2_back_stack.push(old);
+                self.state.file_browser.local2_forward_stack.clear();
+                self.state.file_browser.local2_entries = load_local_entries(&home);
+                self.state.file_browser.local2_path_edit = home.to_string_lossy().into_owned();
+                self.state.file_browser.local2_path = home;
+                self.state.file_browser.local2_selected = None;
+            }
+            SidebarAction::CopyLocal { source, dest_dir } => {
+                let Some(filename) = source.file_name() else {
+                    log::error!("Cannot copy: path has no filename component");
+                    return;
+                };
+                let dest = dest_dir.join(filename);
+                if source.is_dir() {
+                    if let Err(e) = crate::ui::file_browser::copy_dir_recursive(&source, &dest) {
+                        log::error!("Failed to copy directory: {e}");
+                    }
+                } else if let Err(e) = std::fs::copy(&source, &dest) {
+                    log::error!("Failed to copy file: {e}");
+                }
+                // Refresh both local panes.
+                self.state.file_browser.local_entries =
+                    load_local_entries(&self.state.file_browser.local_path);
+                self.state.file_browser.local2_entries =
+                    load_local_entries(&self.state.file_browser.local2_path);
+            }
             SidebarAction::NavigateRemote(path) => {
                 if let Some(old) = self.state.file_browser.remote_path.clone() {
                     self.state.file_browser.remote_back_stack.push(old);

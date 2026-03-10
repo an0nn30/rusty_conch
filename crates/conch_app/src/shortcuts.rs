@@ -310,6 +310,11 @@ impl ConchApp {
                     self.state.file_browser.remote_selected = Some(0);
                 }
             }
+            FileBrowserPane::Local2 => {
+                if self.state.file_browser.local2_selected.is_none() && !self.state.file_browser.local2_entries.is_empty() {
+                    self.state.file_browser.local2_selected = Some(0);
+                }
+            }
         }
     }
 
@@ -324,6 +329,7 @@ impl ConchApp {
                 let (entries_len, selected) = match pane {
                     FileBrowserPane::Local => (fb.local_entries.len(), &mut fb.local_selected),
                     FileBrowserPane::Remote => (fb.remote_entries.len(), &mut fb.remote_selected),
+                    FileBrowserPane::Local2 => (fb.local2_entries.len(), &mut fb.local2_selected),
                 };
                 if *key == egui::Key::ArrowUp {
                     if let Some(sel) = *selected {
@@ -339,17 +345,27 @@ impl ConchApp {
                 return;
             }
             egui::Key::Tab => {
-                if fb.remote_path.is_some() {
-                    fb.active_pane = match pane {
+                fb.active_pane = if fb.remote_path.is_some() {
+                    // Remote connected: cycle Remote <-> Local
+                    match pane {
                         FileBrowserPane::Local => FileBrowserPane::Remote,
                         FileBrowserPane::Remote => FileBrowserPane::Local,
-                    };
-                    let (len, sel) = match fb.active_pane {
-                        FileBrowserPane::Local => (fb.local_entries.len(), &mut fb.local_selected),
-                        FileBrowserPane::Remote => (fb.remote_entries.len(), &mut fb.remote_selected),
-                    };
-                    if sel.is_none() && len > 0 { *sel = Some(0); }
-                }
+                        FileBrowserPane::Local2 => FileBrowserPane::Local,
+                    }
+                } else {
+                    // No remote: cycle Local <-> Local2
+                    match pane {
+                        FileBrowserPane::Local => FileBrowserPane::Local2,
+                        FileBrowserPane::Local2 => FileBrowserPane::Local,
+                        FileBrowserPane::Remote => FileBrowserPane::Local,
+                    }
+                };
+                let (len, sel) = match fb.active_pane {
+                    FileBrowserPane::Local => (fb.local_entries.len(), &mut fb.local_selected),
+                    FileBrowserPane::Remote => (fb.remote_entries.len(), &mut fb.remote_selected),
+                    FileBrowserPane::Local2 => (fb.local2_entries.len(), &mut fb.local2_selected),
+                };
+                if sel.is_none() && len > 0 { *sel = Some(0); }
                 return;
             }
             _ => {}
@@ -362,12 +378,14 @@ impl ConchApp {
                 let entry = match pane {
                     FileBrowserPane::Local => fb.local_selected.and_then(|i| fb.local_entries.get(i)),
                     FileBrowserPane::Remote => fb.remote_selected.and_then(|i| fb.remote_entries.get(i)),
+                    FileBrowserPane::Local2 => fb.local2_selected.and_then(|i| fb.local2_entries.get(i)),
                 };
                 if let Some(entry) = entry.filter(|e| e.is_dir) {
                     let path = entry.path.clone();
                     match pane {
                         FileBrowserPane::Local => SidebarAction::NavigateLocal(path),
                         FileBrowserPane::Remote => SidebarAction::NavigateRemote(path),
+                        FileBrowserPane::Local2 => SidebarAction::NavigateLocal2(path),
                     }
                 } else {
                     return;
@@ -377,11 +395,13 @@ impl ConchApp {
                 let parent = match pane {
                     FileBrowserPane::Local => fb.local_path.parent().map(|p| p.to_path_buf()),
                     FileBrowserPane::Remote => fb.remote_path.as_ref().and_then(|p| p.parent().map(|p| p.to_path_buf())),
+                    FileBrowserPane::Local2 => fb.local2_path.parent().map(|p| p.to_path_buf()),
                 };
                 if let Some(parent) = parent {
                     match pane {
                         FileBrowserPane::Local => SidebarAction::NavigateLocal(parent),
                         FileBrowserPane::Remote => SidebarAction::NavigateRemote(parent),
+                        FileBrowserPane::Local2 => SidebarAction::NavigateLocal2(parent),
                     }
                 } else {
                     return;
@@ -404,19 +424,22 @@ impl ConchApp {
             egui::Key::R => match pane {
                 FileBrowserPane::Local => SidebarAction::RefreshLocal,
                 FileBrowserPane::Remote => SidebarAction::RefreshRemote,
+                FileBrowserPane::Local2 => SidebarAction::RefreshLocal2,
             },
             egui::Key::H => match pane {
                 FileBrowserPane::Local => SidebarAction::GoHomeLocal,
                 FileBrowserPane::Remote => SidebarAction::GoHomeRemote,
+                FileBrowserPane::Local2 => SidebarAction::GoHomeLocal2,
             },
             _ => return,
         };
 
         // Clear selection on navigation.
-        if matches!(action, SidebarAction::NavigateLocal(_) | SidebarAction::NavigateRemote(_)) {
+        if matches!(action, SidebarAction::NavigateLocal(_) | SidebarAction::NavigateRemote(_) | SidebarAction::NavigateLocal2(_)) {
             match pane {
                 FileBrowserPane::Local => self.state.file_browser.local_selected = None,
                 FileBrowserPane::Remote => self.state.file_browser.remote_selected = None,
+                FileBrowserPane::Local2 => self.state.file_browser.local2_selected = None,
             }
         }
 

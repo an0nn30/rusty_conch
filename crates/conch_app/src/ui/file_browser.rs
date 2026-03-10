@@ -8,6 +8,7 @@ pub enum FileBrowserPane {
     #[default]
     Local,
     Remote,
+    Local2,
 }
 
 /// State for the file browser panel.
@@ -29,6 +30,13 @@ pub struct FileBrowserState {
     pub remote_back_stack: Vec<PathBuf>,
     pub remote_forward_stack: Vec<PathBuf>,
     pub remote_selected: Option<usize>,
+    /// Second local pane (shown when no remote session is active).
+    pub local2_path: PathBuf,
+    pub local2_entries: Vec<FileListEntry>,
+    pub local2_path_edit: String,
+    pub local2_back_stack: Vec<PathBuf>,
+    pub local2_forward_stack: Vec<PathBuf>,
+    pub local2_selected: Option<usize>,
 }
 
 /// A single file or directory entry.
@@ -57,10 +65,11 @@ impl Default for FileBrowserState {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let local_path_edit = home.to_string_lossy().into_owned();
+        let local2_path_edit = local_path_edit.clone();
         Self {
             focused: false,
             active_pane: FileBrowserPane::default(),
-            local_path: home,
+            local_path: home.clone(),
             local_entries: Vec::new(),
             local_path_edit,
             local_back_stack: Vec::new(),
@@ -72,6 +81,12 @@ impl Default for FileBrowserState {
             remote_back_stack: Vec::new(),
             remote_forward_stack: Vec::new(),
             remote_selected: None,
+            local2_path: home,
+            local2_entries: Vec::new(),
+            local2_path_edit,
+            local2_back_stack: Vec::new(),
+            local2_forward_stack: Vec::new(),
+            local2_selected: None,
         }
     }
 }
@@ -91,6 +106,25 @@ pub fn display_size(bytes: u64) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+/// Recursively copy a directory and its contents.
+/// Skips symlinks to avoid infinite recursion from cyclic links.
+// TODO: prompt for confirmation before overwriting existing files.
+pub fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dest_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest_path)?;
+        } else if ty.is_file() {
+            std::fs::copy(entry.path(), &dest_path)?;
+        }
+        // symlinks are silently skipped
+    }
+    Ok(())
 }
 
 /// Format an optional UNIX timestamp as a short date string.

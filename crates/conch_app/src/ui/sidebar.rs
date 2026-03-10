@@ -42,6 +42,13 @@ pub enum SidebarAction {
     GoForwardLocal,
     GoBackRemote,
     GoForwardRemote,
+    NavigateLocal2(PathBuf),
+    RefreshLocal2,
+    GoHomeLocal2,
+    GoBackLocal2,
+    GoForwardLocal2,
+    /// Copy a file from one local pane to the other.
+    CopyLocal { source: PathBuf, dest_dir: PathBuf },
     /// Upload a local file to the current remote directory.
     Upload { local_path: PathBuf, remote_dir: PathBuf },
     /// Download a remote file to the current local directory.
@@ -465,6 +472,8 @@ fn show_plugins_panel(
 enum PaneKind {
     Remote,
     Local,
+    /// Second local pane (shown when no remote session is active).
+    Local2,
 }
 
 fn show_files_panel(
@@ -480,27 +489,30 @@ fn show_files_panel(
 
     // Reserve space for transfer buttons, transfer progress, etc.
     let transfer_height = if transfers.is_empty() { 0.0 } else { 100.0 };
-    let button_bar_height = if remote_connected { 28.0 } else { 0.0 };
+    let button_bar_height = 28.0;
 
-    if remote_connected {
-        // Both panes active — split evenly around a button bar.
-        let pane_height = ((available - button_bar_height - 12.0 - transfer_height) / 2.0).max(60.0);
+    // Always show two panes: remote+local when connected, local+local2 otherwise.
+    let pane_height = ((available - button_bar_height - 12.0 - transfer_height) / 2.0).max(60.0);
 
-        ui.allocate_ui(Vec2::new(ui.available_width(), pane_height), |ui| {
-            ui.push_id("remote_pane", |ui| {
-                let a = show_file_pane(ui, state, PaneKind::Remote, icons);
-                if !matches!(a, SidebarAction::None) {
-                    action = a;
-                }
-            });
+    // Top pane: remote (if connected) or second local.
+    let top_pane_kind = if remote_connected { PaneKind::Remote } else { PaneKind::Local2 };
+    ui.allocate_ui(Vec2::new(ui.available_width(), pane_height), |ui| {
+        ui.set_min_height(pane_height);
+        ui.push_id("top_pane", |ui| {
+            let a = show_file_pane(ui, state, top_pane_kind, icons);
+            if !matches!(a, SidebarAction::None) {
+                action = a;
+            }
         });
+    });
 
-        // Upload / Download button bar between the panes.
-        ui.add_space(2.0);
+    // Button bar between the panes.
+    ui.add_space(2.0);
+    if remote_connected {
+        // Upload / Download buttons for remote transfers.
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
 
-            // Upload: selected local entry → current remote dir.
             let can_upload = state.local_selected.is_some() && state.remote_path.is_some();
             if ui
                 .add_enabled(can_upload, egui::Button::new("\u{2191} Upload").small())
@@ -519,7 +531,6 @@ fn show_files_panel(
                 }
             }
 
-            // Download: selected remote entry → current local dir.
             let can_download = state.remote_selected.is_some();
             if ui
                 .add_enabled(can_download, egui::Button::new("\u{2193} Download").small())
@@ -536,25 +547,57 @@ fn show_files_panel(
                 }
             }
         });
-        ui.add_space(2.0);
-
-        ui.allocate_ui(Vec2::new(ui.available_width(), pane_height), |ui| {
-            ui.push_id("local_pane", |ui| {
-                let a = show_file_pane(ui, state, PaneKind::Local, icons);
-                if !matches!(a, SidebarAction::None) {
-                    action = a;
-                }
-            });
-        });
     } else {
-        // No remote session — local pane fills all available space.
+        // Copy buttons between two local panes.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+
+            // Copy from local → local2
+            let can_copy_down = state.local_selected.is_some();
+            if ui
+                .add_enabled(can_copy_down, egui::Button::new("\u{2193} Copy \u{2193}").small())
+                .on_hover_text("Copy selected file to the other pane's directory")
+                .clicked()
+            {
+                if let Some(idx) = state.local_selected {
+                    if let Some(entry) = state.local_entries.get(idx) {
+                        action = SidebarAction::CopyLocal {
+                            source: entry.path.clone(),
+                            dest_dir: state.local2_path.clone(),
+                        };
+                    }
+                }
+            }
+
+            // Copy from local2 → local
+            let can_copy_up = state.local2_selected.is_some();
+            if ui
+                .add_enabled(can_copy_up, egui::Button::new("\u{2191} Copy \u{2191}").small())
+                .on_hover_text("Copy selected file to the other pane's directory")
+                .clicked()
+            {
+                if let Some(idx) = state.local2_selected {
+                    if let Some(entry) = state.local2_entries.get(idx) {
+                        action = SidebarAction::CopyLocal {
+                            source: entry.path.clone(),
+                            dest_dir: state.local_path.clone(),
+                        };
+                    }
+                }
+            }
+        });
+    }
+    ui.add_space(2.0);
+
+    // Bottom pane: always local.
+    ui.allocate_ui(Vec2::new(ui.available_width(), pane_height), |ui| {
         ui.push_id("local_pane", |ui| {
             let a = show_file_pane(ui, state, PaneKind::Local, icons);
             if !matches!(a, SidebarAction::None) {
                 action = a;
             }
         });
-    }
+    });
 
     // Transfer progress area at the bottom.
     if !transfers.is_empty() {
@@ -649,6 +692,7 @@ fn show_file_pane(
     let pane_focused = state.focused && match kind {
         PaneKind::Local => state.active_pane == FileBrowserPane::Local,
         PaneKind::Remote => state.active_pane == FileBrowserPane::Remote,
+        PaneKind::Local2 => state.active_pane == FileBrowserPane::Local2,
     };
 
     let (label, entries, current_path, path_edit, selected): (&str, &[FileListEntry], Option<&PathBuf>, &mut String, &mut Option<usize>) = match kind {
@@ -665,6 +709,13 @@ fn show_file_pane(
             Some(&state.local_path),
             &mut state.local_path_edit,
             &mut state.local_selected,
+        ),
+        PaneKind::Local2 => (
+            "Local (2)",
+            &state.local2_entries as &[_],
+            Some(&state.local2_path),
+            &mut state.local2_path_edit,
+            &mut state.local2_selected,
         ),
     };
 
@@ -687,6 +738,7 @@ fn show_file_pane(
     let (back_stack, forward_stack) = match kind {
         PaneKind::Local => (&state.local_back_stack, &state.local_forward_stack),
         PaneKind::Remote => (&state.remote_back_stack, &state.remote_forward_stack),
+        PaneKind::Local2 => (&state.local2_back_stack, &state.local2_forward_stack),
     };
     let has_back = !back_stack.is_empty();
     let has_forward = !forward_stack.is_empty();
@@ -759,12 +811,14 @@ fn show_file_pane(
         match kind {
             PaneKind::Local => action = SidebarAction::GoBackLocal,
             PaneKind::Remote => action = SidebarAction::GoBackRemote,
+            PaneKind::Local2 => action = SidebarAction::GoBackLocal2,
         }
     }
     if forward_clicked {
         match kind {
             PaneKind::Local => action = SidebarAction::GoForwardLocal,
             PaneKind::Remote => action = SidebarAction::GoForwardRemote,
+            PaneKind::Local2 => action = SidebarAction::GoForwardLocal2,
         }
     }
     if path_submitted {
@@ -772,23 +826,28 @@ fn show_file_pane(
         match kind {
             PaneKind::Local => action = SidebarAction::NavigateLocal(target),
             PaneKind::Remote => action = SidebarAction::NavigateRemote(target),
+            PaneKind::Local2 => action = SidebarAction::NavigateLocal2(target),
         }
     }
     if home_clicked {
         match kind {
             PaneKind::Local => action = SidebarAction::GoHomeLocal,
             PaneKind::Remote => action = SidebarAction::GoHomeRemote,
+            PaneKind::Local2 => action = SidebarAction::GoHomeLocal2,
         }
     }
     if refresh_clicked {
         match kind {
             PaneKind::Local => action = SidebarAction::RefreshLocal,
             PaneKind::Remote => action = SidebarAction::RefreshRemote,
+            PaneKind::Local2 => action = SidebarAction::RefreshLocal2,
         }
     }
 
-    // File table
-    let status_bar_height = 18.0;
+    // File table — reserve space for the status bar below.
+    // The 18px covers the "N items" label + spacing; the extra 20px accounts
+    // for the table header row that sits outside max_scroll_height.
+    let status_bar_height = 38.0;
     let table_height = (ui.available_height() - status_bar_height).max(0.0);
     TableBuilder::new(ui)
         .striped(true)
@@ -839,6 +898,7 @@ fn show_file_pane(
                         match kind {
                             PaneKind::Local => action = SidebarAction::NavigateLocal(entry.path.clone()),
                             PaneKind::Remote => action = SidebarAction::NavigateRemote(entry.path.clone()),
+                            PaneKind::Local2 => action = SidebarAction::NavigateLocal2(entry.path.clone()),
                         }
                     }
                 });
