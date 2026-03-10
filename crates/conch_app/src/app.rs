@@ -27,7 +27,6 @@ use crate::terminal::widget::{get_selected_text, measure_cell_size, show_termina
 use conch_plugin::{PluginCommand, PluginMeta, PluginResponse};
 use crate::ui::dialogs::new_connection::{self, DialogAction, NewConnectionForm};
 use crate::ui::dialogs::plugin_dialog::{self, ActivePluginDialog};
-use crate::ui::dialogs::preferences::{self, PreferencesAction, PreferencesForm};
 use crate::ui::dialogs::tunnels::{self, TunnelManagerAction, TunnelManagerState};
 use crate::ui::session_panel::{self, SessionPanelAction, SessionPanelState};
 use crate::ui::sidebar::{self, SidebarAction};
@@ -164,7 +163,6 @@ pub struct ConchApp {
     pub(crate) show_about: bool,
     pub(crate) quit_requested: bool,
     pub(crate) style_applied: bool,
-    pub(crate) preferences_form: Option<PreferencesForm>,
 
     // Tunnel management
     pub(crate) tunnel_manager: TunnelManager,
@@ -374,7 +372,6 @@ impl ConchApp {
             show_about: false,
             quit_requested: false,
             style_applied: false,
-            preferences_form: None,
             tunnel_manager: TunnelManager::new(),
             tunnel_dialog: None,
             notification_history_dialog: None,
@@ -1403,31 +1400,6 @@ impl eframe::App for ConchApp {
             }
         }
 
-        // Preferences dialog.
-        if let Some(mut form) = self.preferences_form.take() {
-            match preferences::show_preferences(ctx, &mut form) {
-                PreferencesAction::Save => {
-                    let old_theme = self.state.user_config.colors.theme.clone();
-                    form.apply_to_config(&mut self.state.user_config);
-                    if let Err(e) = config::save_user_config(&self.state.user_config) {
-                        log::error!("Failed to save config: {e}");
-                    }
-                    if self.state.user_config.colors.theme != old_theme {
-                        let scheme = conch_core::color_scheme::resolve_theme(
-                            &self.state.user_config.colors.theme,
-                        );
-                        self.state.colors =
-                            crate::terminal::color::ResolvedColors::from_scheme(&scheme);
-                    }
-                    self.style_applied = false;
-                    self.cell_size_measured = false;
-                }
-                PreferencesAction::Cancel => {}
-                PreferencesAction::None => {
-                    self.preferences_form = Some(form);
-                }
-            }
-        }
 
         // Tunnel dialog.
         // Refresh active tunnel IDs (poll TunnelManager).
@@ -1644,12 +1616,6 @@ impl eframe::App for ConchApp {
                                 self.notification_history_dialog = Some(
                                     crate::ui::dialogs::notification_history::NotificationHistoryState::new(),
                                 );
-                                ui.close_menu();
-                            }
-                            ui.separator();
-                            if ui.button("Preferences...").clicked() {
-                                self.preferences_form =
-                                    Some(PreferencesForm::from_config(&self.state.user_config));
                                 ui.close_menu();
                             }
                         });
@@ -2439,10 +2405,6 @@ impl ConchApp {
                         self.state.new_connection_form =
                             Some(crate::ui::dialogs::new_connection::NewConnectionForm::with_defaults());
                     }
-                    ExtraWindowAction::OpenPreferences => {
-                        self.preferences_form =
-                            Some(crate::ui::dialogs::preferences::PreferencesForm::from_config(&self.state.user_config));
-                    }
                     ExtraWindowAction::OpenAbout => {
                         self.show_about = true;
                     }
@@ -2558,10 +2520,6 @@ impl ConchApp {
             }
             MenuAction::ToggleBottomPanel => {
                 self.toggle_bottom_panel();
-            }
-            MenuAction::Preferences => {
-                self.preferences_form =
-                    Some(PreferencesForm::from_config(&self.state.user_config));
             }
             MenuAction::AboutConch => {
                 self.show_about = true;

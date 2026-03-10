@@ -24,7 +24,6 @@ pub enum MenuAction {
     ToggleLeftSidebar,
     ToggleRightSidebar,
     ToggleBottomPanel,
-    Preferences,
     AboutConch,
     RunPlugin(usize),
 }
@@ -100,11 +99,6 @@ define_class!(
             push_action(MenuAction::ToggleBottomPanel);
         }
 
-        #[unsafe(method(openPreferences:))]
-        fn open_preferences(&self, _sender: *mut AnyObject) {
-            push_action(MenuAction::Preferences);
-        }
-
         #[unsafe(method(aboutConch:))]
         fn about_conch(&self, _sender: *mut AnyObject) {
             push_action(MenuAction::AboutConch);
@@ -141,8 +135,6 @@ pub fn setup_menu_bar(plugins: &[(usize, String)]) {
         // ── App menu (Conch) ──
         let app_menu = NSMenu::new(mtm);
         app_menu.addItem(&make_item(mtm, "About Conch", sel!(aboutConch:), "", &responder));
-        app_menu.addItem(&NSMenuItem::separatorItem(mtm));
-        app_menu.addItem(&make_item(mtm, "Preferences...", sel!(openPreferences:), ",", &responder));
         app_menu.addItem(&NSMenuItem::separatorItem(mtm));
         app_menu.addItem(&make_item_no_target(mtm, "Quit Conch", sel!(terminate:), "q"));
         let app_item = NSMenuItem::new(mtm);

@@ -9,7 +9,6 @@ impl ConchApp {
         self.state.new_connection_form.is_some()
             || self.show_about
             || self.rename_tab_id.is_some()
-            || self.preferences_form.is_some()
             || self.tunnel_dialog.is_some()
             || self.active_plugin_dialog.is_some()
             || self.plugin_progress.is_some()
@@ -37,10 +36,6 @@ impl ConchApp {
         if self.rename_tab_id.is_some() {
             self.rename_tab_id = None;
             self.rename_tab_buf.clear();
-            return true;
-        }
-        if self.preferences_form.is_some() {
-            self.preferences_form = None;
             return true;
         }
         if self.tunnel_dialog.is_some() {

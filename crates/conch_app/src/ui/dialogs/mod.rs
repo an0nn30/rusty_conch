@@ -3,5 +3,4 @@
 pub mod new_connection;
 pub mod notification_history;
 pub mod plugin_dialog;
-pub mod preferences;
 pub mod tunnels;

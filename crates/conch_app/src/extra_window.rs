@@ -60,7 +60,6 @@ pub(crate) enum ExtraWindowAction {
     SpawnNewWindow,
     QuitApp,
     OpenNewConnection,
-    OpenPreferences,
     OpenAbout,
     OpenTunnelDialog,
     OpenNotificationHistory,
@@ -975,12 +974,6 @@ impl ExtraWindow {
                                 if ui.button("Notification History...").clicked() {
                                     self.pending_actions
                                         .push(ExtraWindowAction::OpenNotificationHistory);
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                if ui.button("Preferences...").clicked() {
-                                    self.pending_actions
-                                        .push(ExtraWindowAction::OpenPreferences);
                                     ui.close_menu();
                                 }
                             });
