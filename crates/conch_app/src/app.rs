@@ -301,6 +301,8 @@ impl ConchApp {
 
         let initial_path = state.file_browser.local_path.clone();
         state.file_browser.local_entries = load_local_entries(&initial_path);
+        let initial_path2 = state.file_browser.local2_path.clone();
+        state.file_browser.local2_entries = load_local_entries(&initial_path2);
 
         log::info!(
             "Opening initial terminal: shell.program={:?}, shell.args={:?}",

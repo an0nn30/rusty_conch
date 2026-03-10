@@ -165,6 +165,7 @@ impl ExtraWindow {
             file_browser: {
                 let mut fb = FileBrowserState::default();
                 fb.local_entries = load_local_entries(&fb.local_path);
+                fb.local2_entries = load_local_entries(&fb.local2_path);
                 fb
             },
             session_panel_state: SessionPanelState::default(),
@@ -282,6 +283,79 @@ impl ExtraWindow {
             }
             SidebarAction::SelectFile(path) => {
                 log::info!("File selected: {}", path.display());
+            }
+            SidebarAction::NavigateLocal2(path) => {
+                let old = self.file_browser.local2_path.clone();
+                self.file_browser.local2_back_stack.push(old);
+                self.file_browser.local2_forward_stack.clear();
+                self.file_browser.local2_entries = load_local_entries(&path);
+                self.file_browser.local2_path_edit = path.to_string_lossy().into_owned();
+                self.file_browser.local2_path = path;
+                self.file_browser.local2_selected = None;
+            }
+            SidebarAction::GoBackLocal2 => {
+                if let Some(prev) = self.file_browser.local2_back_stack.pop() {
+                    let current = self.file_browser.local2_path.clone();
+                    self.file_browser.local2_forward_stack.push(current);
+                    self.file_browser.local2_entries = load_local_entries(&prev);
+                    self.file_browser.local2_path_edit = prev.to_string_lossy().into_owned();
+                    self.file_browser.local2_path = prev;
+                    self.file_browser.local2_selected = None;
+                }
+            }
+            SidebarAction::GoForwardLocal2 => {
+                if let Some(next) = self.file_browser.local2_forward_stack.pop() {
+                    let current = self.file_browser.local2_path.clone();
+                    self.file_browser.local2_back_stack.push(current);
+                    self.file_browser.local2_entries = load_local_entries(&next);
+                    self.file_browser.local2_path_edit = next.to_string_lossy().into_owned();
+                    self.file_browser.local2_path = next;
+                    self.file_browser.local2_selected = None;
+                }
+            }
+            SidebarAction::RefreshLocal2 => {
+                let path = self.file_browser.local2_path.clone();
+                self.file_browser.local2_entries = load_local_entries(&path);
+                self.file_browser.local2_selected = None;
+            }
+            SidebarAction::GoHomeLocal2 => {
+                let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+                let old = self.file_browser.local2_path.clone();
+                self.file_browser.local2_back_stack.push(old);
+                self.file_browser.local2_forward_stack.clear();
+                self.file_browser.local2_entries = load_local_entries(&home);
+                self.file_browser.local2_path_edit = home.to_string_lossy().into_owned();
+                self.file_browser.local2_path = home;
+                self.file_browser.local2_selected = None;
+            }
+            SidebarAction::CopyLocal { source, dest_dir } => {
+                let filename = source.file_name().unwrap_or_default();
+                let dest = dest_dir.join(filename);
+                if source.is_dir() {
+                    fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+                        std::fs::create_dir_all(dst)?;
+                        for entry in std::fs::read_dir(src)? {
+                            let entry = entry?;
+                            let ty = entry.file_type()?;
+                            let dest_path = dst.join(entry.file_name());
+                            if ty.is_dir() {
+                                copy_dir_recursive(&entry.path(), &dest_path)?;
+                            } else {
+                                std::fs::copy(entry.path(), &dest_path)?;
+                            }
+                        }
+                        Ok(())
+                    }
+                    if let Err(e) = copy_dir_recursive(&source, &dest) {
+                        log::error!("Failed to copy directory: {e}");
+                    }
+                } else if let Err(e) = std::fs::copy(&source, &dest) {
+                    log::error!("Failed to copy file: {e}");
+                }
+                self.file_browser.local_entries =
+                    load_local_entries(&self.file_browser.local_path);
+                self.file_browser.local2_entries =
+                    load_local_entries(&self.file_browser.local2_path);
             }
             // Remote actions are not supported in extra windows (no SFTP).
             SidebarAction::NavigateRemote(_)
