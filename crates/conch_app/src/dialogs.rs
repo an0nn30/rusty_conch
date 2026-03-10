@@ -63,7 +63,7 @@ impl ConchApp {
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.heading("Conch");
-                    ui.label("Version 0.2");
+                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
                     ui.add_space(4.0);
                     ui.label("A cross-platform SSH terminal emulator.");
                     ui.add_space(8.0);
