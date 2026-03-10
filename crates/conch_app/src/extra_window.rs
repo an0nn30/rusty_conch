@@ -19,7 +19,7 @@ use crate::input::{self, ResolvedShortcuts};
 use crate::mouse::{handle_terminal_mouse, Selection};
 use crate::sessions::{create_local_session, load_local_entries};
 use crate::state::Session;
-use crate::terminal::widget::{get_selected_text, measure_cell_size, show_terminal};
+use crate::terminal::widget::{get_selected_text, measure_cell_size, show_terminal, TerminalFrameCache};
 use crate::ui::bottom_panel::{self, BottomPanelAction};
 use crate::ui::file_browser::FileBrowserState;
 use crate::ui::session_panel::{self, SessionPanelAction, SessionPanelState};
@@ -94,6 +94,7 @@ pub struct ExtraWindow {
     last_cols: u16,
     last_rows: u16,
     selection: Selection,
+    terminal_frame_cache: TerminalFrameCache,
     pub should_close: bool,
     /// Whether this window currently has OS focus.
     pub is_focused: bool,
@@ -150,6 +151,7 @@ impl ExtraWindow {
             last_cols: DEFAULT_COLS,
             last_rows: DEFAULT_ROWS,
             selection: Selection::default(),
+            terminal_frame_cache: TerminalFrameCache::default(),
             should_close: false,
             is_focused: false,
             title: "Conch".into(),
@@ -730,6 +732,7 @@ impl ExtraWindow {
                             font_size,
                             self.cursor_visible,
                             self.selection.normalized(),
+                            &mut self.terminal_frame_cache,
                         );
 
                         // Mouse selection/forwarding.

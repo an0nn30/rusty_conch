@@ -80,6 +80,7 @@ enum UnderlineStyle {
 }
 
 /// Copied cell data for rendering after releasing the terminal lock.
+#[derive(Clone)]
 struct CellInfo {
     c: char,
     col: usize,
@@ -94,6 +95,23 @@ struct CellInfo {
     wide: bool,
 }
 
+/// Cached frame data from the last successful terminal lock.
+/// Re-used when the lock is contended to avoid flashing a blank frame.
+#[derive(Clone)]
+pub struct TerminalFrameCache {
+    cells: Vec<CellInfo>,
+    cursor_pos: Option<(usize, usize, alacritty_terminal::vte::ansi::CursorShape)>,
+}
+
+impl Default for TerminalFrameCache {
+    fn default() -> Self {
+        Self {
+            cells: Vec::new(),
+            cursor_pos: None,
+        }
+    }
+}
+
 /// Paint the terminal grid into the given UI region.
 ///
 /// Returns the `Response` (for mouse interaction) and the computed `SizeInfo`.
@@ -106,6 +124,7 @@ pub fn show_terminal(
     font_size: f32,
     cursor_visible: bool,
     selection: Option<((usize, usize), (usize, usize))>,
+    frame_cache: &mut TerminalFrameCache,
 ) -> (egui::Response, SizeInfo) {
     let available = ui.available_size();
     let (response, painter) = ui.allocate_painter(available, Sense::click_and_drag());
@@ -123,7 +142,11 @@ pub fn show_terminal(
     // event loop is holding the FairMutex lease during PTY reads.
     let (cells, cursor_pos) = {
         let Some(term) = term.try_lock_unfair() else {
-            // Lock contended — skip rendering this frame; we'll get it next frame.
+            // Lock contended — re-use the last frame's cached data to avoid
+            // flashing a blank terminal background.
+            let cells = &frame_cache.cells;
+            let cursor_pos = frame_cache.cursor_pos;
+            paint_cells(&painter, cells, cursor_pos, &size_info, colors, font_size, cell_width, cell_height, rect);
             return (response, size_info);
         };
         let content = term.renderable_content();
@@ -217,96 +240,12 @@ pub fn show_terminal(
         (cells, cursor_pos)
     }; // ── lock released here ──────────────────────────────────────────────
 
+    // Cache this frame's data for re-use when the lock is contended.
+    frame_cache.cells = cells.clone();
+    frame_cache.cursor_pos = cursor_pos;
+
     // Paint cells (no lock held — EventLoop can process data concurrently).
-    let font_regular = FontId::new(font_size, FontFamily::Monospace);
-
-    for ci in &cells {
-        let (x, y) = size_info.cell_position(ci.col, ci.row);
-
-        let char_cell_width = if ci.wide { cell_width * 2.0 } else { cell_width };
-
-        if ci.bg != colors.background {
-            let cell_rect = Rect::from_min_size(
-                Pos2::new(rect.min.x + x, rect.min.y + y),
-                Vec2::new(char_cell_width, cell_height),
-            );
-            painter.rect_filled(cell_rect, 0.0, rgba_to_color32(ci.bg));
-        }
-
-        let fg_color = rgba_to_color32(ci.fg);
-
-        if ci.c != ' ' && ci.c != '\0' {
-            paint_char(
-                &painter,
-                ci.c,
-                Pos2::new(rect.min.x + x, rect.min.y + y),
-                &font_regular,
-                fg_color,
-                ci.bold,
-                ci.italic,
-                char_cell_width,
-                cell_height,
-            );
-        }
-
-        // Draw underline (various styles).
-        if ci.underline != UnderlineStyle::None {
-            let ul_color = ci.underline_color.map(rgba_to_color32).unwrap_or(fg_color);
-            let y_base = rect.min.y + y + cell_height - 1.0;
-            let x_start = rect.min.x + x;
-            let x_end = x_start + char_cell_width;
-            draw_underline(&painter, ci.underline, x_start, x_end, y_base, char_cell_width, ul_color);
-        }
-
-        // Draw strikeout.
-        if ci.strikeout {
-            let y_mid = rect.min.y + y + cell_height * 0.5;
-            painter.line_segment(
-                [Pos2::new(rect.min.x + x, y_mid), Pos2::new(rect.min.x + x + char_cell_width, y_mid)],
-                egui::Stroke::new(1.0, fg_color),
-            );
-        }
-    }
-
-    // Draw cursor (Block, Underline, or Beam).
-    if let Some((col, row, shape)) = cursor_pos {
-        let (cx, cy) = size_info.cell_position(col, row);
-        let cursor_c = colors.cursor_color.unwrap_or(colors.foreground);
-        let color = rgba_to_color32(cursor_c);
-        match shape {
-            alacritty_terminal::vte::ansi::CursorShape::Block => {
-                let cursor_rect = Rect::from_min_size(
-                    Pos2::new(rect.min.x + cx, rect.min.y + cy),
-                    Vec2::new(cell_width, cell_height),
-                );
-                painter.rect_filled(cursor_rect, 0.0, color);
-            }
-            alacritty_terminal::vte::ansi::CursorShape::Underline => {
-                let thickness = (cell_height * 0.1).max(1.0);
-                let cursor_rect = Rect::from_min_size(
-                    Pos2::new(rect.min.x + cx, rect.min.y + cy + cell_height - thickness),
-                    Vec2::new(cell_width, thickness),
-                );
-                painter.rect_filled(cursor_rect, 0.0, color);
-            }
-            alacritty_terminal::vte::ansi::CursorShape::Beam => {
-                let thickness = (cell_width * 0.12).max(1.0);
-                let cursor_rect = Rect::from_min_size(
-                    Pos2::new(rect.min.x + cx, rect.min.y + cy),
-                    Vec2::new(thickness, cell_height),
-                );
-                painter.rect_filled(cursor_rect, 0.0, color);
-            }
-            alacritty_terminal::vte::ansi::CursorShape::HollowBlock => {
-                let cursor_rect = Rect::from_min_size(
-                    Pos2::new(rect.min.x + cx, rect.min.y + cy),
-                    Vec2::new(cell_width, cell_height),
-                );
-                painter.rect_stroke(cursor_rect, 0.0, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
-            }
-            alacritty_terminal::vte::ansi::CursorShape::Hidden => {}
-        }
-    }
+    paint_cells(&painter, &cells, cursor_pos, &size_info, colors, font_size, cell_width, cell_height, rect);
 
     (response, size_info)
 }
@@ -452,6 +391,109 @@ pub fn get_selected_text(
     }
 
     lines.join("\n")
+}
+
+/// Paint collected cell data and cursor onto the terminal area.
+fn paint_cells(
+    painter: &Painter,
+    cells: &[CellInfo],
+    cursor_pos: Option<(usize, usize, alacritty_terminal::vte::ansi::CursorShape)>,
+    size_info: &SizeInfo,
+    colors: &ResolvedColors,
+    font_size: f32,
+    cell_width: f32,
+    cell_height: f32,
+    rect: Rect,
+) {
+    let font_regular = FontId::new(font_size, FontFamily::Monospace);
+
+    for ci in cells {
+        let (x, y) = size_info.cell_position(ci.col, ci.row);
+
+        let char_cell_width = if ci.wide { cell_width * 2.0 } else { cell_width };
+
+        if ci.bg != colors.background {
+            let cell_rect = Rect::from_min_size(
+                Pos2::new(rect.min.x + x, rect.min.y + y),
+                Vec2::new(char_cell_width, cell_height),
+            );
+            painter.rect_filled(cell_rect, 0.0, rgba_to_color32(ci.bg));
+        }
+
+        let fg_color = rgba_to_color32(ci.fg);
+
+        if ci.c != ' ' && ci.c != '\0' {
+            paint_char(
+                painter,
+                ci.c,
+                Pos2::new(rect.min.x + x, rect.min.y + y),
+                &font_regular,
+                fg_color,
+                ci.bold,
+                ci.italic,
+                char_cell_width,
+                cell_height,
+            );
+        }
+
+        // Draw underline (various styles).
+        if ci.underline != UnderlineStyle::None {
+            let ul_color = ci.underline_color.map(rgba_to_color32).unwrap_or(fg_color);
+            let y_base = rect.min.y + y + cell_height - 1.0;
+            let x_start = rect.min.x + x;
+            let x_end = x_start + char_cell_width;
+            draw_underline(painter, ci.underline, x_start, x_end, y_base, char_cell_width, ul_color);
+        }
+
+        // Draw strikeout.
+        if ci.strikeout {
+            let y_mid = rect.min.y + y + cell_height * 0.5;
+            painter.line_segment(
+                [Pos2::new(rect.min.x + x, y_mid), Pos2::new(rect.min.x + x + char_cell_width, y_mid)],
+                egui::Stroke::new(1.0, fg_color),
+            );
+        }
+    }
+
+    // Draw cursor (Block, Underline, or Beam).
+    if let Some((col, row, shape)) = cursor_pos {
+        let (cx, cy) = size_info.cell_position(col, row);
+        let cursor_c = colors.cursor_color.unwrap_or(colors.foreground);
+        let color = rgba_to_color32(cursor_c);
+        match shape {
+            alacritty_terminal::vte::ansi::CursorShape::Block => {
+                let cursor_rect = Rect::from_min_size(
+                    Pos2::new(rect.min.x + cx, rect.min.y + cy),
+                    Vec2::new(cell_width, cell_height),
+                );
+                painter.rect_filled(cursor_rect, 0.0, color);
+            }
+            alacritty_terminal::vte::ansi::CursorShape::Underline => {
+                let thickness = (cell_height * 0.1).max(1.0);
+                let cursor_rect = Rect::from_min_size(
+                    Pos2::new(rect.min.x + cx, rect.min.y + cy + cell_height - thickness),
+                    Vec2::new(cell_width, thickness),
+                );
+                painter.rect_filled(cursor_rect, 0.0, color);
+            }
+            alacritty_terminal::vte::ansi::CursorShape::Beam => {
+                let thickness = (cell_width * 0.12).max(1.0);
+                let cursor_rect = Rect::from_min_size(
+                    Pos2::new(rect.min.x + cx, rect.min.y + cy),
+                    Vec2::new(thickness, cell_height),
+                );
+                painter.rect_filled(cursor_rect, 0.0, color);
+            }
+            alacritty_terminal::vte::ansi::CursorShape::HollowBlock => {
+                let cursor_rect = Rect::from_min_size(
+                    Pos2::new(rect.min.x + cx, rect.min.y + cy),
+                    Vec2::new(cell_width, cell_height),
+                );
+                painter.rect_stroke(cursor_rect, 0.0, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+            }
+            alacritty_terminal::vte::ansi::CursorShape::Hidden => {}
+        }
+    }
 }
 
 /// Render a single character in its cell, with synthetic bold/italic.

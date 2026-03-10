@@ -23,7 +23,7 @@ use crate::plugins::scan_plugin_dirs;
 use crate::sessions::{create_local_session, load_local_entries, open_local_terminal};
 use crate::ssh::{self, show_connecting_screen};
 use crate::state::{AppState, Session, SessionBackend};
-use crate::terminal::widget::{get_selected_text, measure_cell_size, show_terminal};
+use crate::terminal::widget::{get_selected_text, measure_cell_size, show_terminal, TerminalFrameCache};
 use conch_plugin::{PluginCommand, PluginMeta, PluginResponse};
 use crate::ui::dialogs::new_connection::{self, DialogAction, NewConnectionForm};
 use crate::ui::dialogs::plugin_dialog::{self, ActivePluginDialog};
@@ -148,6 +148,9 @@ pub struct ConchApp {
 
     // Session panel UI state (inline rename, new-folder input)
     pub(crate) session_panel_state: SessionPanelState,
+
+    // Terminal frame cache (re-render last frame when lock is contended)
+    pub(crate) terminal_frame_cache: TerminalFrameCache,
 
     // Window title dedup (avoid send_viewport_cmd every frame)
     pub(crate) last_window_title: String,
@@ -363,6 +366,7 @@ impl ConchApp {
             transfers: Vec::new(),
             icon_cache: None,
             session_panel_state: SessionPanelState::default(),
+            terminal_frame_cache: TerminalFrameCache::default(),
             last_window_title: String::new(),
             use_native_menu,
             quick_connect_opened_sidebar: false,
@@ -2059,6 +2063,7 @@ impl eframe::App for ConchApp {
                             font_size,
                             self.cursor_visible,
                             self.selection.normalized(),
+                            &mut self.terminal_frame_cache,
                         );
 
                         {
