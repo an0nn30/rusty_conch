@@ -88,6 +88,7 @@ pub struct ExtraWindow {
     pub cell_width: f32,
     pub cell_height: f32,
     cell_size_measured: bool,
+    style_applied: bool,
     last_pixels_per_point: f32,
     cursor_visible: bool,
     last_blink: Instant,
@@ -144,6 +145,7 @@ impl ExtraWindow {
             cell_width: 8.0,
             cell_height: 16.0,
             cell_size_measured: false,
+            style_applied: false,
             last_pixels_per_point: 0.0,
             cursor_visible: true,
             last_blink: Instant::now(),
@@ -364,6 +366,27 @@ impl ExtraWindow {
     pub fn update(&mut self, ctx: &egui::Context, shared: &SharedState) {
         // Clear pending actions from previous frame.
         self.pending_actions.clear();
+
+        // Apply theme on first frame so the OS title bar matches dark/light mode.
+        if !self.style_applied {
+            match shared.user_config.colors.appearance_mode.as_str() {
+                "light" => {
+                    ctx.set_visuals(egui::Visuals::light());
+                    ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Light);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Light));
+                }
+                "system" => {
+                    ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::System);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::SystemDefault));
+                }
+                _ => {
+                    ctx.set_visuals(egui::Visuals::dark());
+                    ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Dark);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
+                }
+            }
+            self.style_applied = true;
+        }
 
         // 1. Track OS-level focus for this window.
         self.is_focused = ctx.input(|i| i.focused);
