@@ -20,6 +20,27 @@ pub struct ConnectParams {
     pub proxy_jump: Option<String>,
 }
 
+/// A prompt sent to the UI when a host key needs user confirmation.
+pub struct HostKeyPrompt {
+    /// Hostname being connected to.
+    pub host: String,
+    /// Port number.
+    pub port: u16,
+    /// Key algorithm (e.g. "ssh-ed25519").
+    pub key_type: String,
+    /// Human-readable fingerprint (e.g. "SHA256:...").
+    pub fingerprint: String,
+    /// True if the key has *changed* from a previously-recorded one.
+    pub is_changed: bool,
+    /// The public key (needed to save to known_hosts on accept).
+    pub public_key: keys::PublicKey,
+    /// Send `true` to accept, `false` to reject.
+    pub response_tx: tokio::sync::oneshot::Sender<bool>,
+}
+
+/// Channel sender for host key prompts. Pass `None` to auto-accept (legacy behaviour).
+pub type HostKeyTx = tokio::sync::mpsc::UnboundedSender<HostKeyPrompt>;
+
 impl From<&ServerEntry> for ConnectParams {
     fn from(entry: &ServerEntry) -> Self {
         Self {
@@ -98,7 +119,10 @@ impl PendingAuth {
 }
 
 /// Establish TCP+SSH connection to a server (shared between connect_shell and connect_tunnel).
-async fn establish_connection(params: &ConnectParams) -> Result<Handle<ClientHandler>> {
+async fn establish_connection(
+    params: &ConnectParams,
+    host_key_tx: Option<HostKeyTx>,
+) -> Result<Handle<ClientHandler>> {
     let effective_proxy = params
         .proxy_command
         .clone()
@@ -108,11 +132,16 @@ async fn establish_connection(params: &ConnectParams) -> Result<Handle<ClientHan
             })
         });
 
+    let handler = ClientHandler::new(
+        params.host.clone(),
+        params.port,
+        host_key_tx,
+    );
+
     if let Some(proxy_cmd) = &effective_proxy {
-        super::proxy::connect_via_proxy(proxy_cmd, params).await
+        super::proxy::connect_via_proxy(proxy_cmd, params, handler).await
     } else {
         let config = Arc::new(client::Config::default());
-        let handler = ClientHandler;
 
         let addr = format!("{}:{}", params.host, params.port);
         let sock_addr = addr
@@ -132,8 +161,9 @@ pub async fn connect_shell(
     params: &ConnectParams,
     cols: u32,
     rows: u32,
+    host_key_tx: Option<HostKeyTx>,
 ) -> Result<ShellConnectResult> {
-    let mut handle = establish_connection(params).await?;
+    let mut handle = establish_connection(params, host_key_tx).await?;
 
     match authenticate(&mut handle, &params.user, &params.identity_file, &params.password).await? {
         AuthResult::Ok => {
@@ -319,7 +349,8 @@ pub async fn connect_tunnel(params: &ConnectParams) -> Result<Arc<Handle<ClientH
         params.host, params.port, params.proxy_command, params.proxy_jump,
     );
 
-    let mut handle = establish_connection(params).await?;
+    // Tunnels auto-accept host keys (no UI to prompt).
+    let mut handle = establish_connection(params, None).await?;
 
     log::debug!("connect_tunnel: TCP connected, authenticating as '{}'", params.user);
     match authenticate(&mut handle, &params.user, &params.identity_file, &params.password).await? {
@@ -345,17 +376,106 @@ fn expand_tilde(path: &std::path::Path) -> PathBuf {
     path.to_path_buf()
 }
 
-/// Client handler for russh — accepts all host keys (for now).
-pub struct ClientHandler;
+/// Client handler for russh — verifies host keys against known_hosts.
+pub struct ClientHandler {
+    host: String,
+    port: u16,
+    /// If set, unknown/changed keys prompt the UI. If `None`, all keys are accepted.
+    host_key_tx: Option<HostKeyTx>,
+}
+
+impl ClientHandler {
+    pub fn new(host: String, port: u16, host_key_tx: Option<HostKeyTx>) -> Self {
+        Self { host, port, host_key_tx }
+    }
+}
 
 impl client::Handler for ClientHandler {
     type Error = anyhow::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::PublicKey,
+        server_public_key: &russh::keys::PublicKey,
     ) -> Result<bool, Self::Error> {
-        // TODO: Implement known_hosts checking
-        Ok(true)
+        use russh::keys::known_hosts;
+
+        match known_hosts::check_known_hosts(&self.host, self.port, server_public_key) {
+            Ok(true) => {
+                log::debug!("Host key for {}:{} matches known_hosts", self.host, self.port);
+                return Ok(true);
+            }
+            Ok(false) => {
+                log::info!("Unknown host key for {}:{}", self.host, self.port);
+            }
+            Err(russh::keys::Error::KeyChanged { line }) => {
+                log::warn!(
+                    "Host key CHANGED for {}:{} (known_hosts line {line})",
+                    self.host, self.port,
+                );
+                // If no UI channel, reject changed keys for safety.
+                let Some(tx) = &self.host_key_tx else {
+                    return Ok(false);
+                };
+                return Self::prompt_user(
+                    tx, &self.host, self.port, server_public_key, true,
+                ).await;
+            }
+            Err(e) => {
+                log::warn!("Error reading known_hosts: {e}");
+                // Fall through to prompt (or auto-accept if no tx).
+            }
+        }
+
+        // Key is unknown — prompt the user or auto-accept.
+        let Some(tx) = &self.host_key_tx else {
+            return Ok(true);
+        };
+        Self::prompt_user(tx, &self.host, self.port, server_public_key, false).await
+    }
+}
+
+impl ClientHandler {
+    /// Send a prompt to the UI and wait for the user's response.
+    async fn prompt_user(
+        tx: &HostKeyTx,
+        host: &str,
+        port: u16,
+        key: &keys::PublicKey,
+        is_changed: bool,
+    ) -> Result<bool, anyhow::Error> {
+        let fingerprint = format!("{}", key.fingerprint(russh::keys::ssh_key::HashAlg::Sha256));
+        let key_type = format!("{}", key.algorithm());
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let prompt = HostKeyPrompt {
+            host: host.to_string(),
+            port,
+            key_type,
+            fingerprint,
+            is_changed,
+            public_key: key.clone(),
+            response_tx,
+        };
+
+        if tx.send(prompt).is_err() {
+            log::error!("Host key prompt channel closed");
+            return Ok(false);
+        }
+
+        match response_rx.await {
+            Ok(accepted) => {
+                if accepted {
+                    // Save to known_hosts.
+                    if let Err(e) = russh::keys::known_hosts::learn_known_hosts(host, port, key) {
+                        log::error!("Failed to save host key to known_hosts: {e}");
+                    }
+                }
+                Ok(accepted)
+            }
+            Err(_) => {
+                log::error!("Host key response channel dropped");
+                Ok(false)
+            }
+        }
     }
 }

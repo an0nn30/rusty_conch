@@ -35,10 +35,17 @@ impl ConchApp {
             password_buf: String::new(),
             password_focus: false,
             pending_auth: None,
+            host_key_rx: None,
+            host_key_prompt: None,
         });
 
         self.state.tab_order.push(id);
         self.state.active_tab = Some(id);
+
+        // Channel for host key verification prompts.
+        let (host_key_tx, host_key_rx) =
+            tokio::sync::mpsc::unbounded_channel::<conch_session::HostKeyPrompt>();
+        self.pending_ssh_info.get_mut(&id).unwrap().host_key_rx = Some(host_key_rx);
 
         let host_clone = host.clone();
         let term_config = build_term_config(&self.state.user_config.terminal.cursor);
@@ -52,7 +59,9 @@ impl ConchApp {
                 proxy_command,
                 proxy_jump,
             };
-            let outcome = match SshSession::connect(&params, DEFAULT_COLS, DEFAULT_ROWS, term_config).await {
+            let outcome = match SshSession::connect(
+                &params, DEFAULT_COLS, DEFAULT_ROWS, term_config, Some(host_key_tx),
+            ).await {
                 Ok(conch_session::SshConnectResult::Connected(session)) => {
                     SshConnectOutcome::Connected(session)
                 }
@@ -180,6 +189,10 @@ pub(crate) enum ConnectingScreenAction {
     None,
     Close,
     SubmitPassword(String),
+    /// User accepted the unknown/changed host key.
+    AcceptHostKey,
+    /// User rejected the host key.
+    RejectHostKey,
 }
 
 /// Render the "Connecting to..." screen with a bouncing progress indicator,
@@ -195,6 +208,101 @@ pub(crate) fn show_connecting_screen(ui: &mut egui::Ui, info: &mut PendingSshInf
     ui.painter().rect_filled(rect, 0.0, bg);
 
     let center = rect.center();
+
+    // --- Host key verification prompt ---
+    if let Some(prompt) = &info.host_key_prompt {
+        let content_width = (rect.width() * 0.7).min(560.0);
+        let content_rect = egui::Rect::from_center_size(
+            center,
+            egui::Vec2::new(content_width, rect.height() * 0.7),
+        );
+        let mut action = ConnectingScreenAction::None;
+        let is_changed = prompt.is_changed;
+        let host = prompt.host.clone();
+        let port = prompt.port;
+        let key_type = prompt.key_type.clone();
+        let fingerprint = prompt.fingerprint.clone();
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                if is_changed {
+                    ui.label(
+                        egui::RichText::new("WARNING: HOST KEY HAS CHANGED!")
+                            .size(22.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(220, 50, 50)),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Someone could be eavesdropping on you right now \
+                             (man-in-the-middle attack). It is also possible that \
+                             the host key has just been changed.",
+                        )
+                        .size(13.0)
+                        .color(if ui.visuals().dark_mode {
+                            egui::Color32::from_gray(180)
+                        } else {
+                            egui::Color32::from_gray(60)
+                        }),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "The authenticity of host '{}' can't be established.",
+                            if port != 22 {
+                                format!("[{host}]:{port}")
+                            } else {
+                                host.clone()
+                            }
+                        ))
+                        .size(18.0),
+                    );
+                }
+                ui.add_space(16.0);
+                ui.label(
+                    egui::RichText::new(format!("{key_type} key fingerprint is:"))
+                        .size(14.0)
+                        .color(if ui.visuals().dark_mode {
+                            egui::Color32::from_gray(160)
+                        } else {
+                            egui::Color32::from_gray(80)
+                        }),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(&fingerprint)
+                        .size(15.0)
+                        .family(egui::FontFamily::Monospace)
+                        .strong(),
+                );
+                ui.add_space(20.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Are you sure you want to continue connecting?",
+                    )
+                    .size(14.0),
+                );
+                ui.add_space(12.0);
+                let btn_size = crate::ui::widgets::BTN_MIN_SIZE;
+                let spacing = ui.spacing().item_spacing.x;
+                let total_w = btn_size.x * 2.0 + spacing;
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(total_w, btn_size.y),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        if crate::ui::widgets::dialog_button(ui, "Accept").clicked() {
+                            action = ConnectingScreenAction::AcceptHostKey;
+                        }
+                        if crate::ui::widgets::dialog_button(ui, "Reject").clicked() {
+                            action = ConnectingScreenAction::RejectHostKey;
+                        }
+                    },
+                );
+            });
+        });
+        return action;
+    }
 
     // --- Password prompt (server reachable, needs password) ---
     if info.needs_password {

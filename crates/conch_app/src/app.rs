@@ -86,6 +86,10 @@ pub(crate) struct PendingSshInfo {
     pub(crate) password_focus: bool,
     /// Pending auth state held while waiting for password input.
     pub(crate) pending_auth: Option<conch_session::SshConnectResult>,
+    /// Receiver for host key verification prompts from the SSH handshake.
+    pub(crate) host_key_rx: Option<tokio::sync::mpsc::UnboundedReceiver<conch_session::HostKeyPrompt>>,
+    /// Active host key prompt waiting for user decision.
+    pub(crate) host_key_prompt: Option<conch_session::HostKeyPrompt>,
 }
 
 /// A resolved plugin keybinding ready for matching.
@@ -475,6 +479,18 @@ impl ConchApp {
             } else {
                 self.quit_requested = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+
+        // Poll host key verification prompts.
+        for info in self.pending_ssh_info.values_mut() {
+            if info.host_key_prompt.is_none() {
+                if let Some(rx) = &mut info.host_key_rx {
+                    if let Ok(prompt) = rx.try_recv() {
+                        info.host_key_prompt = Some(prompt);
+                        ctx.request_repaint();
+                    }
+                }
             }
         }
 
@@ -2141,6 +2157,20 @@ impl eframe::App for ConchApp {
                                                 conch_session::SshConnectResult::Connected(_) => unreachable!(),
                                             }
                                         });
+                                    }
+                                }
+                            }
+                            ssh::ConnectingScreenAction::AcceptHostKey => {
+                                if let Some(info) = self.pending_ssh_info.get_mut(&id) {
+                                    if let Some(prompt) = info.host_key_prompt.take() {
+                                        let _ = prompt.response_tx.send(true);
+                                    }
+                                }
+                            }
+                            ssh::ConnectingScreenAction::RejectHostKey => {
+                                if let Some(info) = self.pending_ssh_info.get_mut(&id) {
+                                    if let Some(prompt) = info.host_key_prompt.take() {
+                                        let _ = prompt.response_tx.send(false);
                                     }
                                 }
                             }

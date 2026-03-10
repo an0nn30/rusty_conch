@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::connector::EventProxy;
 use crate::sftp::SftpFileProvider;
-use super::client::{ConnectParams, ClientHandler, ShellConnectResult, SshConnection, connect_shell};
+use super::client::{ConnectParams, ClientHandler, HostKeyTx, ShellConnectResult, SshConnection, connect_shell};
 
 /// SSH terminal session — bridges an async SSH channel to alacritty_terminal's Term.
 pub struct SshSession {
@@ -73,6 +73,7 @@ impl SshSession {
         cols: u16,
         rows: u16,
         term_config: term::Config,
+        host_key_tx: Option<HostKeyTx>,
     ) -> Result<SshConnectResult> {
         let (event_proxy, event_rx) = EventProxy::new();
 
@@ -85,7 +86,7 @@ impl SshSession {
         let term = Arc::new(FairMutex::new(term));
 
         // Connect SSH
-        let result = connect_shell(params, cols as u32, rows as u32)
+        let result = connect_shell(params, cols as u32, rows as u32, host_key_tx)
             .await
             .context("Failed to establish SSH shell session")?;
 

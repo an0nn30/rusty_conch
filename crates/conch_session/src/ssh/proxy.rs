@@ -13,6 +13,7 @@ use super::client::{ClientHandler, ConnectParams};
 pub async fn connect_via_proxy(
     proxy_cmd: &str,
     params: &ConnectParams,
+    handler: ClientHandler,
 ) -> Result<client::Handle<ClientHandler>> {
     // Expand %h and %p placeholders
     let expanded = proxy_cmd
@@ -58,7 +59,6 @@ pub async fn connect_via_proxy(
     let stream = tokio::io::join(stdout, stdin);
 
     let config = Arc::new(client::Config::default());
-    let handler = ClientHandler;
 
     let handle = client::connect_stream(config, stream, handler)
         .await
