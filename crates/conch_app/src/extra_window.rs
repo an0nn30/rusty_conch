@@ -535,10 +535,10 @@ impl ExtraWindow {
         // 9. Titlebar spacer (native menu on macOS with fullsize_content_view)
         // ---------------------------------------------------------------
         if shared.use_native_menu {
-            let needs_spacer = match decorations {
-                WindowDecorations::None | WindowDecorations::Buttonless => false,
-                _ => cfg!(target_os = "macos"),
-            };
+            // Only Transparent uses fullsize_content_view with native menu,
+            // so only it needs a spacer to push content below the title bar.
+            let needs_spacer = matches!(decorations, WindowDecorations::Transparent)
+                && cfg!(target_os = "macos");
             if needs_spacer {
                 egui::TopBottomPanel::top(egui::Id::from(self.viewport_id).with("titlebar_spacer"))
                     .exact_height(28.0)

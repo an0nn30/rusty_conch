@@ -1552,10 +1552,10 @@ impl eframe::App for ConchApp {
             // still extends behind the title bar area. Add a spacer to push content below
             // the ~28px title bar. Buttonless and None have no title bar, so no spacer.
             if self.use_native_menu {
-                let needs_spacer = match decorations {
-                    WindowDecorations::None | WindowDecorations::Buttonless => false,
-                    _ => cfg!(target_os = "macos"),
-                };
+                // Only Transparent uses fullsize_content_view with native menu,
+                // so only it needs a spacer to push content below the title bar.
+                let needs_spacer = matches!(decorations, WindowDecorations::Transparent)
+                    && cfg!(target_os = "macos");
                 if needs_spacer {
                     egui::TopBottomPanel::top("titlebar_spacer")
                         .exact_height(28.0)
