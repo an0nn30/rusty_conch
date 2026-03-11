@@ -51,6 +51,8 @@ pub struct UiTheme {
     pub font_small: f32,
     /// Normal font size (body text, buttons).
     pub font_normal: f32,
+    /// Minimum width for menu popups (menu bar and context menus).
+    pub menu_width: f32,
 }
 
 impl UiTheme {
@@ -102,6 +104,7 @@ impl UiTheme {
             rounding: 4,
             font_small: 11.0,
             font_normal: 13.0,
+            menu_width: 200.0,
         }
     }
 
@@ -204,9 +207,14 @@ impl UiTheme {
     }
 
     /// Apply this theme to an egui context.
+    ///
+    /// Sets both `Visuals` (colors, rounding, shadows) and `Spacing`
+    /// (menu width). This covers all egui popups — menu bar dropdowns
+    /// and right-click context menus use the same pipeline.
     pub fn apply(&self, ctx: &egui::Context) {
         let mut style = (*ctx.style()).clone();
         style.visuals = self.to_visuals();
+        style.spacing.menu_width = self.menu_width;
         ctx.set_style(style);
     }
 }
