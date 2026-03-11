@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use conch_core::config;
-use egui::{Color32, ViewportCommand};
+use egui::ViewportCommand;
 
 use crate::extra_window::ExtraWindow;
 use crate::input::ResolvedShortcuts;
@@ -40,6 +40,7 @@ pub struct ConchApp {
     // UI chrome.
     pub(crate) tab_bar_state: crate::tab_bar::TabBarState,
     pub(crate) menu_bar_state: MenuBarState,
+    pub(crate) context_menu_state: crate::context_menu::ContextMenuState,
     pub(crate) platform: PlatformCapabilities,
 
     // Multi-window.
@@ -64,6 +65,7 @@ impl ConchApp {
 
         let shortcuts = ResolvedShortcuts::from_config(&user_config.conch.keyboard);
         let platform = PlatformCapabilities::current();
+        let menu_bar_state = MenuBarState::new(user_config.conch.ui.native_menu_bar, &platform);
         let state = AppState::new(user_config, persistent);
 
         let ipc_listener = IpcListener::start();
@@ -83,7 +85,8 @@ impl ConchApp {
             last_blink: Instant::now(),
             terminal_frame_cache: TerminalFrameCache::default(),
             tab_bar_state: crate::tab_bar::TabBarState::default(),
-            menu_bar_state: MenuBarState::default(),
+            menu_bar_state,
+            context_menu_state: crate::context_menu::ContextMenuState::default(),
             platform,
             extra_windows: Vec::new(),
             next_viewport_num: 1,
@@ -160,9 +163,10 @@ impl ConchApp {
                         self.shortcuts = ResolvedShortcuts::from_config(&new_config.conch.keyboard);
                         let scheme = conch_core::color_scheme::resolve_theme(&new_config.colors.theme);
                         self.state.colors = ResolvedColors::from_scheme(&scheme);
-                        self.state.theme = crate::ui_theme::UiTheme::from_colors(&self.state.colors);
+                        self.state.theme = crate::ui_theme::UiTheme::from_colors(&self.state.colors, new_config.colors.appearance_mode);
                         self.state.theme_dirty = true;
                         crate::apply_appearance_mode(ctx, new_config.colors.appearance_mode);
+                        self.menu_bar_state.update_mode(new_config.conch.ui.native_menu_bar, &self.platform);
                         self.state.user_config = new_config;
                     }
                 }
@@ -170,7 +174,7 @@ impl ConchApp {
                     log::info!("Themes changed, reloading...");
                     let scheme = conch_core::color_scheme::resolve_theme(&self.state.user_config.colors.theme);
                     self.state.colors = ResolvedColors::from_scheme(&scheme);
-                    self.state.theme = crate::ui_theme::UiTheme::from_colors(&self.state.colors);
+                    self.state.theme = crate::ui_theme::UiTheme::from_colors(&self.state.colors, self.state.user_config.colors.appearance_mode);
                     self.state.theme_dirty = true;
                 }
             }
@@ -316,9 +320,7 @@ impl eframe::App for ConchApp {
             let drag_h = self.cell_height.max(6.0);
             egui::TopBottomPanel::top("drag_region")
                 .exact_height(drag_h)
-                .frame(egui::Frame::NONE.fill(Color32::from_rgba_unmultiplied(
-                    bg_color.r(), bg_color.g(), bg_color.b(), 180,
-                )))
+                .frame(egui::Frame::NONE.fill(self.state.theme.bg_with_alpha(180)))
                 .show(ctx, |ui| {
                     let rect = ui.available_rect_before_wrap();
                     let response = ui.interact(rect, ui.id().with("drag"), egui::Sense::drag());
@@ -341,12 +343,13 @@ impl eframe::App for ConchApp {
         }
 
         // Menu bar.
-        if let Some(action) = crate::menu_bar::show(ctx, &mut self.menu_bar_state, &self.platform) {
+        if let Some(action) = crate::menu_bar::show(ctx, &mut self.menu_bar_state) {
             crate::menu_bar::handle_action(action, ctx, self);
         }
 
         // Central panel: terminal.
         let mut pending_resize: Option<(u16, u16)> = None;
+        let mut context_action: Option<crate::menu_bar::MenuAction> = None;
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(bg_color))
@@ -368,6 +371,12 @@ impl eframe::App for ConchApp {
 
                     pending_resize = Some((size_info.columns() as u16, size_info.rows() as u16));
 
+                    // Check mouse mode for context menu suppression.
+                    let mouse_mode = term
+                        .try_lock_unfair()
+                        .map(|t| t.mode().intersects(alacritty_terminal::term::TermMode::MOUSE_MODE))
+                        .unwrap_or(false);
+
                     // Mouse handling.
                     crate::mouse::handle_terminal_mouse(
                         ctx,
@@ -379,8 +388,22 @@ impl eframe::App for ConchApp {
                         self.cell_height,
                         self.state.user_config.terminal.scroll_sensitivity,
                     );
+
+                    // Context menu (suppressed in mouse mode for tmux compatibility).
+                    let has_selection = self.selection.normalized().is_some();
+                    context_action = crate::context_menu::show(
+                        &response,
+                        &mut self.context_menu_state,
+                        mouse_mode,
+                        has_selection,
+                    );
                 }
             });
+
+        // Handle context menu action outside the panel closure.
+        if let Some(action) = context_action {
+            crate::menu_bar::handle_action(action, ctx, self);
+        }
 
         // Resize sessions after releasing the panel borrow.
         if let Some((cols, rows)) = pending_resize {

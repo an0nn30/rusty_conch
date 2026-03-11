@@ -6,12 +6,14 @@ use super::MenuAction;
 /// Render the egui in-window menu bar. Returns any triggered action.
 pub fn show(ctx: &egui::Context) -> Option<MenuAction> {
     let mut action = None;
+    let menu_width = ctx.style().spacing.menu_width;
 
     egui::TopBottomPanel::top("menu_bar")
         .frame(egui::Frame::NONE.fill(ctx.style().visuals.panel_fill))
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    ui.set_min_width(menu_width);
                     if ui.button("New Tab").clicked() {
                         action = Some(MenuAction::NewTab);
                         ui.close_menu();
@@ -33,6 +35,7 @@ pub fn show(ctx: &egui::Context) -> Option<MenuAction> {
                 });
 
                 ui.menu_button("Edit", |ui| {
+                    ui.set_min_width(menu_width);
                     if ui.button("Copy").clicked() {
                         action = Some(MenuAction::Copy);
                         ui.close_menu();
@@ -49,6 +52,7 @@ pub fn show(ctx: &egui::Context) -> Option<MenuAction> {
                 });
 
                 ui.menu_button("View", |ui| {
+                    ui.set_min_width(menu_width);
                     if ui.button("Zen Mode").clicked() {
                         action = Some(MenuAction::ZenMode);
                         ui.close_menu();
@@ -69,6 +73,7 @@ pub fn show(ctx: &egui::Context) -> Option<MenuAction> {
                 });
 
                 ui.menu_button("Help", |ui| {
+                    ui.set_min_width(menu_width);
                     if ui.button("About Conch").clicked() {
                         // TODO: show about dialog
                         ui.close_menu();

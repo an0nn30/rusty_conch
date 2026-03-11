@@ -63,7 +63,7 @@ impl AppState {
     pub fn new(user_config: UserConfig, persistent: PersistentState) -> Self {
         let scheme = color_scheme::resolve_theme(&user_config.colors.theme);
         let colors = ResolvedColors::from_scheme(&scheme);
-        let theme = UiTheme::from_colors(&colors);
+        let theme = UiTheme::from_colors(&colors, user_config.colors.appearance_mode);
 
         Self {
             user_config,

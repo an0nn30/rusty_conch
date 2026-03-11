@@ -1,7 +1,10 @@
 //! Cross-platform menu bar.
 //!
-//! On macOS: native NSMenu global menu bar.
-//! On other platforms: egui in-window menu bar.
+//! Resolves the menu bar rendering strategy from the user config and
+//! platform capabilities — no hardcoded OS checks leak into `app.rs`.
+//!
+//! On macOS with `native_menu_bar = true`: native NSMenu global menu bar.
+//! Otherwise: egui in-window menu bar (themed by the UI engine).
 //!
 //! Designed for extensibility: plugins will register additional items
 //! via `MenuBarState` in a future phase.
@@ -34,23 +37,65 @@ pub enum MenuAction {
     ZoomReset,
 }
 
+/// Resolved rendering strategy for the menu bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuBarMode {
+    /// Native OS global menu bar (macOS NSMenu).
+    Native,
+    /// egui in-window menu bar (all platforms).
+    InWindow,
+}
+
 /// Persistent menu bar state. Plugins will register items here in Phase 2.
-#[derive(Default)]
 pub struct MenuBarState {
-    /// Whether the native menu has been set up (macOS only, done once).
+    mode: MenuBarMode,
+    /// Whether the native menu has been set up (done once).
     native_setup_done: bool,
 }
 
-/// Set up the menu bar. On macOS, installs the native NSMenu (once).
-/// On other platforms, this is a no-op (egui menu renders each frame).
-pub fn setup(state: &mut MenuBarState, _platform: &PlatformCapabilities) {
+impl MenuBarState {
+    /// Create menu bar state by resolving the rendering mode from config
+    /// and platform capabilities. The menu bar owns this decision — callers
+    /// don't need to know how it works.
+    pub fn new(config_native: bool, platform: &PlatformCapabilities) -> Self {
+        let mode = if config_native && platform.native_global_menu {
+            MenuBarMode::Native
+        } else {
+            MenuBarMode::InWindow
+        };
+
+        Self {
+            mode,
+            native_setup_done: false,
+        }
+    }
+
+    /// Re-resolve the mode after a config reload.
+    pub fn update_mode(&mut self, config_native: bool, platform: &PlatformCapabilities) {
+        let new_mode = if config_native && platform.native_global_menu {
+            MenuBarMode::Native
+        } else {
+            MenuBarMode::InWindow
+        };
+
+        if new_mode != self.mode {
+            self.mode = new_mode;
+            // If switching away from native, the NSMenu stays installed
+            // (no way to remove it), but we stop draining its actions
+            // and render the egui bar instead.
+        }
+    }
+}
+
+/// Ensure the native menu is set up if needed (called once).
+fn ensure_setup(state: &mut MenuBarState) {
     if state.native_setup_done {
         return;
     }
 
     #[cfg(target_os = "macos")]
     {
-        if _platform.native_global_menu {
+        if state.mode == MenuBarMode::Native {
             native_macos::setup_menu_bar();
             state.native_setup_done = true;
             return;
@@ -60,23 +105,29 @@ pub fn setup(state: &mut MenuBarState, _platform: &PlatformCapabilities) {
     state.native_setup_done = true;
 }
 
-/// Render the menu bar (if in-window) and collect any triggered actions.
+/// Render the menu bar and collect any triggered actions.
+///
+/// Automatically uses the resolved mode — native or in-window.
 pub fn show(
     ctx: &egui::Context,
     state: &mut MenuBarState,
-    platform: &PlatformCapabilities,
 ) -> Option<MenuAction> {
-    // Ensure native menu is set up on first frame.
-    setup(state, platform);
+    ensure_setup(state);
 
-    // On macOS with native menu, drain actions from the ObjC channel.
-    #[cfg(target_os = "macos")]
-    if platform.native_global_menu {
-        return native_macos::drain_actions().into_iter().next();
+    match state.mode {
+        MenuBarMode::Native => {
+            #[cfg(target_os = "macos")]
+            {
+                return native_macos::drain_actions().into_iter().next();
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                // Can't happen — mode resolution prevents this.
+                unreachable!()
+            }
+        }
+        MenuBarMode::InWindow => egui_menu::show(ctx),
     }
-
-    // Fallback: egui in-window menu bar.
-    egui_menu::show(ctx)
 }
 
 /// Handle a menu action, mutating app state as needed.

@@ -99,6 +99,12 @@ shape = "Block"
 # Accepts: true, false, "Always", "On", "Never", "Off"
 blinking = true
 
+# Vi mode cursor style (shown when vi mode is active in supported shells).
+# Uncomment to override. Same options as [terminal.cursor.style] above.
+# [terminal.cursor.vi_mode_style]
+# shape = "Block"
+# blinking = false
+
 # ---------------------------------------------------------------------------
 # Conch — Keyboard Shortcuts
 # ---------------------------------------------------------------------------
@@ -127,5 +133,5 @@ font_family = ""
 font_size = 13.0
 
 # Use the native macOS global menu bar instead of the in-window menu bar.
-# Only applies on macOS; ignored on other platforms.
-native_menu_bar = false
+# Only applies on macOS; ignored on other platforms. Default: true.
+native_menu_bar = true

@@ -53,7 +53,7 @@ impl Default for UiConfig {
         Self {
             font_family: String::new(),
             font_size: 13.0,
-            native_menu_bar: false,
+            native_menu_bar: true,
         }
     }
 }

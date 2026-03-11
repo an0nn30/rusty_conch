@@ -137,6 +137,7 @@ pub fn show(ctx: &egui::Context, state: &AppState, tab_state: &mut TabBarState) 
     }
 
     let colors = TabBarColors::from_theme(&state.theme);
+    let font_small = state.theme.font_small;
     let mut actions = Vec::new();
 
     let tab_height = 28.0;
@@ -209,7 +210,7 @@ pub fn show(ctx: &egui::Context, state: &AppState, tab_state: &mut TabBarState) 
                 );
                 let galley = ui.painter().layout_no_wrap(
                     label,
-                    egui::FontId::proportional(11.0),
+                    egui::FontId::proportional(font_small),
                     color,
                 );
 

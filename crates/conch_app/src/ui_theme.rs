@@ -7,6 +7,7 @@
 //! Designed for plugin SDK access: plugins will be able to query the
 //! theme to render UI that matches the host application.
 
+use conch_core::config::AppearanceMode;
 use egui::{
     Color32, CornerRadius, Shadow, Stroke, Visuals,
     style::{WidgetVisuals, Widgets},
@@ -53,11 +54,15 @@ pub struct UiTheme {
     pub font_normal: f32,
     /// Minimum width for menu popups (menu bar and context menus).
     pub menu_width: f32,
+
+    // ── Mode ──
+    /// Whether we are in dark mode.
+    pub dark_mode: bool,
 }
 
 impl UiTheme {
-    /// Build a theme from the terminal color scheme.
-    pub fn from_colors(colors: &ResolvedColors) -> Self {
+    /// Build a theme from the terminal color scheme and appearance mode.
+    pub fn from_colors(colors: &ResolvedColors, appearance: AppearanceMode) -> Self {
         let bg = to_color32(colors.background);
         let fg = to_color32(colors.foreground);
 
@@ -65,23 +70,27 @@ impl UiTheme {
         let bg_g = bg.g();
         let bg_b = bg.b();
 
+        // For System mode, infer dark/light from background luminance.
+        let dark_mode = match appearance {
+            AppearanceMode::Dark => true,
+            AppearanceMode::Light => false,
+            AppearanceMode::System => {
+                let luminance = 0.299 * bg_r as f32 + 0.587 * bg_g as f32 + 0.114 * bg_b as f32;
+                luminance < 128.0
+            }
+        };
+
+        // Surface offsets: lighten in dark mode, darken in light mode.
+        let surface = offset_color(bg, dark_mode, 15);
+        let surface_raised = offset_color(bg, dark_mode, 30);
+        let surface_top = offset_color(bg, dark_mode, 45);
+        let border = offset_color(bg, dark_mode, 50);
+
         Self {
             bg,
-            surface: Color32::from_rgb(
-                bg_r.saturating_add(15),
-                bg_g.saturating_add(15),
-                bg_b.saturating_add(15),
-            ),
-            surface_raised: Color32::from_rgb(
-                bg_r.saturating_add(30),
-                bg_g.saturating_add(30),
-                bg_b.saturating_add(30),
-            ),
-            surface_top: Color32::from_rgb(
-                bg_r.saturating_add(45),
-                bg_g.saturating_add(45),
-                bg_b.saturating_add(45),
-            ),
+            surface,
+            surface_raised,
+            surface_top,
             text: fg,
             text_secondary: Color32::from_rgb(
                 (colors.foreground[0] * 180.0) as u8,
@@ -94,17 +103,14 @@ impl UiTheme {
                 (colors.foreground[2] * 90.0) as u8,
             ),
             accent: to_color32(colors.normal[4]), // blue
-            border: Color32::from_rgb(
-                bg_r.saturating_add(50),
-                bg_g.saturating_add(50),
-                bg_b.saturating_add(50),
-            ),
+            border,
             warn: to_color32(colors.normal[3]),  // yellow
             error: to_color32(colors.normal[1]), // red
-            rounding: 4,
+            rounding: 0,
             font_small: 11.0,
             font_normal: 13.0,
-            menu_width: 200.0,
+            menu_width: 120.0,
+            dark_mode,
         }
     }
 
@@ -159,7 +165,7 @@ impl UiTheme {
         };
 
         Visuals {
-            dark_mode: true,
+            dark_mode: self.dark_mode,
             override_text_color: None,
             widgets: Widgets {
                 noninteractive,
@@ -178,7 +184,7 @@ impl UiTheme {
             code_bg_color: self.surface,
             warn_fg_color: self.warn,
             error_fg_color: self.error,
-            window_corner_radius: rounding,
+            window_corner_radius: CornerRadius::ZERO,
             window_shadow: Shadow::NONE,
             window_fill: self.surface,
             window_stroke: Stroke::new(1.0, self.border),
@@ -206,6 +212,12 @@ impl UiTheme {
         }
     }
 
+    /// Return the background color with a custom alpha (0–255).
+    /// Useful for translucent overlays like the buttonless drag region.
+    pub fn bg_with_alpha(&self, alpha: u8) -> Color32 {
+        Color32::from_rgba_unmultiplied(self.bg.r(), self.bg.g(), self.bg.b(), alpha)
+    }
+
     /// Apply this theme to an egui context.
     ///
     /// Sets both `Visuals` (colors, rounding, shadows) and `Spacing`
@@ -216,6 +228,23 @@ impl UiTheme {
         style.visuals = self.to_visuals();
         style.spacing.menu_width = self.menu_width;
         ctx.set_style(style);
+    }
+}
+
+/// Offset a color by `amount` — lighten in dark mode, darken in light mode.
+fn offset_color(base: Color32, dark_mode: bool, amount: u8) -> Color32 {
+    if dark_mode {
+        Color32::from_rgb(
+            base.r().saturating_add(amount),
+            base.g().saturating_add(amount),
+            base.b().saturating_add(amount),
+        )
+    } else {
+        Color32::from_rgb(
+            base.r().saturating_sub(amount),
+            base.g().saturating_sub(amount),
+            base.b().saturating_sub(amount),
+        )
     }
 }
 
