@@ -276,19 +276,103 @@ pub fn set_tabbing_identifier(identifier: &str) {
     }
 }
 
+/// Track which NSWindow pointers we've already added to the tab group.
+static TABBED_WINDOW_PTRS: LazyLock<Mutex<Vec<usize>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
 /// Configure all windows for native macOS tab grouping.
-/// Sets tabbingMode to Preferred and assigns a shared tabbingIdentifier
-/// so macOS renders the native tab bar and groups windows together.
+///
+/// Sets tabbingMode to Preferred and tabbingIdentifier on all windows.
+/// Any NEW window (not previously seen) is explicitly added to an existing
+/// window's tab group via `addTabbedWindow:ordered:`.
 pub fn configure_native_tabs(identifier: &str) {
-    use objc2_app_kit::NSWindowTabbingMode;
+    use objc2_app_kit::{NSWindow, NSWindowTabbingMode};
     let mtm = MainThreadMarker::new()
         .expect("configure_native_tabs must be called from the main thread");
+
+    // Force macOS to always merge windows with the same identifier into tabs.
+    NSWindow::setAllowsAutomaticWindowTabbing(true, mtm);
+
     let app = NSApplication::sharedApplication(mtm);
     let windows = app.windows();
     let ns_id = NSString::from_str(identifier);
+
     for window in windows.iter() {
+        if !window.isVisible() {
+            continue;
+        }
         window.setTabbingIdentifier(&ns_id);
         window.setTabbingMode(NSWindowTabbingMode::Preferred);
+    }
+
+    // Seed the tracking set with the initial windows.
+    if let Ok(mut known) = TABBED_WINDOW_PTRS.lock() {
+        for window in windows.iter() {
+            if !window.isVisible() {
+                continue;
+            }
+            let ptr = objc2::rc::Retained::as_ptr(&window) as usize;
+            if !known.contains(&ptr) {
+                known.push(ptr);
+            }
+        }
+    }
+}
+
+/// Configure any newly created windows for native tab grouping.
+/// Sets tabbingIdentifier and tabbingMode on windows that haven't been seen yet,
+/// then uses addTabbedWindow:ordered: to explicitly merge them into the tab group.
+pub fn add_window_to_tab_group() {
+    use objc2_app_kit::{NSWindowOrderingMode, NSWindowTabbingMode};
+    let mtm = MainThreadMarker::new()
+        .expect("add_window_to_tab_group must be called from the main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    let windows = app.windows();
+
+    let mut known = TABBED_WINDOW_PTRS.lock().unwrap();
+    let ns_id = NSString::from_str("com.conch.terminal");
+
+    let mut host: Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> = None;
+    let mut new_wins: Vec<objc2::rc::Retained<objc2_app_kit::NSWindow>> = Vec::new();
+
+    for window in windows.iter() {
+        // Skip internal/invisible windows (AppKit panels, etc.)
+        if !window.isVisible() {
+            continue;
+        }
+        let ptr = objc2::rc::Retained::as_ptr(&window) as usize;
+        if known.contains(&ptr) {
+            if host.is_none() {
+                host = Some(window.clone());
+            }
+        } else {
+            window.setTabbingIdentifier(&ns_id);
+            window.setTabbingMode(NSWindowTabbingMode::Preferred);
+            known.push(ptr);
+            new_wins.push(window.clone());
+        }
+    }
+    drop(known);
+
+    // Explicitly add new windows to the host's tab group.
+    if let Some(host_win) = host {
+        for new_win in &new_wins {
+            host_win.addTabbedWindow_ordered(new_win, NSWindowOrderingMode::Above);
+            new_win.makeKeyAndOrderFront(None);
+        }
+    }
+}
+
+/// Remove closed windows from the native tab tracking set.
+pub fn cleanup_native_tab_tracking() {
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let app = NSApplication::sharedApplication(mtm);
+    let windows = app.windows();
+    let live: Vec<usize> = windows.iter()
+        .map(|w| objc2::rc::Retained::as_ptr(&w) as usize)
+        .collect();
+    if let Ok(mut known) = TABBED_WINDOW_PTRS.lock() {
+        known.retain(|ptr| live.contains(ptr));
     }
 }
 

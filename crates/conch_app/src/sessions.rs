@@ -108,6 +108,12 @@ impl ConchApp {
         let viewport_id = egui::ViewportId::from_hash_of(format!("conch_window_{num}"));
         let builder = self.build_extra_viewport();
         self.extra_windows.push(ExtraWindow::new(viewport_id, builder, session));
+
+        // Schedule native tab grouping after eframe creates the NSWindow.
+        #[cfg(target_os = "macos")]
+        if self.use_native_tabs {
+            self.native_tab_pending_frames = 2; // Wait 2 frames for window init.
+        }
     }
 
     /// Resize all sessions if the computed grid dimensions changed.

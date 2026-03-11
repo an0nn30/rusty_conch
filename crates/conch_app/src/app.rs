@@ -163,6 +163,9 @@ pub struct ConchApp {
     pub(crate) use_native_menu: bool,
     /// On macOS, use native OS tab bar instead of custom egui tab bar.
     pub(crate) use_native_tabs: bool,
+    /// Countdown frames before calling addTabbedWindow (gives eframe time to init the NSWindow).
+    #[cfg(target_os = "macos")]
+    pub(crate) native_tab_pending_frames: u8,
     /// The right sidebar was opened temporarily for quick connect (Cmd+/).
     pub(crate) quick_connect_opened_sidebar: bool,
     /// The left sidebar was opened temporarily for plugin search (Cmd+Shift+P).
@@ -378,6 +381,8 @@ impl ConchApp {
             last_window_title: String::new(),
             use_native_menu,
             use_native_tabs: cfg!(target_os = "macos"),
+            #[cfg(target_os = "macos")]
+            native_tab_pending_frames: 0,
             quick_connect_opened_sidebar: false,
             plugin_search_opened_sidebar: false,
             plugin_search_query: String::new(),
@@ -2442,10 +2447,17 @@ impl ConchApp {
         }
         self.focused_extra_window = focused_extra;
 
-        // Ensure any newly created viewports get native tab configuration.
+        // Add newly created viewports to the native tab group.
+        // Deferred by one frame to let eframe/winit fully initialize the NSWindow.
         #[cfg(target_os = "macos")]
         if self.use_native_tabs {
-            crate::macos_menu::configure_native_tabs("com.conch.terminal");
+            if self.native_tab_pending_frames > 0 {
+                self.native_tab_pending_frames -= 1;
+                if self.native_tab_pending_frames == 0 {
+                    crate::macos_menu::add_window_to_tab_group();
+                }
+                ctx.request_repaint();
+            }
         }
 
         for win in &mut extra {
@@ -2498,8 +2510,15 @@ impl ConchApp {
             }
         }
 
+        let had_closed = extra.iter().any(|w| w.should_close);
         extra.retain(|w| !w.should_close);
         self.extra_windows = extra;
+
+        // Clean up native tab tracking when windows are removed.
+        #[cfg(target_os = "macos")]
+        if had_closed && self.use_native_tabs {
+            crate::macos_menu::cleanup_native_tab_tracking();
+        }
     }
 
     /// Push an internal notification (not from a plugin).
