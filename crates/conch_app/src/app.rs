@@ -1601,10 +1601,21 @@ impl eframe::App for ConchApp {
                     .inner_margin(egui::Margin { top: top_pad, bottom: bottom_pad, left: left_pad, right: 8 }))
                 .show(ctx, |ui| {
                 egui::menu::bar(ui, |ui| {
-                    // App title on the left (next to traffic lights).
+                    // App title centered in the full title bar.
                     if in_titlebar {
-                        ui.label(egui::RichText::new("Conch").color(ui.visuals().weak_text_color()));
-                        ui.add_space(4.0);
+                        let bar_rect = ui.max_rect();
+                        let font_id = egui::TextStyle::Body.resolve(ui.style());
+                        let color = ui.visuals().weak_text_color();
+                        let galley = ui.painter().layout_no_wrap(
+                            "Conch".to_owned(),
+                            font_id,
+                            color,
+                        );
+                        let text_pos = egui::pos2(
+                            bar_rect.center().x - galley.size().x / 2.0,
+                            bar_rect.center().y - galley.size().y / 2.0,
+                        );
+                        ui.painter().galley(text_pos, galley, color);
                     }
 
                     // Menu buttons right-aligned.
