@@ -31,6 +31,7 @@ pub fn show_bottom_panel(
     height: &mut f32,
     visible: &mut bool,
     panel_id: egui::Id,
+    text_edits: &mut HashMap<(usize, String), String>,
 ) -> BottomPanelAction {
     let mut action = BottomPanelAction::None;
 
@@ -96,7 +97,7 @@ pub fn show_bottom_panel(
             // Render the active tab's content.
             if let Some(idx) = *active_tab {
                 let widgets = panel_widgets.get(&idx).map(|v| v.as_slice()).unwrap_or(&[]);
-                let inner = render_panel_widgets(ui, idx, widgets);
+                let inner = render_panel_widgets(ui, idx, widgets, text_edits);
                 if !matches!(inner, BottomPanelAction::None) {
                     action = inner;
                 }
@@ -129,6 +130,7 @@ fn render_panel_widgets(
     ui: &mut egui::Ui,
     plugin_idx: usize,
     widgets: &[conch_plugin::PanelWidget],
+    text_edits: &mut HashMap<(usize, String), String>,
 ) -> BottomPanelAction {
     let mut action = BottomPanelAction::None;
 
@@ -220,6 +222,18 @@ fn render_panel_widgets(
                             ui.label(RichText::new(key).strong().size(11.0));
                             ui.label(RichText::new(value).size(11.0).monospace());
                         });
+                    }
+                    conch_plugin::PanelWidget::TextEdit { id, hint } => {
+                        let text = text_edits
+                            .entry((plugin_idx, id.clone()))
+                            .or_default();
+                        ui.add(
+                            egui::TextEdit::multiline(text)
+                                .hint_text(hint)
+                                .desired_width(ui.available_width())
+                                .desired_rows(8)
+                                .font(egui::TextStyle::Monospace),
+                        );
                     }
                 }
             }

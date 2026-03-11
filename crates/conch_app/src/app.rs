@@ -242,6 +242,8 @@ pub struct ConchApp {
     pub(crate) panel_keybind_events: std::collections::HashMap<usize, Vec<String>>,
     /// Response senders waiting for panel events, keyed by plugin index.
     pub(crate) panel_event_waiters: std::collections::HashMap<usize, tokio::sync::mpsc::UnboundedSender<conch_plugin::PluginResponse>>,
+    /// Text state for TextEdit panel widgets, keyed by (plugin_idx, widget_id).
+    pub(crate) panel_text_edits: std::collections::HashMap<(usize, String), String>,
     /// Checkbox states in the plugin list (mirrors loaded state, user toggles before applying).
     pub(crate) pending_plugin_loads: Vec<bool>,
     /// Resolved plugin keybindings (checked after app shortcuts).
@@ -428,6 +430,7 @@ impl ConchApp {
             panel_button_events: std::collections::HashMap::new(),
             panel_keybind_events: std::collections::HashMap::new(),
             panel_event_waiters: std::collections::HashMap::new(),
+            panel_text_edits: std::collections::HashMap::new(),
             pending_plugin_loads: Vec::new(),
             plugin_keybinds: Vec::new(),
             plugin_icons: HashMap::new(),
@@ -1783,6 +1786,7 @@ impl eframe::App for ConchApp {
                     &self.panel_names,
                     &mut self.pending_plugin_loads,
                     egui::Id::new("sidebar_content"),
+                    &mut self.panel_text_edits,
                 )
             } else {
                 SidebarAction::None
@@ -1850,6 +1854,7 @@ impl eframe::App for ConchApp {
                                 &mut self.active_session_panel_tab,
                                 &self.panel_widgets,
                                 &self.panel_names,
+                                &mut self.panel_text_edits,
                             );
                         });
                     } else {
@@ -2128,6 +2133,7 @@ impl eframe::App for ConchApp {
                 &mut self.bottom_panel_height,
                 &mut self.show_bottom_panel,
                 egui::Id::new("bottom_panel"),
+                &mut self.panel_text_edits,
             );
             self.handle_bottom_panel_action(bp_action);
 
@@ -2471,7 +2477,7 @@ impl ConchApp {
                 })
                 .collect();
 
-            let shared = crate::extra_window::SharedState {
+            let mut shared = crate::extra_window::SharedState {
                 user_config: &self.state.user_config,
                 colors: &self.state.colors,
                 shortcuts: &self.shortcuts,
@@ -2486,6 +2492,7 @@ impl ConchApp {
                 use_native_menu: self.use_native_menu,
                 bottom_panel_tabs: &self.bottom_panel_tabs,
                 transfers: &self.transfers,
+                panel_text_edits: &mut self.panel_text_edits,
             };
 
             for (idx, win) in extra.iter_mut().enumerate() {
@@ -2496,7 +2503,7 @@ impl ConchApp {
                     .with_title(&win.title);
                 let vid = win.viewport_id;
                 ctx.show_viewport_immediate(vid, builder, |vp_ctx, _class| {
-                    win.update(vp_ctx, &shared);
+                    win.update(vp_ctx, &mut shared);
                 });
                 if win.is_focused {
                     focused_extra = Some(idx);

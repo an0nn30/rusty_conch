@@ -345,6 +345,50 @@ pub fn register(lua: &Lua, ctx: PluginContext) -> LuaResult<()> {
         })?,
     )?;
 
+    // ui.panel_text_edit(id, hint?) — add a multiline text edit widget
+    ui.set(
+        "panel_text_edit",
+        lua.create_function(|lua, (id, hint): (String, Option<String>)| {
+            let widgets: mlua::Table = lua.named_registry_value("__panel_widgets")?;
+            let len = widgets.len()? + 1;
+            let w = lua.create_table()?;
+            w.set("type", "text_edit")?;
+            w.set("id", id)?;
+            w.set("hint", hint.unwrap_or_default())?;
+            widgets.set(len, w)?;
+            Ok(())
+        })?,
+    )?;
+
+    // ui.panel_get_text(id) — get the current text from a TextEdit widget
+    let ctx_get_text = ctx.clone();
+    ui.set(
+        "panel_get_text",
+        lua.create_async_function(move |lua, id: String| {
+            let ctx = ctx_get_text.clone();
+            async move {
+                let resp = ctx.send_command(PluginCommand::PanelGetText { id }).await;
+                match resp {
+                    PluginResponse::Output(s) => Ok(Value::String(lua.create_string(&s)?)),
+                    _ => Ok(Value::String(lua.create_string("")?)),
+                }
+            }
+        })?,
+    )?;
+
+    // ui.panel_set_text(id, text) — set the text in a TextEdit widget
+    let ctx_set_text = ctx.clone();
+    ui.set(
+        "panel_set_text",
+        lua.create_async_function(move |_lua, (id, text): (String, String)| {
+            let ctx = ctx_set_text.clone();
+            async move {
+                let _ = ctx.send_command(PluginCommand::PanelSetText { id, text }).await;
+                Ok(())
+            }
+        })?,
+    )?;
+
     // ui.set_refresh(seconds) — set panel refresh interval
     let ctx_refresh = ctx.clone();
     ui.set(
@@ -411,6 +455,10 @@ pub fn collect_panel_widgets(lua: &Lua) -> LuaResult<Vec<PanelWidget>> {
                     .collect::<Result<_, _>>()?;
                 PanelWidget::ScrollText(lines)
             }
+            "text_edit" => PanelWidget::TextEdit {
+                id: entry.get("id")?,
+                hint: entry.get("hint").unwrap_or_default(),
+            },
             _ => continue,
         };
         widgets.push(widget);

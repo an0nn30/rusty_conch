@@ -48,6 +48,7 @@ pub(crate) struct SharedState<'a> {
     pub use_native_menu: bool,
     pub bottom_panel_tabs: &'a [usize],
     pub transfers: &'a [sidebar::TransferStatus],
+    pub panel_text_edits: &'a mut HashMap<(usize, String), String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +429,7 @@ impl ExtraWindow {
     // -------------------------------------------------------------------
 
     /// Render this window's content. Called from `show_viewport_immediate`.
-    pub fn update(&mut self, ctx: &egui::Context, shared: &SharedState) {
+    pub fn update(&mut self, ctx: &egui::Context, shared: &mut SharedState) {
         // Clear pending actions from previous frame.
         self.pending_actions.clear();
 
@@ -678,6 +679,7 @@ impl ExtraWindow {
                 shared.panel_names,
                 &mut self.pending_plugin_loads,
                 egui::Id::from(self.viewport_id).with("sidebar_content"),
+                shared.panel_text_edits,
             )
         } else {
             SidebarAction::None
@@ -784,6 +786,7 @@ impl ExtraWindow {
                 &mut self.bottom_panel_height,
                 &mut self.show_bottom_panel,
                 egui::Id::from(self.viewport_id).with("bottom_panel"),
+                shared.panel_text_edits,
             );
             if !matches!(bp_action, BottomPanelAction::None) {
                 self.pending_actions

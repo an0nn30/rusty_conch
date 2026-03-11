@@ -38,6 +38,8 @@ pub enum PanelWidget {
     Button { id: String, label: String },
     KeyValue { key: String, value: String },
     ScrollText(Vec<String>),
+    /// An editable multiline text area. State is stored app-side, keyed by `id`.
+    TextEdit { id: String, hint: String },
 }
 
 /// Metadata about a session, returned to plugins.
@@ -145,6 +147,10 @@ pub enum PluginCommand {
     PanelWaitEvent,
     /// Non-blocking poll for a panel event. Returns PanelEvent or Ok (no event).
     PanelPollEvent,
+    /// Get the current text from a TextEdit widget by id.
+    PanelGetText { id: String },
+    /// Set the text in a TextEdit widget by id.
+    PanelSetText { id: String, text: String },
 }
 
 /// Response from the host application to a plugin command.

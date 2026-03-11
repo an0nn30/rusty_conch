@@ -278,6 +278,7 @@ pub fn show_sidebar_content(
     panel_names: &HashMap<usize, String>,
     pending_plugin_loads: &mut Vec<bool>,
     panel_id: egui::Id,
+    text_edits: &mut HashMap<(usize, String), String>,
 ) -> SidebarAction {
     let mut action = SidebarAction::None;
 
@@ -297,7 +298,7 @@ pub fn show_sidebar_content(
                 SidebarTab::PluginPanel(idx) => {
                     let name = panel_names.get(idx).map(|s| s.as_str()).unwrap_or("Panel");
                     let widgets = panel_widgets.get(idx).map(|v| v.as_slice()).unwrap_or(&[]);
-                    show_panel_plugin(ui, *idx, name, widgets)
+                    show_panel_plugin(ui, *idx, name, widgets, text_edits)
                 }
             };
         });
@@ -1087,6 +1088,7 @@ fn show_panel_plugin(
     plugin_idx: usize,
     name: &str,
     widgets: &[conch_plugin::PanelWidget],
+    text_edits: &mut HashMap<(usize, String), String>,
 ) -> SidebarAction {
     let mut action = SidebarAction::None;
 
@@ -1111,7 +1113,7 @@ fn show_panel_plugin(
     let has_scroll_text = widgets.iter().any(|w| matches!(w, conch_plugin::PanelWidget::ScrollText(_)));
 
     // Render non-ScrollText widgets in a scroll area (or directly if ScrollText present).
-    let render_regular = |ui: &mut egui::Ui, action: &mut SidebarAction| {
+    let mut render_regular = |ui: &mut egui::Ui, action: &mut SidebarAction| {
         for widget in widgets {
             match widget {
                 conch_plugin::PanelWidget::ScrollText(_) => {} // rendered separately below
@@ -1187,6 +1189,18 @@ fn show_panel_plugin(
                         ui.label(egui::RichText::new(key).strong().size(11.0));
                         ui.label(egui::RichText::new(value).size(11.0).monospace());
                     });
+                }
+                conch_plugin::PanelWidget::TextEdit { id, hint } => {
+                    let text = text_edits
+                        .entry((plugin_idx, id.clone()))
+                        .or_default();
+                    ui.add(
+                        egui::TextEdit::multiline(text)
+                            .hint_text(hint)
+                            .desired_width(ui.available_width())
+                            .desired_rows(8)
+                            .font(egui::TextStyle::Monospace),
+                    );
                 }
             }
         }

@@ -320,6 +320,23 @@ impl ConchApp {
                 // Refresh interval is handled in the plugin runner's loop, not here.
                 let _ = resp_tx.send(PluginResponse::Ok);
             }
+            PluginCommand::PanelGetText { id } => {
+                if let Some(idx) = discovered_idx {
+                    let text = self.panel_text_edits
+                        .get(&(idx, id))
+                        .cloned()
+                        .unwrap_or_default();
+                    let _ = resp_tx.send(PluginResponse::Output(text));
+                } else {
+                    let _ = resp_tx.send(PluginResponse::Output(String::new()));
+                }
+            }
+            PluginCommand::PanelSetText { id, text } => {
+                if let Some(idx) = discovered_idx {
+                    self.panel_text_edits.insert((idx, id), text);
+                }
+                let _ = resp_tx.send(PluginResponse::Ok);
+            }
             PluginCommand::PanelPollEvent => {
                 if let Some(idx) = discovered_idx {
                     // Check button events first.
@@ -525,6 +542,7 @@ impl ConchApp {
         self.panel_button_events.remove(&idx);
         self.panel_keybind_events.remove(&idx);
         self.panel_event_waiters.remove(&idx);
+        self.panel_text_edits.retain(|&(pi, _), _| pi != idx);
         self.plugin_icons.remove(&idx);
         // Switch back to Plugins tab
         self.state.sidebar_tab = crate::ui::sidebar::SidebarTab::Plugins;
@@ -585,6 +603,7 @@ impl ConchApp {
         self.panel_button_events.remove(&idx);
         self.panel_keybind_events.remove(&idx);
         self.panel_event_waiters.remove(&idx);
+        self.panel_text_edits.retain(|&(pi, _), _| pi != idx);
         self.plugin_icons.remove(&idx);
         self.bottom_panel_tabs.retain(|&i| i != idx);
         // Select another tab or hide the panel
@@ -647,6 +666,7 @@ impl ConchApp {
         self.panel_button_events.remove(&idx);
         self.panel_keybind_events.remove(&idx);
         self.panel_event_waiters.remove(&idx);
+        self.panel_text_edits.retain(|&(pi, _), _| pi != idx);
         self.plugin_icons.remove(&idx);
         self.session_panel_tabs.retain(|&i| i != idx);
         if self.active_session_panel_tab == Some(idx) {
