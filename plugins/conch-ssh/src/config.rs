@@ -15,6 +15,12 @@ pub struct ServerEntry {
     /// "key" or "password".
     pub auth_method: String,
     pub key_path: Option<String>,
+    /// Raw proxy command (e.g., `ssh -W %h:%p bastion`). `%h` and `%p` are expanded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_command: Option<String>,
+    /// SSH jump host (converted to `ssh -W %h:%p <jump>` at connect time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_jump: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +88,8 @@ mod tests {
             user: "root".to_string(),
             auth_method: "key".to_string(),
             key_path: None,
+            proxy_command: None,
+            proxy_jump: None,
         }
     }
 

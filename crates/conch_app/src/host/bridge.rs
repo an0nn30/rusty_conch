@@ -91,10 +91,18 @@ struct BridgeInner {
     session_registry: Arc<Mutex<SessionRegistry>>,
 }
 
+/// A status update queued by a plugin for one of its sessions.
+pub struct SessionStatusUpdate {
+    pub handle: SessionHandle,
+    pub status: conch_plugin_sdk::SessionStatus,
+    pub detail: Option<String>,
+}
+
 /// Registry of pending session open/close requests from plugins.
 pub struct SessionRegistry {
     pub pending_open: Vec<PendingSession>,
     pub pending_close: Vec<SessionHandle>,
+    pub pending_status: Vec<SessionStatusUpdate>,
     next_handle: u64,
 }
 
@@ -116,6 +124,7 @@ impl SessionRegistry {
         Self {
             pending_open: Vec::new(),
             pending_close: Vec::new(),
+            pending_status: Vec::new(),
             next_handle: 1,
         }
     }
@@ -152,6 +161,7 @@ pub fn build_host_api() -> HostApi {
         set_widgets: host_set_widgets,
         open_session: host_open_session,
         close_session: host_close_session,
+        set_session_status: host_set_session_status,
         show_form: host_show_form,
         show_confirm: host_show_confirm,
         show_prompt: host_show_prompt,
@@ -313,6 +323,26 @@ extern "C" fn host_close_session(handle: SessionHandle) {
     let b = bridge();
     b.session_registry.lock().pending_close.push(handle);
     log::info!("host_close_session: queued close for {:?}", handle);
+}
+
+extern "C" fn host_set_session_status(
+    handle: SessionHandle,
+    status: conch_plugin_sdk::SessionStatus,
+    detail: *const c_char,
+) {
+    let detail_str = if detail.is_null() {
+        None
+    } else {
+        Some(unsafe { cstr_to_str(detail) }.to_string())
+    };
+
+    let b = bridge();
+    b.session_registry.lock().pending_status.push(SessionStatusUpdate {
+        handle,
+        status,
+        detail: detail_str,
+    });
+    log::debug!("host_set_session_status: {:?} -> {:?}", handle, status);
 }
 
 // ---------------------------------------------------------------------------

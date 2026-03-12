@@ -285,6 +285,7 @@ impl ConchApp {
         let mut registry = self.session_registry.lock();
         let pending: Vec<_> = registry.pending_open.drain(..).collect();
         let closing: Vec<_> = registry.pending_close.drain(..).collect();
+        let status_updates: Vec<_> = registry.pending_status.drain(..).collect();
         drop(registry);
 
         // Process session opens.
@@ -301,6 +302,9 @@ impl ConchApp {
                     backend_handle: ps.backend_handle,
                 },
                 event_rx,
+                status: conch_plugin_sdk::SessionStatus::Connecting,
+                status_detail: None,
+                connect_started: Some(std::time::Instant::now()),
             };
 
             if self.last_cols > 0 && self.last_rows > 0 {
@@ -327,6 +331,24 @@ impl ConchApp {
             });
             if let Some(id) = id {
                 self.remove_session(id);
+            }
+        }
+
+        // Process status updates.
+        for update in status_updates {
+            let id = self.state.sessions.iter().find_map(|(id, s)| {
+                if let crate::state::SessionBackend::Plugin { bridge, .. } = &s.backend {
+                    if bridge.handle == update.handle {
+                        return Some(*id);
+                    }
+                }
+                None
+            });
+            if let Some(id) = id {
+                if let Some(session) = self.state.sessions.get_mut(&id) {
+                    session.status = update.status;
+                    session.status_detail = update.detail;
+                }
             }
         }
     }
@@ -531,54 +553,75 @@ impl eframe::App for ConchApp {
         let mut pending_resize: Option<(u16, u16)> = None;
         let mut context_action: Option<crate::menu_bar::MenuAction> = None;
 
+        let mut close_tab_requested = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(bg_color))
             .show(ctx, |ui| {
                 if let Some(session) = self.state.active_tab.and_then(|id| self.state.sessions.get(&id)) {
-                    let sel = self.selection.normalized();
-                    let term = session.term();
-                    let (response, size_info) = widget::show_terminal(
-                        ui,
-                        term,
-                        self.cell_width,
-                        self.cell_height,
-                        &self.state.colors,
-                        self.state.user_config.font.size,
-                        self.cursor_visible,
-                        sel,
-                        &mut self.terminal_frame_cache,
-                    );
+                    match session.status {
+                        conch_plugin_sdk::SessionStatus::Connecting => {
+                            show_connecting_screen(ui, &session.title, session.status_detail.as_deref(), session.connect_started);
+                        }
+                        conch_plugin_sdk::SessionStatus::Error => {
+                            let detail = session.status_detail.clone().unwrap_or_default();
+                            if show_error_screen(ui, &session.title, &detail) {
+                                close_tab_requested = true;
+                            }
+                        }
+                        conch_plugin_sdk::SessionStatus::Connected => {
+                            let sel = self.selection.normalized();
+                            let term = session.term();
+                            let (response, size_info) = widget::show_terminal(
+                                ui,
+                                term,
+                                self.cell_width,
+                                self.cell_height,
+                                &self.state.colors,
+                                self.state.user_config.font.size,
+                                self.cursor_visible,
+                                sel,
+                                &mut self.terminal_frame_cache,
+                            );
 
-                    pending_resize = Some((size_info.columns() as u16, size_info.rows() as u16));
+                            pending_resize = Some((size_info.columns() as u16, size_info.rows() as u16));
 
-                    // Check mouse mode for context menu suppression.
-                    let mouse_mode = term
-                        .try_lock_unfair()
-                        .map(|t| t.mode().intersects(alacritty_terminal::term::TermMode::MOUSE_MODE))
-                        .unwrap_or(false);
+                            // Check mouse mode for context menu suppression.
+                            let mouse_mode = term
+                                .try_lock_unfair()
+                                .map(|t| t.mode().intersects(alacritty_terminal::term::TermMode::MOUSE_MODE))
+                                .unwrap_or(false);
 
-                    // Mouse handling.
-                    crate::mouse::handle_terminal_mouse(
-                        ctx,
-                        &response,
-                        &size_info,
-                        &mut self.selection,
-                        term,
-                        &|bytes| session.write(bytes),
-                        self.cell_height,
-                        self.state.user_config.terminal.scroll_sensitivity,
-                    );
+                            // Mouse handling.
+                            crate::mouse::handle_terminal_mouse(
+                                ctx,
+                                &response,
+                                &size_info,
+                                &mut self.selection,
+                                term,
+                                &|bytes| session.write(bytes),
+                                self.cell_height,
+                                self.state.user_config.terminal.scroll_sensitivity,
+                            );
 
-                    // Context menu (suppressed in mouse mode for tmux compatibility).
-                    let has_selection = self.selection.normalized().is_some();
-                    context_action = crate::context_menu::show(
-                        &response,
-                        &mut self.context_menu_state,
-                        mouse_mode,
-                        has_selection,
-                    );
+                            // Context menu (suppressed in mouse mode for tmux compatibility).
+                            let has_selection = self.selection.normalized().is_some();
+                            context_action = crate::context_menu::show(
+                                &response,
+                                &mut self.context_menu_state,
+                                mouse_mode,
+                                has_selection,
+                            );
+                        }
+                    }
                 }
             });
+
+        // Handle close-tab request from error screen.
+        if close_tab_requested {
+            if let Some(id) = self.state.active_tab {
+                self.remove_session(id);
+            }
+        }
 
         // Handle context menu action outside the panel closure.
         if let Some(action) = context_action {
@@ -618,4 +661,138 @@ impl eframe::App for ConchApp {
         self.native_plugin_mgr.shutdown_all();
         let _ = config::save_persistent_state(&self.state.persistent);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Connecting / Error screens for plugin sessions
+// ---------------------------------------------------------------------------
+
+/// Render a "Connecting to..." screen with a bouncing progress indicator.
+fn show_connecting_screen(
+    ui: &mut egui::Ui,
+    title: &str,
+    detail: Option<&str>,
+    started: Option<std::time::Instant>,
+) {
+    let rect = ui.available_rect_before_wrap();
+    let bg = if ui.visuals().dark_mode {
+        egui::Color32::from_gray(30)
+    } else {
+        egui::Color32::from_gray(241)
+    };
+    ui.painter().rect_filled(rect, 0.0, bg);
+
+    let center = rect.center();
+
+    let heading = format!("Connecting to {title}\u{2026}");
+    let heading_galley = ui.painter().layout_no_wrap(
+        heading,
+        egui::FontId::new(28.0, egui::FontFamily::Proportional),
+        if ui.visuals().dark_mode { egui::Color32::WHITE } else { egui::Color32::BLACK },
+    );
+    let heading_pos = egui::Pos2::new(
+        center.x - heading_galley.size().x / 2.0,
+        center.y - 40.0,
+    );
+    ui.painter().galley(heading_pos, heading_galley, egui::Color32::PLACEHOLDER);
+
+    if let Some(detail) = detail {
+        let detail_galley = ui.painter().layout_no_wrap(
+            detail.to_string(),
+            egui::FontId::new(16.0, egui::FontFamily::Proportional),
+            if ui.visuals().dark_mode { egui::Color32::from_gray(200) } else { egui::Color32::from_gray(40) },
+        );
+        let detail_pos = egui::Pos2::new(
+            center.x - detail_galley.size().x / 2.0,
+            center.y + 5.0,
+        );
+        ui.painter().galley(detail_pos, detail_galley, egui::Color32::PLACEHOLDER);
+    }
+
+    // Bouncing progress bar.
+    let bar_w = 400.0_f32.min(rect.width() * 0.6);
+    let bar_h = 6.0;
+    let bar_y = center.y + 50.0;
+    let bar_rect = egui::Rect::from_min_size(
+        egui::Pos2::new(center.x - bar_w / 2.0, bar_y),
+        egui::Vec2::new(bar_w, bar_h),
+    );
+
+    let track_color = if ui.visuals().dark_mode {
+        egui::Color32::from_gray(60)
+    } else {
+        egui::Color32::from_gray(210)
+    };
+    ui.painter().rect_filled(bar_rect, bar_h / 2.0, track_color);
+
+    let elapsed = started
+        .map(|s| s.elapsed().as_secs_f32())
+        .unwrap_or(0.0);
+    let cycle = 1.8;
+    let t = (elapsed % cycle) / cycle;
+    let pos_t = if t < 0.5 { t * 2.0 } else { 2.0 - t * 2.0 };
+    let eased = pos_t * pos_t * (3.0 - 2.0 * pos_t);
+    let indicator_w = bar_w * 0.15;
+    let indicator_x = bar_rect.min.x + eased * (bar_w - indicator_w);
+    let indicator_rect = egui::Rect::from_min_size(
+        egui::Pos2::new(indicator_x, bar_y),
+        egui::Vec2::new(indicator_w, bar_h),
+    );
+    let accent = egui::Color32::from_rgb(66, 133, 244);
+    ui.painter().rect_filled(indicator_rect, bar_h / 2.0, accent);
+}
+
+/// Render a connection error screen. Returns `true` if the user clicked "Close Tab".
+fn show_error_screen(ui: &mut egui::Ui, title: &str, error: &str) -> bool {
+    let rect = ui.available_rect_before_wrap();
+    let bg = if ui.visuals().dark_mode {
+        egui::Color32::from_gray(30)
+    } else {
+        egui::Color32::from_gray(241)
+    };
+    ui.painter().rect_filled(rect, 0.0, bg);
+
+    let center = rect.center();
+    let content_width = (rect.width() * 0.7).min(600.0);
+    let content_rect = egui::Rect::from_center_size(
+        center,
+        egui::Vec2::new(content_width, rect.height() * 0.8),
+    );
+
+    let mut close = false;
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(
+                    egui::RichText::new(format!("Connection to {title} failed"))
+                        .size(24.0)
+                        .color(egui::Color32::from_rgb(220, 50, 50)),
+                );
+                ui.add_space(16.0);
+            });
+
+            let error_color = if ui.visuals().dark_mode {
+                egui::Color32::from_gray(180)
+            } else {
+                egui::Color32::from_gray(60)
+            };
+            ui.label(
+                egui::RichText::new(error)
+                    .size(13.0)
+                    .family(egui::FontFamily::Monospace)
+                    .color(error_color),
+            );
+
+            ui.add_space(16.0);
+            ui.vertical_centered(|ui| {
+                if ui.button("Close Tab").clicked() {
+                    close = true;
+                }
+            });
+            ui.add_space(12.0);
+        });
+    });
+
+    close
 }

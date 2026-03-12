@@ -447,6 +447,7 @@ fn render_tree_node(
     let is_selected = selected == Some(node.id.as_str());
     let has_children = !node.children.is_empty();
     let is_expanded = node.expanded.unwrap_or(false);
+    let is_bold = node.bold.unwrap_or(false);
 
     // Render the node row.
     ui.horizontal(|ui| {
@@ -467,10 +468,30 @@ fn render_tree_node(
             ui.add_space(18.0);
         }
 
+        // Icon glyph (folder, monitor, etc.).
+        if let Some(icon_name) = &node.icon {
+            let glyph = match icon_name.as_str() {
+                "folder" => "📁",
+                "server" | "monitor" => "🖥",
+                _ => "",
+            };
+            if !glyph.is_empty() {
+                let icon_color = match node.icon_color.as_deref() {
+                    Some("blue") => theme.accent,
+                    Some("muted" | "grey" | "gray") => theme.text_muted,
+                    _ => theme.text_secondary,
+                };
+                ui.label(RichText::new(glyph).size(theme.font_normal).color(icon_color));
+            }
+        }
+
         // Node label — selectable, with highlight when selected.
-        let label_text = RichText::new(&node.label)
+        let mut label_text = RichText::new(&node.label)
             .size(theme.font_normal)
             .color(if is_selected { theme.accent } else { theme.text });
+        if is_bold {
+            label_text = label_text.strong();
+        }
 
         let response = ui.selectable_label(is_selected, label_text);
         if response.clicked() {

@@ -103,6 +103,9 @@ pub(crate) fn create_local_session(
                 custom_title: None,
                 backend: crate::state::SessionBackend::Local(local),
                 event_rx,
+                status: conch_plugin_sdk::SessionStatus::Connected,
+                status_detail: None,
+                connect_started: None,
             };
             Some((id, session))
         }

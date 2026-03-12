@@ -9,7 +9,7 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
 use conch_core::color_scheme;
 use conch_core::config::{PersistentState, UserConfig};
-use conch_plugin_sdk::SessionBackendVtable;
+use conch_plugin_sdk::{SessionBackendVtable, SessionStatus};
 use conch_pty::EventProxy;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -42,6 +42,12 @@ pub struct Session {
     pub custom_title: Option<String>,
     pub backend: SessionBackend,
     pub event_rx: mpsc::UnboundedReceiver<TermEvent>,
+    /// Connection status for plugin sessions. Local sessions are always Connected.
+    pub status: SessionStatus,
+    /// Detail/error message for Connecting/Error states.
+    pub status_detail: Option<String>,
+    /// When the session started connecting (for progress animation).
+    pub connect_started: Option<std::time::Instant>,
 }
 
 impl Session {
@@ -97,8 +103,13 @@ impl Session {
     }
 
     /// Display title (custom overrides auto-detected).
-    pub fn display_title(&self) -> &str {
-        self.custom_title.as_deref().unwrap_or(&self.title)
+    pub fn display_title(&self) -> String {
+        let base = self.custom_title.as_deref().unwrap_or(&self.title);
+        match self.status {
+            SessionStatus::Connecting => format!("{base}\u{2026}"),
+            SessionStatus::Error => format!("{base} (failed)"),
+            SessionStatus::Connected => base.to_string(),
+        }
     }
 }
 

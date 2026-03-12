@@ -306,6 +306,12 @@ pub struct TreeNode {
     pub id: String,
     pub label: String,
     pub icon: Option<String>,
+    /// Color hint for the icon (e.g., "blue", "muted"). Maps to theme colors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_color: Option<String>,
+    /// Render the label in bold (e.g., for active/connected items).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bold: Option<bool>,
     /// Optional status badge (e.g., "connected").
     pub badge: Option<String>,
     /// Whether this node is expanded (only meaningful if `children` is non-empty).
@@ -692,6 +698,8 @@ mod tests {
                     id: "root".into(),
                     label: "Root".into(),
                     icon: Some("folder".into()),
+                    icon_color: None,
+                    bold: None,
                     badge: None,
                     expanded: Some(true),
                     children: vec![
@@ -699,6 +707,8 @@ mod tests {
                             id: "child".into(),
                             label: "Child".into(),
                             icon: None,
+                            icon_color: None,
+                            bold: None,
                             badge: Some("new".into()),
                             expanded: None,
                             children: vec![],
