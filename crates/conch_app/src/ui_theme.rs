@@ -82,28 +82,48 @@ impl UiTheme {
             }
         };
 
-        // Surface offsets: lighten in dark mode, darken in light mode.
-        let surface = offset_color(bg, dark_mode, 15);
-        let surface_raised = offset_color(bg, dark_mode, 30);
-        let surface_top = offset_color(bg, dark_mode, 45);
-        let border = offset_color(bg, dark_mode, 50);
+        // In dark mode, use a warm near-black base (#201E1F) for the UI chrome.
+        // The terminal area still uses the color scheme's background.
+        let ui_bg = if dark_mode {
+            Color32::from_rgb(0x20, 0x1E, 0x1F) // #201E1F
+        } else {
+            bg
+        };
+
+        // Surface levels: in dark mode use explicit warm tones, otherwise compute.
+        let surface = if dark_mode {
+            Color32::from_rgb(0x29, 0x28, 0x29) // #292829 — panel content
+        } else {
+            offset_color(ui_bg, dark_mode, 12)
+        };
+        let surface_raised = offset_color(surface, dark_mode, 12);
+        let surface_top = offset_color(surface, dark_mode, 24);
+        let border = offset_color(surface, dark_mode, 35);
 
         Self {
-            bg,
+            bg: ui_bg,
             surface,
             surface_raised,
             surface_top,
             text: fg,
-            text_secondary: Color32::from_rgb(
-                (colors.foreground[0] * 180.0) as u8,
-                (colors.foreground[1] * 180.0) as u8,
-                (colors.foreground[2] * 180.0) as u8,
-            ),
-            text_muted: Color32::from_rgb(
-                (colors.foreground[0] * 90.0) as u8,
-                (colors.foreground[1] * 90.0) as u8,
-                (colors.foreground[2] * 90.0) as u8,
-            ),
+            text_secondary: if dark_mode {
+                Color32::from_rgb(0xA0, 0x9C, 0x9D) // warm gray
+            } else {
+                Color32::from_rgb(
+                    (colors.foreground[0] * 180.0) as u8,
+                    (colors.foreground[1] * 180.0) as u8,
+                    (colors.foreground[2] * 180.0) as u8,
+                )
+            },
+            text_muted: if dark_mode {
+                Color32::from_rgb(0x5A, 0x57, 0x58) // warm muted
+            } else {
+                Color32::from_rgb(
+                    (colors.foreground[0] * 90.0) as u8,
+                    (colors.foreground[1] * 90.0) as u8,
+                    (colors.foreground[2] * 90.0) as u8,
+                )
+            },
             accent: to_color32(colors.normal[4]), // blue
             focus_glow: if dark_mode {
                 Color32::from_rgb(100, 160, 230) // soft sky blue
@@ -202,7 +222,7 @@ impl UiTheme {
             window_stroke: Stroke::new(1.0, self.border),
             window_highlight_topmost: true,
             menu_corner_radius: CornerRadius::same(8),
-            panel_fill: self.surface,
+            panel_fill: self.bg,
             popup_shadow: Shadow {
                 offset: [0, 2],
                 blur: 8,
@@ -526,9 +546,9 @@ mod tests {
     }
 
     #[test]
-    fn to_visuals_panel_fill_matches_surface() {
+    fn to_visuals_panel_fill_matches_bg() {
         let theme = UiTheme::from_colors(&dark_colors(), AppearanceMode::Dark);
         let v = theme.to_visuals();
-        assert_eq!(v.panel_fill, theme.surface);
+        assert_eq!(v.panel_fill, theme.bg);
     }
 }
