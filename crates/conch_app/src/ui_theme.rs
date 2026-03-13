@@ -191,12 +191,17 @@ impl UiTheme {
             code_bg_color: self.surface,
             warn_fg_color: self.warn,
             error_fg_color: self.error,
-            window_corner_radius: CornerRadius::ZERO,
-            window_shadow: Shadow::NONE,
+            window_corner_radius: CornerRadius::same(8),
+            window_shadow: Shadow {
+                offset: [0, 2],
+                blur: 12,
+                spread: 0,
+                color: Color32::from_black_alpha(40),
+            },
             window_fill: self.surface,
             window_stroke: Stroke::new(1.0, self.border),
             window_highlight_topmost: true,
-            menu_corner_radius: CornerRadius::ZERO,
+            menu_corner_radius: CornerRadius::same(8),
             panel_fill: self.surface,
             popup_shadow: Shadow {
                 offset: [0, 2],
@@ -504,8 +509,8 @@ mod tests {
     fn to_visuals_all_corners_zero() {
         let theme = UiTheme::from_colors(&dark_colors(), AppearanceMode::Dark);
         let v = theme.to_visuals();
-        assert_eq!(v.window_corner_radius, CornerRadius::ZERO);
-        assert_eq!(v.menu_corner_radius, CornerRadius::ZERO);
+        assert_eq!(v.window_corner_radius, CornerRadius::same(8));
+        assert_eq!(v.menu_corner_radius, CornerRadius::same(8));
     }
 
     #[test]

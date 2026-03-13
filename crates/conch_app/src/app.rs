@@ -594,6 +594,18 @@ impl eframe::App for ConchApp {
                 });
         }
 
+        // Full mode with fullsize_content_view (macOS): content extends behind
+        // the native title bar, so add a spacer to push UI below it.
+        if effective_decorations == config::WindowDecorations::Full
+            && cfg!(target_os = "macos")
+        {
+            let title_bar_h = 28.0; // macOS native title bar height
+            egui::TopBottomPanel::top("titlebar_spacer")
+                .exact_height(title_bar_h)
+                .frame(egui::Frame::NONE.fill(self.state.theme.surface))
+                .show(ctx, |_ui| {});
+        }
+
         // Tab bar at the top (only when more than one tab).
         for action in crate::tab_bar::show(ctx, &self.state, &mut self.tab_bar_state) {
             match action {
