@@ -12,7 +12,7 @@
 #[cfg(target_os = "macos")]
 mod native_macos;
 
-mod egui_menu;
+pub(crate) mod egui_menu;
 
 use egui::ViewportCommand;
 
@@ -70,6 +70,11 @@ impl MenuBarState {
             mode,
             native_setup_done: false,
         }
+    }
+
+    /// Whether this menu bar renders inside the window (vs native OS menu).
+    pub fn is_in_window(&self) -> bool {
+        self.mode == MenuBarMode::InWindow
     }
 
     /// Re-resolve the mode after a config reload.

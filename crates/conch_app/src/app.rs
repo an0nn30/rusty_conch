@@ -390,73 +390,79 @@ impl eframe::App for ConchApp {
         // Show plugin dialogs (form, confirm, prompt, alert, error).
         self.dialog_state.show(ctx);
 
-        // Close the app when the last tab is closed. On first launch (no
-        // session yet), open an initial local shell tab instead.
-        if self.state.sessions.is_empty() {
-            if self.has_ever_had_session {
-                ctx.send_viewport_cmd(ViewportCommand::Close);
-                return;
+        // Determine whether the main window should hide or close.
+        let mut main_visible = !self.state.sessions.is_empty();
+
+        // If the user clicks close on the main window while extra windows exist,
+        // hide it instead of quitting.
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        if close_requested && !self.extra_windows.is_empty() {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            // Shut down main-window sessions.
+            let ids: Vec<_> = self.state.tab_order.clone();
+            for id in ids {
+                self.remove_session(id);
             }
-            self.open_local_tab();
             self.has_ever_had_session = true;
+            main_visible = false;
         }
 
-        // Handle copy from selection (Cmd+C on macOS).
-        let copy_requested = ctx.input(|i| {
-            i.events.iter().any(|e| matches!(e, egui::Event::Copy))
-        });
-        if copy_requested {
-            if let Some((start, end)) = self.selection.normalized() {
-                if let Some(session) = self.state.active_session() {
-                    let text = widget::get_selected_text(session.term(), start, end);
-                    if !text.is_empty() {
-                        ctx.copy_text(text);
+        // When the last main-window tab closes, either hide or close.
+        if self.state.sessions.is_empty() {
+            if !self.has_ever_had_session {
+                self.open_local_tab();
+                self.has_ever_had_session = true;
+                main_visible = true;
+            } else {
+                main_visible = false;
+            }
+        }
+
+        // Show/hide the main viewport (extra windows are independent).
+        if !main_visible {
+            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        }
+
+        // Main-window copy/paste handling.
+        if main_visible {
+            let copy_requested = ctx.input(|i| {
+                i.events.iter().any(|e| matches!(e, egui::Event::Copy))
+            });
+            if copy_requested {
+                if let Some((start, end)) = self.selection.normalized() {
+                    if let Some(session) = self.state.active_session() {
+                        let text = widget::get_selected_text(session.term(), start, end);
+                        if !text.is_empty() {
+                            ctx.copy_text(text);
+                        }
                     }
+                }
+            }
+
+            let paste_text: Option<String> = ctx.input(|i| {
+                i.events.iter().find_map(|e| {
+                    if let egui::Event::Paste(text) = e { Some(text.clone()) } else { None }
+                })
+            });
+            if let Some(text) = paste_text {
+                if let Some(session) = self.state.active_session() {
+                    session.write(text.as_bytes());
                 }
             }
         }
 
-        // Handle paste (Cmd+V on macOS).
-        let paste_text: Option<String> = ctx.input(|i| {
-            i.events.iter().find_map(|e| {
-                if let egui::Event::Paste(text) = e { Some(text.clone()) } else { None }
-            })
-        });
-        if let Some(text) = paste_text {
-            if let Some(session) = self.state.active_session() {
-                session.write(text.as_bytes());
-            }
-        }
-
         // ── Render extra windows ──
-        let mut windows_to_close: Vec<usize> = Vec::new();
+        let effective_decorations = self.render_extra_windows(ctx);
 
-        for (i, window) in self.extra_windows.iter_mut().enumerate() {
-            window.update(&self.state.colors, &self.shortcuts, &self.state.user_config, self.state.user_config.font.size);
-
-            if window.should_close {
-                windows_to_close.push(i);
-                continue;
-            }
-
-            let viewport_id = window.viewport_id;
-            let builder = window.viewport_builder.clone();
-            let title = window.title.clone();
-
-            // Render the extra window viewport.
-            ctx.show_viewport_deferred(
-                viewport_id,
-                builder.with_title(&title),
-                |_ctx, _class| {
-                    // Extra window rendering is handled by its own update() call.
-                    // For now, we just keep the viewport alive.
-                },
-            );
+        // If the main window is hidden and all extra windows are closed, quit.
+        if !main_visible && self.extra_windows.is_empty() {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+            return;
         }
 
-        // Remove closed windows (in reverse to preserve indices).
-        for i in windows_to_close.into_iter().rev() {
-            self.extra_windows.remove(i);
+        // Skip main-window UI rendering when hidden.
+        if !main_visible {
+            return;
         }
 
         // ── Apply centralized UI theme (only when changed) ──
@@ -468,9 +474,6 @@ impl eframe::App for ConchApp {
 
         // Buttonless: no native title bar, so add a thin drag region at the top
         // so the user can still move the window.
-        let effective_decorations = self.platform.effective_decorations(
-            self.state.user_config.window.decorations,
-        );
         if effective_decorations == config::WindowDecorations::Buttonless {
             let drag_h = self.cell_height.max(6.0);
             egui::TopBottomPanel::top("drag_region")
@@ -512,41 +515,7 @@ impl eframe::App for ConchApp {
                 &theme,
             );
             for pm_action in pm_actions {
-                match pm_action {
-                    crate::host::plugin_manager_ui::PluginManagerAction::Refresh => {
-                        self.discover_plugins();
-                    }
-                    crate::host::plugin_manager_ui::PluginManagerAction::Load(name) => {
-                        if let Some(entry) = self.plugin_manager.find_plugin(&name) {
-                            let path = entry.path.clone();
-                            match self.native_plugin_mgr.load_plugin(&path) {
-                                Ok(meta) => {
-                                    log::info!("Loaded plugin '{}' v{}", meta.name, meta.version);
-                                    self.plugin_manager.set_loaded(&name, true);
-                                    self.save_loaded_plugins();
-                                }
-                                Err(e) => {
-                                    log::error!("Failed to load plugin '{name}': {e}");
-                                }
-                            }
-                        }
-                    }
-                    crate::host::plugin_manager_ui::PluginManagerAction::Unload(name) => {
-                        match self.native_plugin_mgr.unload_plugin(&name) {
-                            Ok(()) => {
-                                log::info!("Unloaded plugin '{name}'");
-                                self.panel_registry.lock().remove_by_plugin(&name);
-                                self.render_pending.remove(&name);
-                                self.render_cache.remove(&name);
-                                self.plugin_manager.set_loaded(&name, false);
-                                self.save_loaded_plugins();
-                            }
-                            Err(e) => {
-                                log::error!("Failed to unload plugin '{name}': {e}");
-                            }
-                        }
-                    }
-                }
+                self.handle_plugin_manager_action(pm_action);
             }
         }
 

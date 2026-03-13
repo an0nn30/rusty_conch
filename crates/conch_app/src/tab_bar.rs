@@ -85,25 +85,40 @@ struct TabEntry {
 /// Show the tab bar. Only renders when there are 2+ visible tabs.
 /// Returns a list of actions for the caller to apply.
 pub fn show(ctx: &egui::Context, state: &AppState, tab_state: &mut TabBarState) -> Vec<TabBarAction> {
+    let tabs: Vec<(Uuid, String)> = state.tab_order.iter().map(|&id| {
+        let title = state.sessions.get(&id)
+            .map(|s| s.display_title().to_string())
+            .unwrap_or_default();
+        (id, title)
+    }).collect();
+    show_for(ctx, &tabs, state.active_tab, &state.theme, tab_state)
+}
+
+/// Show the tab bar for an arbitrary set of tabs (used by extra windows).
+/// `tabs` is an ordered list of `(id, display_title)`.
+pub fn show_for(
+    ctx: &egui::Context,
+    tabs: &[(Uuid, String)],
+    active_tab: Option<Uuid>,
+    theme: &UiTheme,
+    tab_state: &mut TabBarState,
+) -> Vec<TabBarAction> {
     // Register open times for newly-appearing tabs.
-    for &id in &state.tab_order {
+    for &(id, _) in tabs {
         tab_state.open_times.entry(id).or_insert_with(Instant::now);
     }
 
     // Build the merged tab list: live tabs with closing ghosts interleaved.
     let mut entries: Vec<TabEntry> = Vec::new();
 
-    for (i, &id) in state.tab_order.iter().enumerate() {
-        let title = state.sessions.get(&id)
-            .map(|s| s.display_title().to_string())
-            .unwrap_or_default();
+    for (i, &(id, ref title)) in tabs.iter().enumerate() {
         let weight = tab_state.open_times.get(&id)
             .map(|&t| open_weight(t))
             .unwrap_or(1.0);
         entries.push(TabEntry {
             id,
-            title,
-            is_active: state.active_tab == Some(id),
+            title: title.clone(),
+            is_active: active_tab == Some(id),
             is_closing: false,
             weight,
             live_index: Some(i),
@@ -124,7 +139,7 @@ pub fn show(ctx: &egui::Context, state: &AppState, tab_state: &mut TabBarState) 
     }
 
     // Hide the bar when there's only 1 live tab and no active animations.
-    if state.tab_order.len() <= 1 && tab_state.closing.is_empty() {
+    if tabs.len() <= 1 && tab_state.closing.is_empty() {
         return Vec::new();
     }
 
@@ -136,8 +151,8 @@ pub fn show(ctx: &egui::Context, state: &AppState, tab_state: &mut TabBarState) 
         ctx.request_repaint();
     }
 
-    let colors = TabBarColors::from_theme(&state.theme);
-    let font_small = state.theme.font_small;
+    let colors = TabBarColors::from_theme(theme);
+    let font_small = theme.font_small;
     let mut actions = Vec::new();
 
     let tab_height = 28.0;
