@@ -1,57 +1,49 @@
-//! Server tree widget builder — constructs the JSON widget tree for the
-//! Sessions panel.
-//!
-//! This exercises: Toolbar, TextInput, Button, TreeView, TreeNode,
-//! ContextMenuItem, Badge, Separator, Label.
+//! Server tree widget builder — constructs the widget tree for the Sessions panel.
 
 use std::collections::HashMap;
 
+use conch_plugin_sdk::icons;
 use conch_plugin_sdk::widgets::*;
 
-use crate::config::SshConfig;
-use crate::session_backend::SshSessionBackend;
+use crate::config::{ServerEntry, SshConfig};
+use crate::session_backend::SshBackendState;
 
 /// Build the full widget tree for the SSH Sessions panel.
 pub fn build_server_tree(
     config: &SshConfig,
-    sessions: &HashMap<u64, SshSessionBackend>,
+    ssh_config_entries: &[ServerEntry],
+    sessions: &HashMap<u64, Box<SshBackendState>>,
     selected: Option<&str>,
 ) -> Vec<Widget> {
     let mut widgets = Vec::new();
 
-    // -- Toolbar: Add Server, Add Folder, Quick Connect --
+    // -- Toolbar with New Folder button (right-aligned via Spacer) --
     widgets.push(Widget::Toolbar {
-        id: Some("ssh_toolbar".to_string()),
+        id: Some("session_toolbar".to_string()),
         items: vec![
-            ToolbarItem::Button {
-                id: "add_server".to_string(),
-                icon: Some("plus".to_string()),
-                label: None,
-                tooltip: Some("Add Server".to_string()),
-                enabled: None,
-            },
+            ToolbarItem::Spacer,
             ToolbarItem::Button {
                 id: "add_folder".to_string(),
-                icon: Some("folder-plus".to_string()),
+                icon: Some(icons::FOLDER_NEW.to_string()),
                 label: None,
-                tooltip: Some("Add Folder".to_string()),
+                tooltip: Some("New folder".to_string()),
                 enabled: None,
-            },
-            ToolbarItem::Separator,
-            ToolbarItem::TextInput {
-                id: "quick_connect".to_string(),
-                value: String::new(),
-                hint: Some("user@host:port".to_string()),
             },
         ],
     });
 
-    widgets.push(Widget::Separator);
+    // -- Quick Connect search bar --
+    widgets.push(Widget::TextInput {
+        id: "quick_connect".to_string(),
+        value: String::new(),
+        hint: Some("Quick connect...".to_string()),
+        submit_on_enter: Some(true),
+    });
 
     // -- Server Tree --
     let mut tree_nodes = Vec::new();
 
-    // Folders
+    // User-created folders (blue folder icon).
     for folder in &config.folders {
         let children: Vec<TreeNode> = folder.entries.iter().map(|entry| {
             server_to_tree_node(entry, sessions)
@@ -60,7 +52,9 @@ pub fn build_server_tree(
         tree_nodes.push(TreeNode {
             id: folder.id.clone(),
             label: folder.name.clone(),
-            icon: Some("folder".to_string()),
+            icon: Some(icons::FOLDER.to_string()),
+            icon_color: Some("blue".to_string()),
+            bold: None,
             badge: None,
             expanded: Some(folder.expanded),
             children,
@@ -83,9 +77,28 @@ pub fn build_server_tree(
         });
     }
 
-    // Ungrouped servers
+    // Ungrouped servers (no folder).
     for entry in &config.ungrouped {
         tree_nodes.push(server_to_tree_node(entry, sessions));
+    }
+
+    // ~/.ssh/config folder (grey/muted folder icon).
+    if !ssh_config_entries.is_empty() {
+        let children: Vec<TreeNode> = ssh_config_entries.iter().map(|entry| {
+            server_to_tree_node(entry, sessions)
+        }).collect();
+
+        tree_nodes.push(TreeNode {
+            id: "sshconfig_folder".to_string(),
+            label: "~/.ssh/config".to_string(),
+            icon: Some(icons::FOLDER.to_string()),
+            icon_color: Some("blue".to_string()),
+            bold: None,
+            badge: None,
+            expanded: Some(true),
+            children,
+            context_menu: None,
+        });
     }
 
     widgets.push(Widget::TreeView {
@@ -94,41 +107,33 @@ pub fn build_server_tree(
         selected: selected.map(String::from),
     });
 
-    // -- Active sessions summary --
-    if !sessions.is_empty() {
-        widgets.push(Widget::Separator);
-        widgets.push(Widget::heading("Active Sessions"));
-        for (id, backend) in sessions {
-            widgets.push(Widget::horizontal(vec![
-                Widget::IconLabel {
-                    icon: "terminal".to_string(),
-                    text: format!("{}@{}", backend.user(), backend.host()),
-                    style: None,
-                },
-                Widget::Badge {
-                    text: "connected".to_string(),
-                    variant: BadgeVariant::Success,
-                },
-            ]));
-            let _ = id; // suppress unused warning in stub
-        }
-    }
+    // -- Footer: separator + New Connection button --
+    widgets.push(Widget::Separator);
+    widgets.push(Widget::Button {
+        id: "add_server".to_string(),
+        label: "+ New Connection".to_string(),
+        icon: Some(icons::COMPUTER.to_string()),
+        enabled: None,
+    });
 
     widgets
 }
 
-/// Convert a ServerEntry to a tree node, with "connected" badge if active.
+/// Convert a ServerEntry to a tree node with monitor icon.
+/// Connected servers are shown in bold.
 fn server_to_tree_node(
-    entry: &crate::config::ServerEntry,
-    sessions: &HashMap<u64, SshSessionBackend>,
+    entry: &ServerEntry,
+    sessions: &HashMap<u64, Box<SshBackendState>>,
 ) -> TreeNode {
     let is_connected = sessions.values().any(|s| s.host() == entry.host);
 
     TreeNode {
         id: entry.id.clone(),
         label: entry.label.clone(),
-        icon: Some("server".to_string()),
-        badge: if is_connected { Some("connected".to_string()) } else { None },
+        icon: Some(icons::COMPUTER.to_string()),
+        icon_color: None,
+        bold: if is_connected { Some(true) } else { None },
+        badge: None,
         expanded: None,
         children: Vec::new(),
         context_menu: Some(vec![
@@ -174,7 +179,7 @@ fn server_to_tree_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ServerEntry, ServerFolder, SshConfig};
+    use crate::config::{ServerFolder, SshConfig};
 
     fn make_entry(id: &str, host: &str, user: &str) -> ServerEntry {
         ServerEntry {
@@ -185,10 +190,12 @@ mod tests {
             user: user.to_string(),
             auth_method: "key".to_string(),
             key_path: None,
+            proxy_command: None,
+            proxy_jump: None,
         }
     }
 
-    fn empty_sessions() -> HashMap<u64, SshSessionBackend> {
+    fn empty_sessions() -> HashMap<u64, Box<SshBackendState>> {
         HashMap::new()
     }
 
@@ -204,158 +211,110 @@ mod tests {
         }
     }
 
-    #[test]
-    fn empty_config_produces_toolbar_separator_tree() {
-        let cfg = SshConfig::default();
-        let widgets = build_server_tree(&cfg, &empty_sessions(), None);
-        // Should have: toolbar, separator, tree_view (empty)
-        assert_eq!(widgets.len(), 3);
-        matches!(&widgets[0], Widget::Toolbar { .. });
-        matches!(&widgets[1], Widget::Separator);
-        matches!(&widgets[2], Widget::TreeView { .. });
+    fn make_ssh_config_entries() -> Vec<ServerEntry> {
+        vec![
+            make_entry("sshconfig_k8s-cp-1", "10.0.1.1", "admin"),
+            make_entry("sshconfig_k8s-cp-2", "10.0.1.2", "admin"),
+        ]
     }
 
     #[test]
-    fn toolbar_has_expected_items() {
+    fn empty_config_produces_toolbar_input_tree_and_footer() {
         let cfg = SshConfig::default();
-        let widgets = build_server_tree(&cfg, &empty_sessions(), None);
-        match &widgets[0] {
-            Widget::Toolbar { items, .. } => {
-                assert_eq!(items.len(), 4); // add_server, add_folder, separator, quick_connect
-                match &items[0] {
-                    ToolbarItem::Button { id, .. } => assert_eq!(id, "add_server"),
-                    _ => panic!("expected button"),
-                }
-                match &items[1] {
-                    ToolbarItem::Button { id, .. } => assert_eq!(id, "add_folder"),
-                    _ => panic!("expected button"),
-                }
-                assert!(matches!(&items[2], ToolbarItem::Separator));
-                match &items[3] {
-                    ToolbarItem::TextInput { id, hint, .. } => {
-                        assert_eq!(id, "quick_connect");
-                        assert_eq!(hint.as_deref(), Some("user@host:port"));
-                    }
-                    _ => panic!("expected text input"),
-                }
+        let widgets = build_server_tree(&cfg, &[], &empty_sessions(), None);
+        // Toolbar + TextInput + TreeView + Separator + Button
+        assert_eq!(widgets.len(), 5);
+        assert!(matches!(&widgets[0], Widget::Toolbar { .. }));
+        assert!(matches!(&widgets[1], Widget::TextInput { .. }));
+        assert!(matches!(&widgets[2], Widget::TreeView { .. }));
+        assert!(matches!(&widgets[3], Widget::Separator));
+        assert!(matches!(&widgets[4], Widget::Button { .. }));
+    }
+
+    #[test]
+    fn quick_connect_input_has_correct_props() {
+        let cfg = SshConfig::default();
+        let widgets = build_server_tree(&cfg, &[], &empty_sessions(), None);
+        match &widgets[1] {
+            Widget::TextInput { id, hint, submit_on_enter, .. } => {
+                assert_eq!(id, "quick_connect");
+                assert_eq!(hint.as_deref(), Some("Quick connect..."));
+                assert_eq!(*submit_on_enter, Some(true));
             }
-            _ => panic!("expected toolbar"),
+            _ => panic!("expected text input"),
         }
     }
 
     #[test]
     fn tree_contains_folder_and_ungrouped() {
         let cfg = make_config_with_folder();
-        let widgets = build_server_tree(&cfg, &empty_sessions(), None);
-        let tree = &widgets[2];
-        match tree {
+        let widgets = build_server_tree(&cfg, &[], &empty_sessions(), None);
+        match &widgets[2] {
             Widget::TreeView { nodes, .. } => {
                 assert_eq!(nodes.len(), 2); // 1 folder + 1 ungrouped
                 assert_eq!(nodes[0].id, "folder_0");
-                assert_eq!(nodes[0].label, "Production");
-                assert_eq!(nodes[0].children.len(), 1);
-                assert_eq!(nodes[0].children[0].id, "srv1");
+                assert_eq!(nodes[0].icon_color.as_deref(), Some("blue"));
                 assert_eq!(nodes[1].id, "srv2");
+                assert_eq!(nodes[1].icon.as_deref(), Some(icons::COMPUTER));
             }
             _ => panic!("expected tree view"),
         }
     }
 
     #[test]
-    fn folder_nodes_have_context_menu() {
-        let cfg = make_config_with_folder();
-        let widgets = build_server_tree(&cfg, &empty_sessions(), None);
+    fn ssh_config_entries_appear_as_muted_folder() {
+        let cfg = SshConfig::default();
+        let ssh_entries = make_ssh_config_entries();
+        let widgets = build_server_tree(&cfg, &ssh_entries, &empty_sessions(), None);
         match &widgets[2] {
             Widget::TreeView { nodes, .. } => {
+                assert_eq!(nodes.len(), 1); // just the ssh config folder
                 let folder = &nodes[0];
-                let menu = folder.context_menu.as_ref().unwrap();
-                assert_eq!(menu.len(), 2);
-                assert_eq!(menu[0].id, "rename");
-                assert_eq!(menu[1].id, "delete");
+                assert_eq!(folder.id, "sshconfig_folder");
+                assert_eq!(folder.label, "~/.ssh/config");
+                assert_eq!(folder.icon_color.as_deref(), Some("blue"));
+                assert_eq!(folder.children.len(), 2);
             }
             _ => panic!("expected tree view"),
         }
     }
 
     #[test]
-    fn server_nodes_have_five_context_items() {
-        let cfg = make_config_with_folder();
-        let widgets = build_server_tree(&cfg, &empty_sessions(), None);
-        match &widgets[2] {
-            Widget::TreeView { nodes, .. } => {
-                let server = &nodes[1]; // ungrouped srv2
-                let menu = server.context_menu.as_ref().unwrap();
-                assert_eq!(menu.len(), 5);
-                let ids: Vec<&str> = menu.iter().map(|m| m.id.as_str()).collect();
-                assert_eq!(ids, vec!["connect", "edit", "duplicate", "copy_host", "delete"]);
-            }
-            _ => panic!("expected tree view"),
-        }
-    }
-
-    #[test]
-    fn disconnected_server_connect_is_enabled() {
-        let cfg = make_config_with_folder();
-        let widgets = build_server_tree(&cfg, &empty_sessions(), None);
-        match &widgets[2] {
-            Widget::TreeView { nodes, .. } => {
-                let server = &nodes[1];
-                let connect = &server.context_menu.as_ref().unwrap()[0];
-                assert_eq!(connect.enabled, Some(true));
-            }
-            _ => panic!("expected tree view"),
-        }
-    }
-
-    #[test]
-    fn connected_server_shows_badge_and_disables_connect() {
+    fn connected_server_is_bold_not_badged() {
         let cfg = make_config_with_folder();
         let entry = &cfg.ungrouped[0];
-        let backend = SshSessionBackend::new_stub(entry);
+        let backend = SshBackendState::new_preallocated(entry.host.clone(), entry.user.clone());
         let mut sessions = HashMap::new();
         sessions.insert(1, backend);
 
-        let widgets = build_server_tree(&cfg, &sessions, None);
+        let widgets = build_server_tree(&cfg, &[], &sessions, None);
         match &widgets[2] {
             Widget::TreeView { nodes, .. } => {
                 let server = &nodes[1]; // srv2 at 10.0.0.1
-                assert_eq!(server.badge.as_deref(), Some("connected"));
-                let connect = &server.context_menu.as_ref().unwrap()[0];
-                assert_eq!(connect.enabled, Some(false)); // disabled when connected
+                assert_eq!(server.bold, Some(true));
+                assert!(server.badge.is_none());
             }
             _ => panic!("expected tree view"),
         }
     }
 
     #[test]
-    fn active_sessions_appends_summary_widgets() {
+    fn no_active_sessions_section() {
         let cfg = make_config_with_folder();
         let entry = &cfg.ungrouped[0];
-        let backend = SshSessionBackend::new_stub(entry);
+        let backend = SshBackendState::new_preallocated(entry.host.clone(), entry.user.clone());
         let mut sessions = HashMap::new();
         sessions.insert(42, backend);
 
-        let widgets = build_server_tree(&cfg, &sessions, None);
-        // toolbar, separator, tree, separator, heading, horizontal(icon_label + badge)
-        assert!(widgets.len() > 3);
-        assert!(matches!(&widgets[3], Widget::Separator));
-        match &widgets[4] {
-            Widget::Heading { text, .. } => assert_eq!(text, "Active Sessions"),
-            _ => panic!("expected heading"),
-        }
-    }
-
-    #[test]
-    fn no_sessions_no_summary() {
-        let cfg = make_config_with_folder();
-        let widgets = build_server_tree(&cfg, &empty_sessions(), None);
-        assert_eq!(widgets.len(), 3); // just toolbar, separator, tree
+        let widgets = build_server_tree(&cfg, &[], &sessions, None);
+        // Toolbar + TextInput + TreeView + Separator + Button, no extra Active Sessions widgets.
+        assert_eq!(widgets.len(), 5);
     }
 
     #[test]
     fn selected_passed_to_tree() {
         let cfg = make_config_with_folder();
-        let widgets = build_server_tree(&cfg, &empty_sessions(), Some("srv2"));
+        let widgets = build_server_tree(&cfg, &[], &empty_sessions(), Some("srv2"));
         match &widgets[2] {
             Widget::TreeView { selected, .. } => {
                 assert_eq!(selected.as_deref(), Some("srv2"));
@@ -365,12 +324,19 @@ mod tests {
     }
 
     #[test]
-    fn no_selection_is_none() {
+    fn user_folders_and_ssh_config_coexist() {
         let cfg = make_config_with_folder();
-        let widgets = build_server_tree(&cfg, &empty_sessions(), None);
+        let ssh_entries = make_ssh_config_entries();
+        let widgets = build_server_tree(&cfg, &ssh_entries, &empty_sessions(), None);
         match &widgets[2] {
-            Widget::TreeView { selected, .. } => {
-                assert!(selected.is_none());
+            Widget::TreeView { nodes, .. } => {
+                // folder_0, srv2 (ungrouped), sshconfig_folder
+                assert_eq!(nodes.len(), 3);
+                assert_eq!(nodes[0].id, "folder_0");
+                assert_eq!(nodes[0].icon_color.as_deref(), Some("blue"));
+                assert_eq!(nodes[1].id, "srv2");
+                assert_eq!(nodes[2].id, "sshconfig_folder");
+                assert_eq!(nodes[2].icon_color.as_deref(), Some("blue"));
             }
             _ => panic!("expected tree view"),
         }

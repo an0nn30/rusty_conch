@@ -4,6 +4,7 @@ mod app;
 mod context_menu;
 mod extra_window;
 mod host;
+mod icons;
 mod input;
 mod ipc;
 mod layout;

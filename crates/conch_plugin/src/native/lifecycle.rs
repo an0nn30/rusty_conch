@@ -95,12 +95,10 @@ fn handle_bus_event(
     plugin_name: &str,
     msg: &crate::bus::BusMessage,
 ) {
-    let event = serde_json::json!({
-        "BusEvent": {
-            "event_type": msg.event_type,
-            "data": serde_json::to_string(&msg.data).unwrap_or_default(),
-        }
-    });
+    let event = conch_plugin_sdk::PluginEvent::BusEvent {
+        event_type: msg.event_type.clone(),
+        data: msg.data.clone(),
+    };
     let json = serde_json::to_string(&event).unwrap_or_default();
 
     unsafe {

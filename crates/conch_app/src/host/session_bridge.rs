@@ -28,9 +28,18 @@ use conch_pty::EventProxy;
 use tokio::sync::mpsc;
 
 /// Dimensions for creating the terminal grid.
-struct TermSize {
+pub struct TermSize {
     columns: usize,
     lines: usize,
+}
+
+impl TermSize {
+    pub fn new(cols: u16, rows: u16) -> Self {
+        Self {
+            columns: cols as usize,
+            lines: rows as usize,
+        }
+    }
 }
 
 impl Dimensions for TermSize {
@@ -53,14 +62,13 @@ impl Dimensions for TermSize {
 pub struct PluginSessionBridge {
     /// Terminal state, shared with the UI rendering thread.
     pub term: Arc<FairMutex<Term<EventProxy>>>,
-    /// VTE parser that feeds into the terminal handler.
-    parser: alacritty_terminal::vte::ansi::Processor,
     /// Receives terminal events (Title, Bell, etc.) from the EventProxy.
-    pub event_rx: mpsc::UnboundedReceiver<TermEvent>,
+    /// Option so it can be taken out for the Session struct.
+    event_rx: Option<mpsc::UnboundedReceiver<TermEvent>>,
     /// Session handle assigned by the host.
     pub handle: SessionHandle,
-    /// The boxed bridge pointer passed as `output_ctx`. We keep this to free
-    /// it on drop.
+    /// The boxed bridge context passed as `output_ctx`. Owns the parser.
+    /// We keep this to free it on drop.
     bridge_ptr: *mut BridgeCtx,
 }
 
@@ -71,11 +79,12 @@ unsafe impl Send for PluginSessionBridge {}
 
 /// Opaque context passed to the output callback.
 ///
-/// Contains a raw pointer to the Term and parser. The callback acquires the
-/// mutex, feeds bytes, and releases — all within the callback invocation.
+/// Heap-allocated and stable — the pointer to this struct is passed as
+/// `output_ctx` and never moves. Owns the VTE parser directly so there
+/// are no dangling pointers when `PluginSessionBridge` is moved.
 struct BridgeCtx {
     term: Arc<FairMutex<Term<EventProxy>>>,
-    parser: *mut alacritty_terminal::vte::ansi::Processor,
+    parser: alacritty_terminal::vte::ansi::Processor,
 }
 
 impl PluginSessionBridge {
@@ -91,52 +100,39 @@ impl PluginSessionBridge {
     ) -> (Self, OutputCallback, *mut c_void) {
         let (event_proxy, event_rx) = EventProxy::new();
 
-        let size = TermSize {
-            columns: cols as usize,
-            lines: rows as usize,
-        };
+        let size = TermSize::new(cols, rows);
         let term = Term::new(term_config, &size, event_proxy);
         let term = Arc::new(FairMutex::new(term));
         let parser = alacritty_terminal::vte::ansi::Processor::new();
 
         // Allocate the bridge context on the heap so we can pass a stable
-        // pointer to the C callback.
+        // pointer to the C callback. The parser lives here (not in the bridge
+        // struct) so the pointer remains valid even if the bridge is moved.
         let ctx = Box::new(BridgeCtx {
             term: Arc::clone(&term),
-            parser: std::ptr::null_mut(), // filled in below
+            parser,
         });
         let ctx_ptr = Box::into_raw(ctx);
 
-        let mut bridge = Self {
+        let bridge = Self {
             term,
-            parser,
-            event_rx,
+            event_rx: Some(event_rx),
             handle,
             bridge_ptr: ctx_ptr,
         };
 
-        // Point the context's parser pointer at the bridge's parser.
-        // SAFETY: ctx_ptr is valid (we just allocated it) and bridge.parser is
-        // stable because PluginSessionBridge is not moved after this point
-        // (it's stored in a HashMap by the host).
-        //
-        // NOTE: This raw pointer approach is needed because the output callback
-        // is `extern "C"` and cannot capture Rust closures. The parser and term
-        // are both accessed under the FairMutex.
-        unsafe {
-            (*ctx_ptr).parser = &mut bridge.parser as *mut _;
-        }
-
         (bridge, output_callback, ctx_ptr as *mut c_void)
+    }
+
+    /// Take the event receiver (can only be called once).
+    pub fn take_event_rx(&mut self) -> mpsc::UnboundedReceiver<TermEvent> {
+        self.event_rx.take().expect("event_rx already taken")
     }
 
     /// Resize the terminal grid.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         if let Some(mut term) = self.term.try_lock_unfair() {
-            term.resize(TermSize {
-                columns: cols as usize,
-                lines: rows as usize,
-            });
+            term.resize(TermSize::new(cols, rows));
         }
     }
 }
@@ -172,8 +168,7 @@ extern "C" fn output_callback(ctx: *mut c_void, buf: *const u8, len: usize) {
 
     // Lock the terminal and feed bytes through the parser.
     let mut term = bridge_ctx.term.lock();
-    let parser = unsafe { &mut *bridge_ctx.parser };
-    parser.advance(&mut *term, bytes);
+    bridge_ctx.parser.advance(&mut *term, bytes);
 }
 
 #[cfg(test)]
@@ -289,7 +284,8 @@ mod tests {
         cb(ctx, data.as_ptr(), data.len());
 
         // The EventProxy should have forwarded a Title event.
-        match bridge.event_rx.try_recv() {
+        let mut event_rx = bridge.take_event_rx();
+        match event_rx.try_recv() {
             Ok(TermEvent::Title(title)) => {
                 assert_eq!(title, "My Title");
             }

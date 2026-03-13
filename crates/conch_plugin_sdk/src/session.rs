@@ -42,6 +42,7 @@ unsafe impl Send for SessionMeta {}
 /// first argument. The plugin is responsible for routing that to the correct
 /// internal session (e.g., an SSH channel).
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct SessionBackendVtable {
     /// Write input bytes (user keystrokes) to the session.
     pub write: extern "C" fn(handle: *mut c_void, buf: *const u8, len: usize),
@@ -82,3 +83,16 @@ pub struct OpenSessionResult {
 // SAFETY: output_cb is a function pointer (Send+Sync), output_ctx is only
 // passed back to output_cb which is thread-safe by contract.
 unsafe impl Send for OpenSessionResult {}
+
+/// Status of a plugin-owned session. Used to tell the host whether to render
+/// a "connecting" screen, an error screen, or the actual terminal.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionStatus {
+    /// Connection in progress — host shows a loading/connecting screen.
+    Connecting = 0,
+    /// Fully connected — host renders the terminal.
+    Connected = 1,
+    /// Connection failed — host shows an error screen with the detail message.
+    Error = 2,
+}

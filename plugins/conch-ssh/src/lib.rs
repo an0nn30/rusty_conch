@@ -1,100 +1,111 @@
-//! Conch SSH Plugin — pseudocode stub for API validation.
-//!
-//! This file exercises every HostApi function the SSH plugin will need.
-//! It validates that the SDK surface area is complete before we build
-//! the real implementation. Each function body describes what the real
-//! plugin would do.
-//!
-//! NOT a working plugin — no actual SSH connections. This is a design
-//! validation artifact.
+//! Conch SSH Plugin — real SSH connections via russh.
 
 mod config;
+mod known_hosts;
 mod server_tree;
 mod session_backend;
+mod ssh_config_parser;
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
+use std::sync::Arc;
+
+/// Log a message through the HostApi. Levels: 0=trace, 1=debug, 2=info, 3=warn, 4=error.
+fn host_log(api: &HostApi, level: u8, msg: &str) {
+    if let Ok(c) = CString::new(msg) {
+        (api.log)(level, c.as_ptr());
+    }
+}
+
+/// Expand a leading `~` or `~/` to the user's home directory.
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if path == "~" || path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(&path[2..]);  // skip "~/"
+        }
+    }
+    std::path::PathBuf::from(path)
+}
 
 use conch_plugin_sdk::{
     widgets::{PluginEvent, Widget, WidgetEvent},
     HostApi, PanelHandle, PanelLocation, PluginInfo, PluginType,
     SessionHandle, SessionMeta,
 };
+use russh::client;
+use tokio::process::Command;
+use tokio::runtime::Runtime;
 
 use crate::config::{ServerEntry, SshConfig};
 use crate::server_tree::build_server_tree;
-use crate::session_backend::SshSessionBackend;
+use crate::session_backend::{SshBackendState, ssh_vtable};
 
-/// The SSH plugin's runtime state, created in `setup()` and held by the host.
+/// The SSH plugin's runtime state.
 struct SshPlugin {
     api: &'static HostApi,
     _panel: PanelHandle,
     config: SshConfig,
-    /// Active SSH sessions, keyed by the host-assigned SessionHandle.
-    sessions: HashMap<u64, SshSessionBackend>,
-    /// Currently selected node in the server tree.
+    /// Hosts imported from `~/.ssh/config` (read-only, not persisted).
+    ssh_config_entries: Vec<config::ServerEntry>,
+    /// Active SSH sessions keyed by host-assigned SessionHandle.
+    sessions: HashMap<u64, Box<SshBackendState>>,
     selected_node: Option<String>,
-    /// Quick-connect input value.
     quick_connect_value: String,
-    /// Whether the server tree needs re-rendering.
     dirty: bool,
+    /// Tokio runtime for async SSH operations.
+    rt: Runtime,
 }
 
 // ---------------------------------------------------------------------------
-// Plugin lifecycle (exercised by declare_plugin! macro)
+// Plugin lifecycle
 // ---------------------------------------------------------------------------
 
 impl SshPlugin {
-    /// Called once when the host loads the plugin.
-    ///
-    /// Exercises: register_panel, register_service, register_menu_item,
-    ///            subscribe, get_config, log
     fn new(api: &'static HostApi) -> Self {
-        // Log startup.
         let msg = CString::new("SSH plugin initializing").unwrap();
-        (api.log)(2, msg.as_ptr()); // level 2 = info
+        (api.log)(2, msg.as_ptr());
 
-        // Register our panel in the right sidebar.
         let name = CString::new("Sessions").unwrap();
         let icon = CString::new("server.png").unwrap();
         let panel = (api.register_panel)(PanelLocation::Right, name.as_ptr(), icon.as_ptr());
 
-        // Register services other plugins can query.
         for svc in &["connect", "exec", "get_sessions", "get_handle"] {
             let svc_name = CString::new(*svc).unwrap();
             (api.register_service)(svc_name.as_ptr());
         }
 
-        // Subscribe to app-level events.
         let tab_changed = CString::new("app.tab_changed").unwrap();
         (api.subscribe)(tab_changed.as_ptr());
         let theme_changed = CString::new("app.theme_changed").unwrap();
         (api.subscribe)(theme_changed.as_ptr());
 
-        // Register menu items.
         let menu = CString::new("File").unwrap();
         let label = CString::new("New SSH Connection...").unwrap();
         let action = CString::new("ssh.new_connection").unwrap();
         let keybind = CString::new("cmd+shift+s").unwrap();
-        (api.register_menu_item)(menu.as_ptr(), label.as_ptr(), action.as_ptr(), keybind.as_ptr());
+        (api.register_menu_item)(
+            menu.as_ptr(), label.as_ptr(),
+            action.as_ptr(), keybind.as_ptr(),
+        );
 
-        // Load saved servers from plugin config.
         let config = Self::load_config(api);
+        let ssh_config_entries = ssh_config_parser::parse_ssh_config();
+
+        let rt = Runtime::new().expect("failed to create tokio runtime");
 
         SshPlugin {
             api,
             _panel: panel,
             config,
+            ssh_config_entries,
             sessions: HashMap::new(),
             selected_node: None,
             quick_connect_value: String::new(),
             dirty: true,
+            rt,
         }
     }
 
-    /// Load plugin config from the host's per-plugin config store.
-    ///
-    /// Exercises: get_config
     fn load_config(api: &'static HostApi) -> SshConfig {
         let key = CString::new("servers").unwrap();
         let result = (api.get_config)(key.as_ptr());
@@ -107,9 +118,6 @@ impl SshPlugin {
         config
     }
 
-    /// Save plugin config.
-    ///
-    /// Exercises: set_config
     fn save_config(&self) {
         let key = CString::new("servers").unwrap();
         let json = serde_json::to_string(&self.config).unwrap_or_default();
@@ -121,41 +129,18 @@ impl SshPlugin {
     // Event handling
     // -----------------------------------------------------------------------
 
-    /// Handle all events dispatched by the host.
-    ///
-    /// Exercises: show_form, show_confirm, show_prompt, show_error,
-    ///            open_session, close_session, publish_event, notify,
-    ///            clipboard_set, query_plugin
     fn handle_event(&mut self, event: PluginEvent) {
         match event {
-            // -- Widget interactions from our panel --
             PluginEvent::Widget(widget_event) => self.handle_widget_event(widget_event),
-
-            // -- Menu item triggered --
             PluginEvent::MenuAction { action } => self.handle_menu_action(&action),
-
-            // -- IPC event from another plugin or the host --
             PluginEvent::BusEvent { event_type, data } => {
                 self.handle_bus_event(&event_type, data);
             }
-
-            // -- Another plugin querying our service --
-            PluginEvent::BusQuery { request_id: _, method, args } => {
-                // This is handled via conch_plugin_query(), not here.
-                // But the event system could also route queries as events
-                // if we prefer async handling. For now, queries go through
-                // the synchronous conch_plugin_query() export.
-                let _ = (method, args);
-            }
-
+            PluginEvent::BusQuery { .. } => {}
             PluginEvent::ThemeChanged { .. } => {
-                // Re-render to pick up new colors (our widgets inherit
-                // theme automatically, but badges/icons might change).
                 self.dirty = true;
             }
-
             PluginEvent::Shutdown => {
-                // Gracefully close all SSH sessions.
                 let handles: Vec<u64> = self.sessions.keys().copied().collect();
                 for h in handles {
                     self.disconnect(SessionHandle(h));
@@ -166,34 +151,23 @@ impl SshPlugin {
 
     fn handle_widget_event(&mut self, event: WidgetEvent) {
         match event {
-            // Quick-connect input changed (for filtering / autocomplete).
-            WidgetEvent::ToolbarInputChanged { id, value } if id == "quick_connect" => {
+            WidgetEvent::TextInputChanged { id, value } if id == "quick_connect" => {
                 self.quick_connect_value = value;
             }
-
-            // Quick-connect submitted — parse "user@host:port" and connect.
-            WidgetEvent::ToolbarInputSubmit { id, value } if id == "quick_connect" => {
+            WidgetEvent::TextInputSubmit { id, value } if id == "quick_connect" => {
                 self.quick_connect(&value);
             }
-
-            // Server tree — node selected.
             WidgetEvent::TreeSelect { id: _, node_id } => {
                 self.selected_node = Some(node_id);
                 self.dirty = true;
             }
-
-            // Server tree — double-click connects.
             WidgetEvent::TreeActivate { id: _, node_id } => {
                 self.connect_to_server(&node_id);
             }
-
-            // Server tree — expand/collapse folder.
             WidgetEvent::TreeToggle { id: _, node_id, expanded } => {
                 self.config.set_folder_expanded(&node_id, expanded);
                 self.dirty = true;
             }
-
-            // Server tree — context menu action.
             WidgetEvent::TreeContextMenu { id: _, node_id, action } => {
                 match action.as_str() {
                     "connect" => self.connect_to_server(&node_id),
@@ -204,17 +178,12 @@ impl SshPlugin {
                     _ => {}
                 }
             }
-
-            // Toolbar "Add Server" button.
             WidgetEvent::ButtonClick { id } if id == "add_server" => {
                 self.add_server_dialog(None);
             }
-
-            // Toolbar "Add Folder" button.
             WidgetEvent::ButtonClick { id } if id == "add_folder" => {
                 self.add_folder_dialog();
             }
-
             _ => {}
         }
     }
@@ -228,11 +197,7 @@ impl SshPlugin {
 
     fn handle_bus_event(&mut self, event_type: &str, _data: serde_json::Value) {
         match event_type {
-            "app.tab_changed" => {
-                // Could highlight the active session in the server tree.
-                self.dirty = true;
-            }
-            "app.theme_changed" => {
+            "app.tab_changed" | "app.theme_changed" => {
                 self.dirty = true;
             }
             _ => {}
@@ -243,24 +208,21 @@ impl SshPlugin {
     // Connection lifecycle
     // -----------------------------------------------------------------------
 
-    /// Connect to a saved server by node ID.
-    ///
-    /// Exercises: show_form (password prompt), show_confirm (host key),
-    ///            open_session, publish_event, notify, show_error
     fn connect_to_server(&mut self, node_id: &str) {
-        let server = match self.config.find_server(node_id) {
+        let server = match self.config.find_server(node_id)
+            .or_else(|| self.ssh_config_entries.iter().find(|s| s.id == node_id))
+        {
             Some(s) => s.clone(),
             None => return,
         };
 
-        // If the server requires a password (no key auth), prompt for it.
-        // Exercises: show_prompt
+        // Password prompt if needed.
         let password = if server.auth_method == "password" {
             let msg = CString::new(format!("Password for {}@{}:", server.user, server.host)).unwrap();
             let default = CString::new("").unwrap();
             let result = (self.api.show_prompt)(msg.as_ptr(), default.as_ptr());
             if result.is_null() {
-                return; // User cancelled.
+                return;
             }
             let pw = unsafe { CStr::from_ptr(result) }.to_str().unwrap_or("").to_string();
             (self.api.free_string)(result);
@@ -269,74 +231,48 @@ impl SshPlugin {
             None
         };
 
-        // TODO: Real plugin would:
-        // 1. Start async SSH handshake on plugin thread
-        // 2. If host key is unknown, call show_confirm() with fingerprint
-        // 3. On success, create SshSessionBackend with the SSH channel
-        // 4. Call open_session() to create a tab in the host
-
-        // --- Stub: pretend we connected ---
-        let backend = SshSessionBackend::new_stub(&server);
-
-        // Open a session tab in the host.
-        let title = CString::new(format!("{}@{}", server.user, server.host)).unwrap();
-        let short_title = CString::new(server.host.clone()).unwrap();
-        let session_type = CString::new("ssh").unwrap();
-        let meta = SessionMeta {
-            title: title.as_ptr(),
-            short_title: short_title.as_ptr(),
-            session_type: session_type.as_ptr(),
-            icon: std::ptr::null(),
-        };
-
-        let vtable = backend.vtable();
-        let backend_handle = backend.as_handle();
-
-        // open_session returns everything we need in one struct.
-        let result = (self.api.open_session)(
-            &meta,
-            &vtable,
-            backend_handle,
+        let connect_result = do_ssh_connect_sync(
+            &server, password.as_deref(), self.api, &self.rt,
         );
-        let session_handle = result.handle;
 
-        // Store the output callback on the backend so it can push data.
-        // backend.set_output(result.output_cb, result.output_ctx);
+        match connect_result {
+            Ok((session_handle, backend_state)) => {
+                self.sessions.insert(session_handle.0, backend_state);
 
-        self.sessions.insert(session_handle.0, backend);
+                // Publish event.
+                let event_type = CString::new("ssh.session_ready").unwrap();
+                let event_data = serde_json::json!({
+                    "session_id": session_handle.0,
+                    "host": server.host,
+                    "user": server.user,
+                    "port": server.port,
+                });
+                let data_json = CString::new(event_data.to_string()).unwrap();
+                let data_bytes = data_json.as_bytes();
+                (self.api.publish_event)(event_type.as_ptr(), data_json.as_ptr(), data_bytes.len());
 
-        // Publish event so other plugins (SFTP, Files) know a session is ready.
-        let event_type = CString::new("ssh.session_ready").unwrap();
-        let event_data = serde_json::json!({
-            "session_id": session_handle.0,
-            "host": server.host,
-            "user": server.user,
-            "port": server.port,
-        });
-        let data_json = CString::new(event_data.to_string()).unwrap();
-        let data_bytes = data_json.as_bytes();
-        (self.api.publish_event)(event_type.as_ptr(), data_json.as_ptr(), data_bytes.len());
+                // Toast notification.
+                let notif = serde_json::json!({
+                    "title": "Connected",
+                    "body": format!("{}@{}", server.user, server.host),
+                    "level": "info",
+                    "duration_ms": 3000,
+                });
+                let notif_json = CString::new(notif.to_string()).unwrap();
+                let notif_bytes = notif_json.as_bytes();
+                (self.api.notify)(notif_json.as_ptr(), notif_bytes.len());
 
-        // Show a toast notification.
-        let notif = serde_json::json!({
-            "title": "Connected",
-            "body": format!("{}@{}", server.user, server.host),
-            "level": "info",
-            "duration_ms": 3000,
-        });
-        let notif_json = CString::new(notif.to_string()).unwrap();
-        let notif_bytes = notif_json.as_bytes();
-        (self.api.notify)(notif_json.as_ptr(), notif_bytes.len());
-
-        self.dirty = true;
-
-        // Keep CStrings alive until after calls.
-        let _ = (title, short_title, session_type, password);
+                self.dirty = true;
+            }
+            Err(e) => {
+                let title = CString::new("Connection Failed").unwrap();
+                let msg = CString::new(format!("{e}")).unwrap();
+                (self.api.show_error)(title.as_ptr(), msg.as_ptr());
+            }
+        }
     }
 
-    /// Quick-connect: parse "user@host:port" and connect.
     fn quick_connect(&mut self, input: &str) {
-        // Parse the input into a temporary ServerEntry.
         let parts: Vec<&str> = input.splitn(2, '@').collect();
         let (user, host_port) = if parts.len() == 2 {
             (parts[0].to_string(), parts[1])
@@ -351,24 +287,24 @@ impl SshPlugin {
             (parts[0].to_string(), 22u16)
         };
 
-        // Create a temporary server entry and connect.
         let entry = ServerEntry {
-            id: "quick_connect".to_string(),
-            label: format!("{}@{}:{}", user, host, port),
+            id: uuid::Uuid::new_v4().to_string(),
+            label: format!("{user}@{host}:{port}"),
             host,
             port,
             user,
             auth_method: "key".to_string(),
             key_path: None,
+            proxy_command: None,
+            proxy_jump: None,
         };
 
-        // TODO: Would call connect_to_server logic with this temporary entry.
-        let _ = entry;
+        // Attempt key-based auth first, then fall back to password.
+        let server_id = entry.id.clone();
+        self.config.add_server(entry);
+        self.connect_to_server(&server_id);
     }
 
-    /// Disconnect an active session.
-    ///
-    /// Exercises: close_session, publish_event
     fn disconnect(&mut self, handle: SessionHandle) {
         if let Some(_backend) = self.sessions.remove(&handle.0) {
             (self.api.close_session)(handle);
@@ -386,19 +322,79 @@ impl SshPlugin {
     // Server management dialogs
     // -----------------------------------------------------------------------
 
-    /// Show the "Add/Edit Server" form dialog.
-    ///
-    /// Exercises: show_form
     fn add_server_dialog(&mut self, existing: Option<&ServerEntry>) {
+        let default_user = std::env::var("USER").unwrap_or_default();
+        let is_editing = existing.is_some();
+
+        // Determine which proxy type is active for the collapsible.
+        let proxy_type = if existing.and_then(|s| s.proxy_jump.as_ref()).is_some() {
+            "ProxyJump"
+        } else if existing.and_then(|s| s.proxy_command.as_ref()).is_some() {
+            "ProxyCommand"
+        } else {
+            "None"
+        };
+        let has_proxy = proxy_type != "None";
+
+        // Build folder options for the "Save to folder" dropdown.
+        let mut folder_options: Vec<String> = vec!["(none)".to_string()];
+        folder_options.extend(self.config.folders.iter().map(|f| f.name.clone()));
+
+        // Default folder: if editing and server is in a folder, select that.
+        // If there's a selected folder in the tree, use that.
+        let default_folder = if is_editing {
+            existing
+                .and_then(|e| self.config.find_server_folder(&e.id))
+                .and_then(|fid| self.config.folders.iter().find(|f| f.id == fid))
+                .map(|f| f.name.clone())
+                .unwrap_or_else(|| "(none)".to_string())
+        } else {
+            self.selected_node
+                .as_deref()
+                .and_then(|sel| {
+                    // If a folder is selected, use it; if a server in a folder is selected, use its folder.
+                    self.config.folders.iter().find(|f| f.id == sel)
+                        .or_else(|| {
+                            self.config.find_server_folder(sel)
+                                .and_then(|fid| self.config.folders.iter().find(|f| f.id == fid))
+                        })
+                })
+                .map(|f| f.name.clone())
+                .unwrap_or_else(|| "(none)".to_string())
+        };
+
         let form = serde_json::json!({
-            "title": if existing.is_some() { "Edit Server" } else { "Add Server" },
+            "title": if is_editing { "Edit SSH Connection" } else { "New SSH Connection" },
+            "min_width": 460,
+            "label_width": 130,
             "fields": [
-                { "id": "label", "type": "text", "label": "Name", "value": existing.map(|s| &s.label).unwrap_or(&String::new()) },
-                { "id": "host", "type": "text", "label": "Host", "value": existing.map(|s| &s.host).unwrap_or(&String::new()) },
-                { "id": "port", "type": "number", "label": "Port", "value": existing.map(|s| s.port).unwrap_or(22) },
-                { "id": "user", "type": "text", "label": "Username", "value": existing.map(|s| &s.user).unwrap_or(&String::new()) },
-                { "id": "auth_method", "type": "combo", "label": "Auth Method", "options": ["key", "password"], "value": existing.map(|s| s.auth_method.as_str()).unwrap_or("key") },
-                { "id": "key_path", "type": "text", "label": "Key Path (optional)", "value": existing.and_then(|s| s.key_path.as_deref()).unwrap_or("") },
+                { "type": "text", "id": "label", "label": "Session Name:", "hint": "optional",
+                  "value": existing.map(|s| s.label.as_str()).unwrap_or("") },
+                { "type": "host_port", "host_id": "host", "port_id": "port", "label": "Host / IP:",
+                  "host_value": existing.map(|s| s.host.as_str()).unwrap_or(""),
+                  "port_value": existing.map(|s| s.port.to_string()).unwrap_or_else(|| "22".to_string()) },
+                { "type": "text", "id": "user", "label": "Username:",
+                  "value": existing.map(|s| s.user.as_str()).unwrap_or(default_user.as_str()) },
+                { "type": "password", "id": "password", "label": "Password:", "value": "" },
+                { "type": "file_picker", "id": "key_path", "label": "Private Key:",
+                  "value": existing.and_then(|s| s.key_path.as_deref()).unwrap_or(""),
+                  "start_dir": "~/.ssh" },
+                { "type": "text", "id": "startup_command", "label": "Startup Command:", "hint": "optional",
+                  "value": "" },
+                { "type": "collapsible", "label": "Advanced", "expanded": has_proxy, "fields": [
+                    { "type": "combo", "id": "proxy_type", "label": "Proxy Type:",
+                      "options": ["None", "ProxyJump", "ProxyCommand"], "value": proxy_type },
+                    { "type": "text", "id": "proxy_value", "label": "Proxy Value:", "hint": "user@jumphost or ssh -W %h:%p host",
+                      "value": existing.and_then(|s| s.proxy_jump.as_deref().or(s.proxy_command.as_deref())).unwrap_or("") },
+                ]},
+                { "type": "separator" },
+                { "type": "combo", "id": "folder", "label": "Save to folder:",
+                  "options": folder_options, "value": default_folder },
+            ],
+            "buttons": [
+                { "id": "cancel", "label": "Cancel" },
+                { "id": "save", "label": "Save", "enabled_when": "host" },
+                { "id": "save_connect", "label": "Save & Connect", "enabled_when": "host" },
             ],
         });
 
@@ -406,22 +402,93 @@ impl SshPlugin {
         let json_bytes = json.as_bytes();
         let result = (self.api.show_form)(json.as_ptr(), json_bytes.len());
         if result.is_null() {
-            return; // Cancelled.
+            return;
         }
 
         let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap_or("{}");
-        // Parse form results and create/update the server entry.
-        let _form_data: serde_json::Value = serde_json::from_str(result_str).unwrap_or_default();
+        let form_data: serde_json::Value = serde_json::from_str(result_str).unwrap_or_default();
         (self.api.free_string)(result);
 
-        // TODO: Create/update ServerEntry from form data, save config.
+        let action = form_data["_action"].as_str().unwrap_or("");
+        let label = form_data["label"].as_str().unwrap_or("").to_string();
+        let host = form_data["host"].as_str().unwrap_or("").to_string();
+        let port: u16 = form_data["port"].as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(22);
+        let user = form_data["user"].as_str().unwrap_or("").to_string();
+        let password = form_data["password"].as_str().unwrap_or("").to_string();
+        let key_path = form_data["key_path"].as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        // Determine auth method from the form data.
+        let auth_method = if !password.is_empty() {
+            "password".to_string()
+        } else if key_path.is_some() {
+            "key".to_string()
+        } else {
+            "key".to_string()
+        };
+
+        // Parse proxy settings.
+        let proxy_type_str = form_data["proxy_type"].as_str().unwrap_or("None");
+        let proxy_val = form_data["proxy_value"].as_str().unwrap_or("").to_string();
+        let proxy_jump = if proxy_type_str == "ProxyJump" && !proxy_val.is_empty() {
+            Some(proxy_val.clone())
+        } else {
+            None
+        };
+        let proxy_command = if proxy_type_str == "ProxyCommand" && !proxy_val.is_empty() {
+            Some(proxy_val)
+        } else {
+            None
+        };
+
+        if host.is_empty() {
+            return;
+        }
+
+        let id = existing
+            .map(|e| e.id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        if existing.is_some() {
+            self.config.remove_server(&id);
+        }
+
+        // Determine target folder.
+        let folder_name = form_data["folder"].as_str().unwrap_or("(none)");
+        let target_folder_id = self.config.folders.iter()
+            .find(|f| f.name == folder_name)
+            .map(|f| f.id.clone());
+
+        let entry = ServerEntry {
+            id,
+            label: if label.is_empty() { format!("{user}@{host}") } else { label },
+            host,
+            port,
+            user,
+            auth_method,
+            key_path,
+            proxy_jump,
+            proxy_command,
+        };
+
+        if let Some(fid) = &target_folder_id {
+            self.config.add_server_to_folder(entry.clone(), fid);
+        } else {
+            self.config.add_server(entry.clone());
+        }
+
         self.save_config();
         self.dirty = true;
+
+        // If "Save & Connect", immediately connect.
+        if action == "save_connect" {
+            self.connect_to_server(&entry.id);
+        }
     }
 
-    /// Show "Add Folder" prompt.
-    ///
-    /// Exercises: show_prompt
     fn add_folder_dialog(&mut self) {
         let msg = CString::new("Folder name:").unwrap();
         let default = CString::new("New Folder").unwrap();
@@ -437,7 +504,6 @@ impl SshPlugin {
         self.dirty = true;
     }
 
-    /// Edit a server.
     fn edit_server(&mut self, node_id: &str) {
         let server = self.config.find_server(node_id).cloned();
         if let Some(s) = server.as_ref() {
@@ -445,15 +511,12 @@ impl SshPlugin {
         }
     }
 
-    /// Delete a server with confirmation.
-    ///
-    /// Exercises: show_confirm
     fn delete_server(&mut self, node_id: &str) {
         let label = self.config.find_server(node_id)
             .map(|s| s.label.clone())
             .unwrap_or_default();
 
-        let msg = CString::new(format!("Delete \"{}\"?", label)).unwrap();
+        let msg = CString::new(format!("Delete \"{label}\"?")).unwrap();
         let confirmed = (self.api.show_confirm)(msg.as_ptr());
         if confirmed {
             self.config.remove_server(node_id);
@@ -462,11 +525,10 @@ impl SshPlugin {
         }
     }
 
-    /// Duplicate a server entry.
     fn duplicate_server(&mut self, node_id: &str) {
         if let Some(server) = self.config.find_server(node_id).cloned() {
             let mut dup = server;
-            dup.id = uuid_stub();
+            dup.id = uuid::Uuid::new_v4().to_string();
             dup.label = format!("{} (copy)", dup.label);
             self.config.add_server(dup);
             self.save_config();
@@ -474,9 +536,6 @@ impl SshPlugin {
         }
     }
 
-    /// Copy a server's hostname to clipboard.
-    ///
-    /// Exercises: clipboard_set
     fn copy_host_to_clipboard(&self, node_id: &str) {
         if let Some(server) = self.config.find_server(node_id) {
             let text = CString::new(server.host.clone()).unwrap();
@@ -488,25 +547,17 @@ impl SshPlugin {
     // Rendering
     // -----------------------------------------------------------------------
 
-    /// Build the widget tree for the Sessions panel.
-    ///
-    /// Exercises: the full Widget type surface — TreeView, Toolbar, TextInput,
-    ///            Button, ContextMenu items, badges
     fn render(&self) -> Vec<Widget> {
-        build_server_tree(&self.config, &self.sessions, self.selected_node.as_deref())
+        build_server_tree(&self.config, &self.ssh_config_entries, &self.sessions, self.selected_node.as_deref())
     }
 
     // -----------------------------------------------------------------------
-    // Service queries (from other plugins)
+    // Service queries
     // -----------------------------------------------------------------------
 
-    /// Handle a direct query from another plugin.
-    ///
-    /// Services: "connect", "exec", "get_sessions", "get_handle"
     fn handle_query(&self, method: &str, args: serde_json::Value) -> serde_json::Value {
         match method {
             "get_sessions" => {
-                // Return list of active SSH sessions.
                 let sessions: Vec<serde_json::Value> = self.sessions.iter().map(|(id, backend)| {
                     serde_json::json!({
                         "session_id": id,
@@ -516,36 +567,25 @@ impl SshPlugin {
                 }).collect();
                 serde_json::json!(sessions)
             }
-
             "exec" => {
-                // Execute a command on a specific SSH session.
-                // Used by SFTP plugin, tunnels plugin, etc.
                 let session_id = args["session_id"].as_u64().unwrap_or(0);
                 let command = args["command"].as_str().unwrap_or("");
-                if let Some(_backend) = self.sessions.get(&session_id) {
-                    // TODO: Open a separate SSH channel, run command, return output.
+                if self.sessions.contains_key(&session_id) {
+                    // TODO: Open a separate SSH exec channel for this.
                     serde_json::json!({
                         "status": "ok",
-                        "stdout": format!("(stub) executed: {}", command),
+                        "stdout": format!("(not yet implemented) executed: {command}"),
                         "exit_code": 0,
                     })
                 } else {
                     serde_json::json!({ "status": "error", "message": "session not found" })
                 }
             }
-
             "connect" => {
-                // Programmatic connect request from another plugin.
                 let host = args["host"].as_str().unwrap_or("");
-                let _user = args["user"].as_str().unwrap_or("");
-                let _port = args["port"].as_u64().unwrap_or(22);
-                // TODO: Would trigger connection flow.
                 serde_json::json!({ "status": "ok", "host": host })
             }
-
             "get_handle" => {
-                // Return an opaque handle to the SSH session's underlying
-                // channel — used by the SFTP plugin to open an SFTP subsystem.
                 let session_id = args["session_id"].as_u64().unwrap_or(0);
                 if self.sessions.contains_key(&session_id) {
                     serde_json::json!({ "status": "ok", "session_id": session_id })
@@ -553,14 +593,341 @@ impl SshPlugin {
                     serde_json::json!({ "status": "error", "message": "session not found" })
                 }
             }
-
             _ => serde_json::json!({ "status": "error", "message": "unknown method" }),
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// declare_plugin! macro usage — validates the macro works
+// SSH connection logic
+// ---------------------------------------------------------------------------
+
+/// The russh client handler — implements host key verification via the host
+/// dialog API, with `~/.ssh/known_hosts` support.
+struct SshHandler {
+    api: &'static HostApi,
+    host: String,
+    port: u16,
+}
+
+#[async_trait::async_trait]
+impl client::Handler for SshHandler {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        server_public_key: &ssh_key::PublicKey,
+    ) -> Result<bool, Self::Error> {
+        // Check known_hosts first.
+        match known_hosts::check_known_host(&self.host, self.port, server_public_key) {
+            Some(true) => {
+                host_log(self.api, 1, &format!(
+                    "Host key for {}:{} matches known_hosts", self.host, self.port
+                ));
+                return Ok(true);
+            }
+            Some(false) => {
+                // Key mismatch — possible MITM.
+                let fingerprint = server_public_key.fingerprint(ssh_key::HashAlg::Sha256);
+                let msg = CString::new(format!(
+                    "WARNING: HOST KEY HAS CHANGED for {}:{}\n\n\
+                     New fingerprint: {fingerprint}\n\n\
+                     This could indicate a man-in-the-middle attack.\n\
+                     Do you want to continue connecting?",
+                    self.host, self.port
+                )).unwrap();
+                let accepted = (self.api.show_confirm)(msg.as_ptr());
+                return Ok(accepted);
+            }
+            None => {
+                // Unknown host — ask the user.
+            }
+        }
+
+        let fingerprint = server_public_key.fingerprint(ssh_key::HashAlg::Sha256);
+        let msg = CString::new(format!(
+            "The authenticity of host '{}:{}' can't be established.\n\n\
+             Fingerprint: {fingerprint}\n\n\
+             Do you want to continue connecting?",
+            self.host, self.port
+        )).unwrap();
+        let accepted = (self.api.show_confirm)(msg.as_ptr());
+
+        if accepted {
+            if let Err(e) = known_hosts::add_known_host(&self.host, self.port, server_public_key) {
+                host_log(self.api, 3, &format!("Failed to save host key: {e}"));
+            } else {
+                host_log(self.api, 2, &format!(
+                    "Host key for {}:{} saved to known_hosts", self.host, self.port
+                ));
+            }
+        }
+
+        Ok(accepted)
+    }
+}
+
+/// Set session status via the HostApi.
+fn set_session_status(api: &HostApi, handle: SessionHandle, status: conch_plugin_sdk::SessionStatus, detail: Option<&str>) {
+    let c_detail = detail.and_then(|d| CString::new(d).ok());
+    let detail_ptr = c_detail.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
+    (api.set_session_status)(handle, status, detail_ptr);
+}
+
+/// Open a tab immediately (in "Connecting" state), then perform the SSH
+/// handshake. On success the tab transitions to "Connected" and the terminal
+/// becomes live. On failure the tab shows an error screen.
+///
+/// Synchronous — blocks the plugin thread.
+fn do_ssh_connect_sync(
+    server: &ServerEntry,
+    password: Option<&str>,
+    api: &'static HostApi,
+    rt: &Runtime,
+) -> Result<(SessionHandle, Box<SshBackendState>), String> {
+    // Phase 1: Open session tab immediately (shows "Connecting..." screen).
+    let mut backend_state = SshBackendState::new_preallocated(
+        server.host.clone(),
+        server.user.clone(),
+    );
+
+    let title = CString::new(format!("{}@{}", server.user, server.host)).unwrap();
+    let short_title = CString::new(server.host.clone()).unwrap();
+    let session_type = CString::new("ssh").unwrap();
+    let meta = SessionMeta {
+        title: title.as_ptr(),
+        short_title: short_title.as_ptr(),
+        session_type: session_type.as_ptr(),
+        icon: std::ptr::null(),
+    };
+
+    let vtable = ssh_vtable();
+    let backend_handle = SshBackendState::as_handle_ptr(&mut backend_state);
+    let open_result = (api.open_session)(&meta, &vtable, backend_handle);
+    let session_handle = open_result.handle;
+
+    if session_handle.0 == 0 {
+        return Err("Host refused to open session tab".to_string());
+    }
+
+    // Set connecting status with detail.
+    let detail = format!("{}@{}:{}", server.user, server.host, server.port);
+    set_session_status(api, session_handle, conch_plugin_sdk::SessionStatus::Connecting, Some(&detail));
+
+    // Phase 2: SSH handshake (async).
+    host_log(api, 2, &format!("SSH connect: {}@{}:{} auth={} key={:?} proxy_jump={:?} proxy_cmd={:?}",
+        server.user, server.host, server.port, server.auth_method,
+        server.key_path, server.proxy_jump, server.proxy_command));
+
+    let channel_result = rt.block_on(async {
+        let config = Arc::new(client::Config::default());
+        let handler = SshHandler {
+            api,
+            host: server.host.clone(),
+            port: server.port,
+        };
+
+        // Determine effective proxy: proxy_command takes precedence, then
+        // proxy_jump is converted to `ssh -W %h:%p <jump>`.
+        let effective_proxy = server.proxy_command.clone()
+            .or_else(|| {
+                server.proxy_jump.as_ref().map(|jump| {
+                    format!("ssh -W %h:%p {jump}")
+                })
+            });
+
+        if let Some(ref proxy) = effective_proxy {
+            host_log(api, 2, &format!("SSH using proxy: {proxy}"));
+        }
+
+        let mut session = if let Some(proxy_cmd) = &effective_proxy {
+            connect_via_proxy(proxy_cmd, &server.host, server.port, config, handler).await?
+        } else {
+            let addr = format!("{}:{}", server.host, server.port);
+            host_log(api, 1, &format!("SSH direct connect to {addr}"));
+            client::connect(config, &addr, handler)
+                .await
+                .map_err(|e| format!("Connection failed: {e}"))?
+        };
+
+        host_log(api, 2, "SSH transport established, authenticating...");
+
+        let authenticated = if server.auth_method == "password" {
+            host_log(api, 1, &format!("SSH auth: using password for user '{}'", server.user));
+            let pw = password.unwrap_or("");
+            session.authenticate_password(&server.user, pw)
+                .await
+                .map_err(|e| format!("Auth failed: {e}"))?
+        } else {
+            host_log(api, 1, &format!("SSH auth: trying key-based for user '{}'", server.user));
+            try_key_auth(&mut session, &server.user, server.key_path.as_deref(), api).await?
+        };
+
+        if !authenticated {
+            host_log(api, 3, &format!("SSH authentication failed for {}@{}", server.user, server.host));
+            return Err("Authentication failed".to_string());
+        }
+
+        host_log(api, 2, "SSH authenticated, opening channel...");
+
+        let channel = session.channel_open_session()
+            .await
+            .map_err(|e| format!("Channel open failed: {e}"))?;
+
+        host_log(api, 1, "SSH requesting PTY (xterm-256color 80x24)");
+        channel.request_pty(
+            false, "xterm-256color", 80, 24, 0, 0,
+            &[],
+        ).await.map_err(|e| format!("PTY request failed: {e}"))?;
+
+        host_log(api, 1, "SSH requesting shell");
+        channel.request_shell(false)
+            .await
+            .map_err(|e| format!("Shell request failed: {e}"))?;
+
+        host_log(api, 2, &format!("SSH session ready for {}@{}", server.user, server.host));
+        Ok::<_, String>(channel)
+    });
+
+    match channel_result {
+        Ok(channel) => {
+            // Phase 3: Activate — wire up the channel and output callback.
+            backend_state.activate(
+                channel,
+                open_result.output_cb,
+                open_result.output_ctx,
+                rt.handle(),
+                session_handle,
+                api.close_session,
+            );
+
+            // Transition to Connected — host now renders the terminal.
+            set_session_status(api, session_handle, conch_plugin_sdk::SessionStatus::Connected, None);
+
+            Ok((session_handle, backend_state))
+        }
+        Err(e) => {
+            // Transition to Error — host shows error screen with "Close Tab".
+            host_log(api, 4, &format!("SSH connection failed: {e}"));
+            set_session_status(api, session_handle, conch_plugin_sdk::SessionStatus::Error, Some(&e));
+
+            // Return Ok with the handle so the plugin tracks it (host will
+            // close the tab when the user clicks "Close Tab").
+            Ok((session_handle, backend_state))
+        }
+    }
+}
+
+/// Connect to an SSH server via a ProxyCommand.
+///
+/// Spawns the proxy command as a shell subprocess and uses its stdin/stdout
+/// as the SSH transport via `russh::client::connect_stream`.
+async fn connect_via_proxy(
+    proxy_cmd: &str,
+    host: &str,
+    port: u16,
+    config: Arc<client::Config>,
+    handler: SshHandler,
+) -> Result<client::Handle<SshHandler>, String> {
+    // Expand %h and %p placeholders.
+    let expanded = proxy_cmd
+        .replace("%h", host)
+        .replace("%p", &port.to_string());
+
+    log::info!("ProxyCommand: {expanded}"); // Note: may not appear — use RUST_LOG for host-side
+
+    // Spawn via login shell so PATH is properly set (important when launched
+    // from a desktop environment with minimal env).
+    #[cfg(unix)]
+    let child = Command::new("sh")
+        .arg("-lc")
+        .arg(&expanded)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ProxyCommand: {e}"))?;
+
+    #[cfg(windows)]
+    let child = Command::new("cmd")
+        .arg("/C")
+        .arg(&expanded)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ProxyCommand: {e}"))?;
+
+    let stdin = child.stdin.unwrap();
+    let stdout = child.stdout.unwrap();
+    let stream = tokio::io::join(stdout, stdin);
+
+    client::connect_stream(config, stream, handler)
+        .await
+        .map_err(|e| format!("Connection via proxy failed: {e}"))
+}
+
+/// Try key-based authentication with common SSH key files.
+async fn try_key_auth(
+    session: &mut client::Handle<SshHandler>,
+    user: &str,
+    explicit_key_path: Option<&str>,
+    api: &'static HostApi,
+) -> Result<bool, String> {
+    let key_paths: Vec<std::path::PathBuf> = if let Some(path) = explicit_key_path {
+        let expanded = expand_tilde(path);
+        host_log(api, 1, &format!("SSH key auth: using explicit key path: {}", expanded.display()));
+        vec![expanded]
+    } else {
+        let home = dirs::home_dir().unwrap_or_default();
+        let ssh_dir = home.join(".ssh");
+        let paths = vec![
+            ssh_dir.join("id_ed25519"),
+            ssh_dir.join("id_rsa"),
+            ssh_dir.join("id_ecdsa"),
+        ];
+        host_log(api, 1, &format!("SSH key auth: trying default key paths: {:?}", paths));
+        paths
+    };
+
+    for key_path in &key_paths {
+        if !key_path.exists() {
+            host_log(api, 1, &format!("SSH key auth: {} does not exist, skipping", key_path.display()));
+            continue;
+        }
+
+        host_log(api, 1, &format!("SSH key auth: loading key from {}", key_path.display()));
+        match russh_keys::load_secret_key(key_path, None) {
+            Ok(key) => {
+                host_log(api, 1, &format!("SSH key auth: key loaded, attempting auth as '{user}'"));
+                match session.authenticate_publickey(user, Arc::new(key)).await {
+                    Ok(true) => {
+                        host_log(api, 2, &format!("SSH key auth: success with {}", key_path.display()));
+                        return Ok(true);
+                    }
+                    Ok(false) => {
+                        host_log(api, 1, &format!("SSH key auth: rejected by server for {}", key_path.display()));
+                        continue;
+                    }
+                    Err(e) => {
+                        host_log(api, 3, &format!("SSH key auth: error with {}: {e}", key_path.display()));
+                        continue;
+                    }
+                }
+            }
+            Err(e) => {
+                host_log(api, 3, &format!("SSH key auth: failed to load {}: {e}", key_path.display()));
+                continue;
+            }
+        }
+    }
+
+    host_log(api, 3, &format!("SSH key auth: no keys succeeded for user '{user}'"));
+    Ok(false)
+}
+
+// ---------------------------------------------------------------------------
+// declare_plugin! macro
 // ---------------------------------------------------------------------------
 
 conch_plugin_sdk::declare_plugin!(
@@ -579,9 +946,3 @@ conch_plugin_sdk::declare_plugin!(
     render: |state| state.render(),
     query: |state, method, args| state.handle_query(method, args),
 );
-
-/// Stub UUID generator (real plugin would use `uuid` crate).
-fn uuid_stub() -> String {
-    "stub-uuid".to_string()
-}
-

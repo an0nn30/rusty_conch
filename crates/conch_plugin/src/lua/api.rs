@@ -980,6 +980,8 @@ fn lua_to_tree_node(tbl: &LuaTable) -> LuaResult<TreeNode> {
         id: tbl.get("id")?,
         label: tbl.get("label")?,
         icon: tbl.get("icon").ok(),
+        icon_color: tbl.get("icon_color").ok(),
+        bold: tbl.get("bold").ok(),
         badge: tbl.get("badge").ok(),
         expanded: tbl.get("expanded").ok(),
         children,

@@ -1,31 +1,84 @@
-//! SSH session backend — byte-stream bridge between SSH channel and the host's
-//! terminal emulator.
-//!
-//! This exercises: SessionBackendVtable, OutputCallback.
-//!
-//! In the real plugin, this wraps a `russh` SSH channel. For the stub, it's
-//! just metadata.
+//! SSH session backend — bridges a russh SSH channel to the host's terminal
+//! emulator via the SessionBackendVtable and OutputCallback.
 
 use std::ffi::c_void;
 
-use conch_plugin_sdk::SessionBackendVtable;
+use conch_plugin_sdk::{OutputCallback, SessionBackendVtable, SessionHandle};
+use russh::ChannelMsg;
+use tokio::runtime::Handle as TokioHandle;
+use tokio::sync::mpsc;
 
-/// A single SSH session backend (one per connected tab).
-pub struct SshSessionBackend {
-    host: String,
-    user: String,
-    // Real plugin would hold:
-    // channel: russh::ChannelHandle,
-    // output_cb: OutputCallback,
-    // output_ctx: *mut c_void,
+/// Function pointer type for `host_close_session`.
+type CloseSessionFn = extern "C" fn(SessionHandle);
+
+/// Send-safe wrapper for the output callback + context pointer pair.
+/// SAFETY: The output callback and context are thread-safe by contract with
+/// the host — they are designed to be called from any thread.
+struct OutputSink {
+    cb: OutputCallback,
+    ctx: usize, // stored as usize to avoid *mut c_void Send issues
 }
 
-impl SshSessionBackend {
-    pub fn new_stub(server: &crate::config::ServerEntry) -> Self {
-        Self {
-            host: server.host.clone(),
-            user: server.user.clone(),
+unsafe impl Send for OutputSink {}
+
+impl OutputSink {
+    fn new(cb: OutputCallback, ctx: *mut c_void) -> Self {
+        Self { cb, ctx: ctx as usize }
+    }
+
+    fn push(&self, data: &[u8]) {
+        if !data.is_empty() {
+            (self.cb)(self.ctx as *mut c_void, data.as_ptr(), data.len());
         }
+    }
+}
+
+/// Per-connection state shared between the vtable callbacks and the async loop.
+pub struct SshBackendState {
+    /// Set after `activate()` — sends input to the channel loop.
+    input_tx: Option<mpsc::UnboundedSender<BackendMsg>>,
+    pub host: String,
+    pub user: String,
+}
+
+enum BackendMsg {
+    Write(Vec<u8>),
+    Resize { cols: u16, rows: u16 },
+    Shutdown,
+}
+
+impl SshBackendState {
+    /// Pre-allocate a backend state (before we have the output callback).
+    /// Call `activate()` after getting the callback from `open_session`.
+    pub fn new_preallocated(host: String, user: String) -> Box<Self> {
+        Box::new(Self {
+            input_tx: None,
+            host,
+            user,
+        })
+    }
+
+    /// Convert to a raw handle for passing to the host vtable.
+    pub fn as_handle_ptr(state: &mut Box<Self>) -> *mut c_void {
+        &mut **state as *mut Self as *mut c_void
+    }
+
+    /// Wire up the SSH channel and output callback. Must be called after
+    /// `open_session` returns the output callback.
+    pub fn activate(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        output_cb: OutputCallback,
+        output_ctx: *mut c_void,
+        rt: &TokioHandle,
+        session_handle: SessionHandle,
+        close_session: CloseSessionFn,
+    ) {
+        let (input_tx, input_rx) = mpsc::unbounded_channel();
+        self.input_tx = Some(input_tx);
+
+        let sink = OutputSink::new(output_cb, output_ctx);
+        rt.spawn(channel_loop(channel, sink, input_rx, session_handle, close_session));
     }
 
     pub fn host(&self) -> &str {
@@ -35,43 +88,126 @@ impl SshSessionBackend {
     pub fn user(&self) -> &str {
         &self.user
     }
+}
 
-    /// Build the vtable the host uses to send input/resize/shutdown.
-    pub fn vtable(&self) -> SessionBackendVtable {
-        SessionBackendVtable {
-            write: ssh_backend_write,
-            resize: ssh_backend_resize,
-            shutdown: ssh_backend_shutdown,
-            drop: ssh_backend_drop,
+/// Build the vtable the host uses to send input/resize/shutdown.
+pub fn ssh_vtable() -> SessionBackendVtable {
+    SessionBackendVtable {
+        write: ssh_backend_write,
+        resize: ssh_backend_resize,
+        shutdown: ssh_backend_shutdown,
+        drop: ssh_backend_drop,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Combined channel loop (owns the Channel, handles reads and writes)
+// ---------------------------------------------------------------------------
+
+async fn channel_loop(
+    mut channel: russh::Channel<russh::client::Msg>,
+    sink: OutputSink,
+    mut input_rx: mpsc::UnboundedReceiver<BackendMsg>,
+    session_handle: SessionHandle,
+    close_session: CloseSessionFn,
+) {
+    let mut initiated_by_host = false;
+    loop {
+        tokio::select! {
+            // Read from SSH channel → push to host terminal.
+            msg = channel.wait() => {
+                match msg {
+                    Some(ChannelMsg::Data { data }) => {
+                        sink.push(&data[..]);
+                    }
+                    Some(ChannelMsg::ExtendedData { data, .. }) => {
+                        sink.push(&data[..]);
+                    }
+                    Some(ChannelMsg::ExitStatus { exit_status }) => {
+                        log::info!("SSH channel exited with status {exit_status}");
+                        break;
+                    }
+                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                        log::debug!("SSH channel closed/EOF");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Write from host → SSH channel.
+            input = input_rx.recv() => {
+                match input {
+                    Some(BackendMsg::Write(data)) => {
+                        if let Err(e) = channel.data(&data[..]).await {
+                            log::warn!("SSH write error: {e}");
+                            break;
+                        }
+                    }
+                    Some(BackendMsg::Resize { cols, rows }) => {
+                        if let Err(e) = channel.window_change(cols as u32, rows as u32, 0, 0).await {
+                            log::warn!("SSH resize error: {e}");
+                        }
+                    }
+                    Some(BackendMsg::Shutdown) | None => {
+                        initiated_by_host = true;
+                        let _ = channel.eof().await;
+                        let _ = channel.close().await;
+                        break;
+                    }
+                }
+            }
         }
     }
 
-    /// Get an opaque handle to this backend for the vtable callbacks.
-    pub fn as_handle(&self) -> *mut c_void {
-        // Real plugin: Box::into_raw of a per-session state struct.
-        // Stub: just a null pointer.
-        std::ptr::null_mut()
+    // If the channel closed on its own (e.g. user typed "exit"), tell the host
+    // to remove the tab. Skip if the host initiated the shutdown.
+    if !initiated_by_host {
+        log::info!("SSH channel ended, requesting host close session {:?}", session_handle);
+        close_session(session_handle);
     }
 }
 
-// -- Vtable implementations (stubs) --
+// ---------------------------------------------------------------------------
+// Vtable implementations
+// ---------------------------------------------------------------------------
 
-extern "C" fn ssh_backend_write(_handle: *mut c_void, _buf: *const u8, _len: usize) {
-    // Real: write bytes to the SSH channel.
-    // channel.write_all(slice::from_raw_parts(buf, len))
+extern "C" fn ssh_backend_write(handle: *mut c_void, buf: *const u8, len: usize) {
+    if handle.is_null() || buf.is_null() || len == 0 {
+        return;
+    }
+    let state = unsafe { &*(handle as *const SshBackendState) };
+    if let Some(tx) = &state.input_tx {
+        let data = unsafe { std::slice::from_raw_parts(buf, len) }.to_vec();
+        let _ = tx.send(BackendMsg::Write(data));
+    }
 }
 
-extern "C" fn ssh_backend_resize(_handle: *mut c_void, _cols: u16, _rows: u16) {
-    // Real: send window-change request to SSH server.
-    // channel.request_pty_size(cols, rows)
+extern "C" fn ssh_backend_resize(handle: *mut c_void, cols: u16, rows: u16) {
+    if handle.is_null() {
+        return;
+    }
+    let state = unsafe { &*(handle as *const SshBackendState) };
+    if let Some(tx) = &state.input_tx {
+        let _ = tx.send(BackendMsg::Resize { cols, rows });
+    }
 }
 
-extern "C" fn ssh_backend_shutdown(_handle: *mut c_void) {
-    // Real: send EOF + close the SSH channel gracefully.
-    // channel.close()
+extern "C" fn ssh_backend_shutdown(handle: *mut c_void) {
+    if handle.is_null() {
+        return;
+    }
+    let state = unsafe { &*(handle as *const SshBackendState) };
+    if let Some(tx) = &state.input_tx {
+        let _ = tx.send(BackendMsg::Shutdown);
+    }
 }
 
-extern "C" fn ssh_backend_drop(_handle: *mut c_void) {
-    // Real: free the boxed per-session state.
-    // Box::from_raw(handle as *mut SessionState)
+extern "C" fn ssh_backend_drop(handle: *mut c_void) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(handle as *mut SshBackendState));
+    }
 }

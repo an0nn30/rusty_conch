@@ -162,22 +162,31 @@ impl ConchApp {
                         .frame(egui::Frame::NONE.fill(theme.surface).inner_margin(8.0))
                         .show(ctx, |ui| {
                             ui.set_min_width(ui.available_width());
-                            if !multi {
-                                ui.label(
-                                    egui::RichText::new(&active_name)
-                                        .size(theme.font_normal + 1.0)
-                                        .strong()
-                                        .color(theme.text),
-                                );
-                                ui.separator();
-                            }
-                            widget_events =
-                                crate::host::panel_renderer::render_widgets(
+                            let remaining = if !multi {
+                                let mut hdr_events = Vec::new();
+                                let rest = crate::host::panel_renderer::render_panel_header(
                                     ui,
+                                    &active_name,
                                     &widgets,
                                     &theme,
                                     &mut self.plugin_text_state,
+                                    &mut hdr_events,
+                                    self.icon_cache.as_ref(),
                                 );
+                                widget_events.extend(hdr_events);
+                                rest
+                            } else {
+                                &widgets[..]
+                            };
+                            widget_events.extend(
+                                crate::host::panel_renderer::render_widgets(
+                                    ui,
+                                    remaining,
+                                    &theme,
+                                    &mut self.plugin_text_state,
+                                    self.icon_cache.as_ref(),
+                                ),
+                            );
                         });
                     self.state.persistent.layout.left_panel_width = resp.response.rect.width();
                 }
@@ -206,22 +215,31 @@ impl ConchApp {
                         .frame(egui::Frame::NONE.fill(theme.surface).inner_margin(8.0))
                         .show(ctx, |ui| {
                             ui.set_min_width(ui.available_width());
-                            if !multi {
-                                ui.label(
-                                    egui::RichText::new(&active_name)
-                                        .size(theme.font_normal + 1.0)
-                                        .strong()
-                                        .color(theme.text),
-                                );
-                                ui.separator();
-                            }
-                            widget_events =
-                                crate::host::panel_renderer::render_widgets(
+                            let remaining = if !multi {
+                                let mut hdr_events = Vec::new();
+                                let rest = crate::host::panel_renderer::render_panel_header(
                                     ui,
+                                    &active_name,
                                     &widgets,
                                     &theme,
                                     &mut self.plugin_text_state,
+                                    &mut hdr_events,
+                                    self.icon_cache.as_ref(),
                                 );
+                                widget_events.extend(hdr_events);
+                                rest
+                            } else {
+                                &widgets[..]
+                            };
+                            widget_events.extend(
+                                crate::host::panel_renderer::render_widgets(
+                                    ui,
+                                    remaining,
+                                    &theme,
+                                    &mut self.plugin_text_state,
+                                    self.icon_cache.as_ref(),
+                                ),
+                            );
                         });
                     self.state.persistent.layout.right_panel_width = resp.response.rect.width();
                 }
@@ -237,7 +255,7 @@ impl ConchApp {
                         .frame(egui::Frame::NONE.fill(theme.surface).inner_margin(8.0))
                         .show(ctx, |ui| {
                             ui.set_min_height(ui.available_height());
-                            if multi {
+                            let remaining = if multi {
                                 ui.horizontal(|ui| {
                                     for (handle, name) in &tab_data {
                                         let is_active = *handle == active_handle;
@@ -254,20 +272,29 @@ impl ConchApp {
                                     }
                                 });
                                 ui.separator();
+                                &widgets[..]
                             } else {
-                                ui.label(
-                                    egui::RichText::new(&active_name)
-                                        .size(theme.font_normal + 1.0)
-                                        .strong()
-                                        .color(theme.text),
+                                let mut hdr_events = Vec::new();
+                                let rest = crate::host::panel_renderer::render_panel_header(
+                                    ui,
+                                    &active_name,
+                                    &widgets,
+                                    &theme,
+                                    &mut self.plugin_text_state,
+                                    &mut hdr_events,
+                                    self.icon_cache.as_ref(),
                                 );
-                                ui.separator();
-                            }
-                            widget_events = crate::host::panel_renderer::render_widgets(
-                                ui,
-                                &widgets,
-                                &theme,
-                                &mut self.plugin_text_state,
+                                widget_events.extend(hdr_events);
+                                rest
+                            };
+                            widget_events.extend(
+                                crate::host::panel_renderer::render_widgets(
+                                    ui,
+                                    remaining,
+                                    &theme,
+                                    &mut self.plugin_text_state,
+                                    self.icon_cache.as_ref(),
+                                ),
                             );
                         });
                     self.state.persistent.layout.bottom_panel_height = resp.response.rect.height();

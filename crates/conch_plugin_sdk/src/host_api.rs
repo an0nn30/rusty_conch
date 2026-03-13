@@ -5,7 +5,7 @@
 
 use std::ffi::{c_char, c_void};
 
-use crate::session::{OpenSessionResult, PanelHandle, SessionBackendVtable, SessionHandle, SessionMeta};
+use crate::session::{OpenSessionResult, PanelHandle, SessionBackendVtable, SessionHandle, SessionMeta, SessionStatus};
 use crate::plugin_info::PanelLocation;
 
 /// The complete host API available to native plugins.
@@ -58,6 +58,20 @@ pub struct HostApi {
 
     /// Close a session tab previously opened with `open_session`.
     pub close_session: extern "C" fn(handle: SessionHandle),
+
+    /// Update the status of a session.
+    ///
+    /// - `Connecting`: host shows a loading screen (default after `open_session`)
+    /// - `Connected`: host shows the terminal
+    /// - `Error`: host shows an error screen with `detail` as the message
+    ///
+    /// `detail` is a null-terminated UTF-8 string shown as the status/error
+    /// message. May be null for `Connected`.
+    pub set_session_status: extern "C" fn(
+        handle: SessionHandle,
+        status: SessionStatus,
+        detail: *const c_char,
+    ),
 
     // -- Dialogs (blocking — called from plugin thread) --------------------
 

@@ -10,20 +10,112 @@ use std::collections::HashMap;
 use conch_plugin_sdk::widgets::{BadgeVariant, TextStyle, Widget, WidgetEvent};
 use egui::RichText;
 
+use crate::icons::IconCache;
 use crate::ui_theme::UiTheme;
 
 /// Render a list of widgets into an egui Ui, collecting widget events.
+///
+/// If the widget list ends with `Separator + <widgets...>`, the trailing
+/// widgets are pinned to the bottom of the available area so they stay
+/// anchored regardless of content height (like a footer).
 pub fn render_widgets(
     ui: &mut egui::Ui,
     widgets: &[Widget],
     theme: &UiTheme,
     text_input_state: &mut HashMap<String, String>,
+    icon_cache: Option<&IconCache>,
 ) -> Vec<WidgetEvent> {
     let mut events = Vec::new();
-    for widget in widgets {
-        render_widget(ui, widget, theme, text_input_state, &mut events);
+
+    // Detect a trailing footer: find the last Separator and treat everything
+    // after it as a bottom-pinned footer.
+    let footer_split = widgets.iter().rposition(|w| matches!(w, Widget::Separator));
+    let (body, footer) = if let Some(sep_idx) = footer_split {
+        // Only treat as footer if it's not the very first widget and there
+        // are widgets after it.
+        if sep_idx > 0 && sep_idx < widgets.len() - 1 {
+            (&widgets[..sep_idx], Some(&widgets[sep_idx + 1..]))
+        } else {
+            (widgets, None)
+        }
+    } else {
+        (widgets, None)
+    };
+
+    // Render footer first so egui reserves bottom space before the main content.
+    if let Some(footer_widgets) = footer {
+        egui::TopBottomPanel::bottom(ui.id().with("__footer"))
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false)
+            .show_inside(ui, |ui| {
+                ui.separator();
+                for widget in footer_widgets {
+                    render_footer_widget(ui, widget, theme, &mut events, icon_cache);
+                }
+            });
     }
+
+    // Render main body widgets.
+    for widget in body {
+        render_widget(ui, widget, theme, text_input_state, &mut events, icon_cache);
+    }
+
     events
+}
+
+/// Render a panel header row with the panel name and, if the first widget is a
+/// Toolbar, merge its items into the same row. Returns the remaining widgets
+/// (skipping the toolbar if it was consumed).
+///
+/// Renders: `[ PanelName ...spacer... toolbar items ]` then a separator.
+pub fn render_panel_header<'a>(
+    ui: &mut egui::Ui,
+    panel_name: &str,
+    widgets: &'a [Widget],
+    theme: &UiTheme,
+    text_input_state: &mut HashMap<String, String>,
+    events: &mut Vec<WidgetEvent>,
+    icon_cache: Option<&IconCache>,
+) -> &'a [Widget] {
+    // Check if the first widget is a Toolbar.
+    let (toolbar_items, rest) = match widgets.first() {
+        Some(Widget::Toolbar { items, .. }) => (Some(items.as_slice()), &widgets[1..]),
+        _ => (None, widgets),
+    };
+
+    ui.horizontal(|ui| {
+        // Panel name on the left.
+        ui.label(
+            egui::RichText::new(panel_name)
+                .size(theme.font_normal + 1.0)
+                .strong()
+                .color(theme.text),
+        );
+
+        // If there are toolbar items, render them right-aligned.
+        if let Some(items) = toolbar_items {
+            // Filter out leading spacers — we handle alignment ourselves.
+            let items: Vec<_> = items
+                .iter()
+                .filter(|i| !matches!(i, conch_plugin_sdk::widgets::ToolbarItem::Spacer))
+                .collect();
+            if !items.is_empty() {
+                let available = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(available, ui.spacing().interact_size.y),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        for item in &items {
+                            render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
+                        }
+                    },
+                );
+            }
+        }
+    });
+    ui.separator();
+
+    rest
 }
 
 /// Render a single widget, recursing into layout containers.
@@ -33,6 +125,7 @@ fn render_widget(
     theme: &UiTheme,
     text_input_state: &mut HashMap<String, String>,
     events: &mut Vec<WidgetEvent>,
+    icon_cache: Option<&IconCache>,
 ) {
     match widget {
         // -- Layout Containers ------------------------------------------------
@@ -45,7 +138,7 @@ fn render_widget(
                     ui.spacing_mut().item_spacing.x = *sp;
                 }
                 for child in children {
-                    render_widget(ui, child, theme, text_input_state, events);
+                    render_widget(ui, child, theme, text_input_state, events, icon_cache);
                 }
             });
         }
@@ -58,7 +151,7 @@ fn render_widget(
                     ui.spacing_mut().item_spacing.y = *sp;
                 }
                 for child in children {
-                    render_widget(ui, child, theme, text_input_state, events);
+                    render_widget(ui, child, theme, text_input_state, events, icon_cache);
                 }
             });
         }
@@ -74,7 +167,7 @@ fn render_widget(
             }
             scroll.show(ui, |ui| {
                 for child in children {
-                    render_widget(ui, child, theme, text_input_state, events);
+                    render_widget(ui, child, theme, text_input_state, events, icon_cache);
                 }
             });
         }
@@ -188,23 +281,31 @@ fn render_widget(
         Widget::Button {
             id,
             label,
+            icon,
             enabled,
-            ..
         } => {
             let is_enabled = enabled.unwrap_or(true);
-            let button = egui::Button::new(
-                RichText::new(label)
-                    .size(theme.font_normal)
-                    .color(if is_enabled {
-                        theme.text
-                    } else {
-                        theme.text_muted
-                    }),
-            );
+            let text_color = if is_enabled { theme.text } else { theme.text_muted };
             ui.add_enabled_ui(is_enabled, |ui| {
-                if ui.add(button).clicked() {
-                    events.push(WidgetEvent::ButtonClick { id: id.clone() });
-                }
+                ui.horizontal(|ui| {
+                    // Render icon if provided.
+                    if let Some(icon_name) = icon {
+                        let dark_mode = ui.visuals().dark_mode;
+                        if let Some(ic) = icon_cache {
+                            if let Some(img) = ic.image_by_name(icon_name, dark_mode) {
+                                ui.add(img);
+                            }
+                        }
+                    }
+                    let button = egui::Button::new(
+                        RichText::new(label)
+                            .size(theme.font_normal)
+                            .color(text_color),
+                    );
+                    if ui.add(button).clicked() {
+                        events.push(WidgetEvent::ButtonClick { id: id.clone() });
+                    }
+                });
             });
         }
 
@@ -312,9 +413,9 @@ fn render_widget(
 
         Widget::SplitPane { left, right, .. } => {
             // MVP: render children sequentially with a separator.
-            render_widget(ui, left, theme, text_input_state, events);
+            render_widget(ui, left, theme, text_input_state, events, icon_cache);
             ui.separator();
-            render_widget(ui, right, theme, text_input_state, events);
+            render_widget(ui, right, theme, text_input_state, events, icon_cache);
         }
 
         Widget::Tabs { tabs, active, .. } => {
@@ -327,58 +428,37 @@ fn render_widget(
                         .color(theme.text_secondary),
                 );
                 for child in &pane.children {
-                    render_widget(ui, child, theme, text_input_state, events);
+                    render_widget(ui, child, theme, text_input_state, events, icon_cache);
                 }
             }
         }
 
         Widget::Toolbar { items, .. } => {
-            ui.horizontal(|ui| {
-                for item in items {
-                    match item {
-                        conch_plugin_sdk::widgets::ToolbarItem::Button { id, label, .. } => {
-                            let text = label.as_deref().unwrap_or(id);
-                            if ui.button(text).clicked() {
-                                events.push(WidgetEvent::ButtonClick { id: id.clone() });
+            // Check if items start with a Spacer — if so, render remaining items right-aligned.
+            let has_leading_spacer = matches!(items.first(), Some(conch_plugin_sdk::widgets::ToolbarItem::Spacer));
+            let items_to_render = if has_leading_spacer { &items[1..] } else { &items[..] };
+
+            if has_leading_spacer {
+                // Use horizontal wrapping to constrain height, then right-align inside.
+                ui.horizontal(|ui| {
+                    let available = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(available, ui.spacing().interact_size.y),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            for item in items_to_render {
+                                render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
                             }
-                        }
-                        conch_plugin_sdk::widgets::ToolbarItem::Separator => {
-                            ui.separator();
-                        }
-                        conch_plugin_sdk::widgets::ToolbarItem::Spacer => {
-                            ui.add_space(8.0);
-                        }
-                        conch_plugin_sdk::widgets::ToolbarItem::TextInput {
-                            id, value, hint,
-                        } => {
-                            let buf = text_input_state
-                                .entry(id.clone())
-                                .or_insert_with(|| value.clone());
-                            let mut te = egui::TextEdit::singleline(buf)
-                                .font(egui::TextStyle::Body)
-                                .desired_width(120.0);
-                            if let Some(h) = hint {
-                                te = te.hint_text(h);
-                            }
-                            let response = ui.add(te);
-                            if response.changed() {
-                                events.push(WidgetEvent::ToolbarInputChanged {
-                                    id: id.clone(),
-                                    value: buf.clone(),
-                                });
-                            }
-                            if response.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                            {
-                                events.push(WidgetEvent::ToolbarInputSubmit {
-                                    id: id.clone(),
-                                    value: buf.clone(),
-                                });
-                            }
-                        }
+                        },
+                    );
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    for item in items_to_render {
+                        render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
                     }
-                }
-            });
+                });
+            }
         }
 
         Widget::Table { .. } => {
@@ -389,12 +469,10 @@ fn render_widget(
             );
         }
 
-        Widget::TreeView { .. } => {
-            ui.label(
-                RichText::new("[TreeView]")
-                    .size(theme.font_small)
-                    .color(theme.text_muted),
-            );
+        Widget::TreeView { id, nodes, selected } => {
+            for node in nodes {
+                render_tree_node(ui, id, node, selected.as_deref(), 0, theme, text_input_state, events, icon_cache);
+            }
         }
 
         Widget::PathBar { segments, .. } => {
@@ -422,14 +500,326 @@ fn render_widget(
                         .color(theme.text_muted),
                 );
                 for child in children {
-                    render_widget(ui, child, theme, text_input_state, events);
+                    render_widget(ui, child, theme, text_input_state, events, icon_cache);
                 }
             });
         }
 
         Widget::ContextMenu { child, .. } => {
             // MVP: just render the child, ignore context menu.
-            render_widget(ui, child, theme, text_input_state, events);
+            render_widget(ui, child, theme, text_input_state, events, icon_cache);
+        }
+    }
+}
+
+/// Render a single tree node (recursive for children).
+///
+/// Folder nodes (those with children) use `CollapsingState` for animated
+/// expand/collapse. Leaf nodes render as a simple horizontal row with
+/// click-to-select and double-click-to-activate.
+fn render_tree_node(
+    ui: &mut egui::Ui,
+    tree_id: &str,
+    node: &conch_plugin_sdk::widgets::TreeNode,
+    selected: Option<&str>,
+    depth: usize,
+    theme: &UiTheme,
+    text_input_state: &mut HashMap<String, String>,
+    events: &mut Vec<WidgetEvent>,
+    icon_cache: Option<&IconCache>,
+) {
+    let is_selected = selected == Some(node.id.as_str());
+    let has_children = !node.children.is_empty();
+    let is_bold = node.bold.unwrap_or(false);
+
+    if has_children {
+        // --- Folder node: animated collapsing header via CollapsingState ---
+        let coll_id = ui.make_persistent_id(("tree_node", &node.id));
+        let mut coll = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            coll_id,
+            node.expanded.unwrap_or(false),
+        );
+
+        // Header row: icon + clickable label (click toggles expand/collapse).
+        let header_resp = ui.horizontal(|ui| {
+            // Icon
+            if let Some(icon_name) = &node.icon {
+                let dark_mode = ui.visuals().dark_mode;
+                if let Some(ic) = icon_cache {
+                    if let Some(img) = ic.image_by_name(icon_name, dark_mode) {
+                        let icon_color = match node.icon_color.as_deref() {
+                            Some("blue") => Some(theme.accent),
+                            Some("muted" | "grey" | "gray") => Some(theme.text_muted),
+                            _ => None,
+                        };
+                        let img = if let Some(color) = icon_color {
+                            img.tint(color)
+                        } else {
+                            img
+                        };
+                        ui.add(img);
+                    }
+                }
+            }
+
+            // Label — clicking toggles the collapsing state.
+            let mut label_text = RichText::new(&node.label)
+                .size(theme.font_normal)
+                .color(if is_selected { theme.accent } else { theme.text });
+            if is_bold {
+                label_text = label_text.strong();
+            }
+            let resp = ui.add(egui::Label::new(label_text).sense(egui::Sense::click()));
+            if resp.clicked() {
+                coll.toggle(ui);
+                events.push(WidgetEvent::TreeToggle {
+                    id: tree_id.to_string(),
+                    node_id: node.id.clone(),
+                    expanded: coll.is_open(),
+                });
+            }
+            resp
+        });
+
+        // Context menu on the header row.
+        if let Some(menu_items) = &node.context_menu {
+            header_resp.inner.context_menu(|ui| {
+                for item in menu_items {
+                    let enabled = item.enabled.unwrap_or(true);
+                    let btn = egui::Button::new(&item.label);
+                    if ui.add_enabled(enabled, btn).clicked() {
+                        events.push(WidgetEvent::TreeContextMenu {
+                            id: tree_id.to_string(),
+                            node_id: node.id.clone(),
+                            action: item.id.clone(),
+                        });
+                        ui.close_menu();
+                    }
+                }
+            });
+        }
+
+        // Animated body with indented children.
+        coll.show_body_unindented(ui, |ui| {
+            ui.indent(coll_id, |ui| {
+                for child in &node.children {
+                    render_tree_node(
+                        ui,
+                        tree_id,
+                        child,
+                        selected,
+                        depth + 1,
+                        theme,
+                        text_input_state,
+                        events,
+                        icon_cache,
+                    );
+                }
+            });
+        });
+
+        coll.store(ui.ctx());
+    } else {
+        // --- Leaf node: simple row with select / activate ---
+        ui.horizontal(|ui| {
+            // Icon
+            if let Some(icon_name) = &node.icon {
+                let dark_mode = ui.visuals().dark_mode;
+                if let Some(ic) = icon_cache {
+                    if let Some(img) = ic.image_by_name(icon_name, dark_mode) {
+                        let icon_color = match node.icon_color.as_deref() {
+                            Some("blue") => Some(theme.accent),
+                            Some("muted" | "grey" | "gray") => Some(theme.text_muted),
+                            _ => None,
+                        };
+                        let img = if let Some(color) = icon_color {
+                            img.tint(color)
+                        } else {
+                            img
+                        };
+                        ui.add(img);
+                    }
+                }
+            }
+
+            // Clickable label (no selection highlight).
+            let mut label_text = RichText::new(&node.label)
+                .size(theme.font_normal)
+                .color(theme.text);
+            if is_bold {
+                label_text = label_text.strong();
+            }
+
+            let response = ui.add(egui::Label::new(label_text).sense(egui::Sense::click()));
+            if response.clicked() {
+                events.push(WidgetEvent::TreeSelect {
+                    id: tree_id.to_string(),
+                    node_id: node.id.clone(),
+                });
+            }
+            if response.double_clicked() {
+                events.push(WidgetEvent::TreeActivate {
+                    id: tree_id.to_string(),
+                    node_id: node.id.clone(),
+                });
+            }
+
+            // Badge (e.g., "connected").
+            if let Some(badge) = &node.badge {
+                ui.label(
+                    RichText::new(badge)
+                        .size(theme.font_small)
+                        .strong()
+                        .color(theme.accent),
+                );
+            }
+
+            // Context menu on right-click.
+            if let Some(menu_items) = &node.context_menu {
+                response.context_menu(|ui| {
+                    for item in menu_items {
+                        let enabled = item.enabled.unwrap_or(true);
+                        let btn = egui::Button::new(&item.label);
+                        if ui.add_enabled(enabled, btn).clicked() {
+                            events.push(WidgetEvent::TreeContextMenu {
+                                id: tree_id.to_string(),
+                                node_id: node.id.clone(),
+                                action: item.id.clone(),
+                            });
+                            ui.close_menu();
+                        }
+                    }
+                });
+            }
+        });
+    }
+}
+
+/// Render a footer widget — buttons are rendered as clickable labels (no outline)
+/// to match the native panel footer style.
+fn render_footer_widget(
+    ui: &mut egui::Ui,
+    widget: &Widget,
+    theme: &UiTheme,
+    events: &mut Vec<WidgetEvent>,
+    icon_cache: Option<&IconCache>,
+) {
+    match widget {
+        Widget::Button { id, label, icon, .. } => {
+            ui.horizontal(|ui| {
+                if let Some(icon_name) = icon {
+                    let dark_mode = ui.visuals().dark_mode;
+                    if let Some(ic) = icon_cache {
+                        if let Some(img) = ic.image_by_name(icon_name, dark_mode) {
+                            ui.add(img);
+                        }
+                    }
+                }
+                if ui
+                    .add(egui::Label::new(
+                        RichText::new(label).size(theme.font_normal).color(theme.text),
+                    ).sense(egui::Sense::click()))
+                    .clicked()
+                {
+                    events.push(WidgetEvent::ButtonClick { id: id.clone() });
+                }
+            });
+        }
+        Widget::Separator => {
+            ui.separator();
+        }
+        _ => {
+            // Fallback: render normally.
+            let mut text_state = HashMap::new();
+            render_widget(ui, widget, theme, &mut text_state, events, icon_cache);
+        }
+    }
+}
+
+/// Render a single toolbar item.
+fn render_toolbar_item(
+    ui: &mut egui::Ui,
+    item: &conch_plugin_sdk::widgets::ToolbarItem,
+    theme: &UiTheme,
+    text_input_state: &mut HashMap<String, String>,
+    events: &mut Vec<WidgetEvent>,
+    icon_cache: Option<&IconCache>,
+) {
+    match item {
+        conch_plugin_sdk::widgets::ToolbarItem::Button {
+            id, icon, label, tooltip, enabled,
+        } => {
+            let is_enabled = enabled.unwrap_or(true);
+            let dark_mode = ui.visuals().dark_mode;
+
+            let clicked = if label.is_none() {
+                // Icon-only button.
+                let mut did_click = false;
+                if let Some(icon_name) = icon {
+                    if let Some(ic) = icon_cache {
+                        if let Some(img) = ic.image_by_name(icon_name, dark_mode) {
+                            let resp = ui.add_enabled(is_enabled, egui::ImageButton::new(img));
+                            if resp.clicked() {
+                                did_click = true;
+                            }
+                            if let Some(tt) = tooltip {
+                                resp.on_hover_text(tt);
+                            }
+                        }
+                    }
+                }
+                did_click
+            } else {
+                // Icon + text button.
+                if let Some(icon_name) = icon {
+                    if let Some(ic) = icon_cache {
+                        if let Some(img) = ic.image_by_name(icon_name, dark_mode) {
+                            ui.add(img);
+                        }
+                    }
+                }
+                let resp = ui.add_enabled(is_enabled, egui::Button::new(label.as_deref().unwrap()));
+                let did_click = resp.clicked();
+                if let Some(tt) = tooltip {
+                    resp.on_hover_text(tt);
+                }
+                did_click
+            };
+            if clicked {
+                events.push(WidgetEvent::ButtonClick { id: id.clone() });
+            }
+        }
+        conch_plugin_sdk::widgets::ToolbarItem::Separator => {
+            ui.separator();
+        }
+        conch_plugin_sdk::widgets::ToolbarItem::Spacer => {
+            // Mid-toolbar spacer — best effort.
+            ui.add_space(8.0);
+        }
+        conch_plugin_sdk::widgets::ToolbarItem::TextInput { id, value, hint } => {
+            let buf = text_input_state
+                .entry(id.clone())
+                .or_insert_with(|| value.clone());
+            let mut te = egui::TextEdit::singleline(buf)
+                .font(egui::TextStyle::Body)
+                .desired_width(120.0);
+            if let Some(h) = hint {
+                te = te.hint_text(h);
+            }
+            let response = ui.add(te);
+            if response.changed() {
+                events.push(WidgetEvent::ToolbarInputChanged {
+                    id: id.clone(),
+                    value: buf.clone(),
+                });
+            }
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                events.push(WidgetEvent::ToolbarInputSubmit {
+                    id: id.clone(),
+                    value: buf.clone(),
+                });
+            }
         }
     }
 }

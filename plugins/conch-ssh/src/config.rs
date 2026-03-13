@@ -15,6 +15,12 @@ pub struct ServerEntry {
     /// "key" or "password".
     pub auth_method: String,
     pub key_path: Option<String>,
+    /// Raw proxy command (e.g., `ssh -W %h:%p bastion`). `%h` and `%p` are expanded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_command: Option<String>,
+    /// SSH jump host (converted to `ssh -W %h:%p <jump>` at connect time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_jump: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +61,27 @@ impl SshConfig {
         });
     }
 
+    /// Add a server to a specific folder. Falls back to ungrouped if folder not found.
+    pub fn add_server_to_folder(&mut self, entry: ServerEntry, folder_id: &str) {
+        if let Some(f) = self.folders.iter_mut().find(|f| f.id == folder_id) {
+            f.entries.push(entry);
+        } else {
+            self.ungrouped.push(entry);
+        }
+    }
+
+    /// Find which folder (if any) contains a server. Returns the folder ID.
+    pub fn find_server_folder(&self, server_id: &str) -> Option<&str> {
+        self.folders.iter()
+            .find(|f| f.entries.iter().any(|s| s.id == server_id))
+            .map(|f| f.id.as_str())
+    }
+
+    /// Check if a given ID is a folder.
+    pub fn is_folder(&self, id: &str) -> bool {
+        self.folders.iter().any(|f| f.id == id)
+    }
+
     pub fn remove_server(&mut self, id: &str) {
         self.ungrouped.retain(|s| s.id != id);
         for folder in &mut self.folders {
@@ -82,6 +109,8 @@ mod tests {
             user: "root".to_string(),
             auth_method: "key".to_string(),
             key_path: None,
+            proxy_command: None,
+            proxy_jump: None,
         }
     }
 

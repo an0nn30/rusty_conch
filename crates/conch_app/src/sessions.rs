@@ -21,7 +21,7 @@ impl ConchApp {
         self.tab_bar_state.begin_close(id, title, index);
 
         if let Some(session) = self.state.sessions.remove(&id) {
-            session.pty.shutdown();
+            session.shutdown();
         }
         self.state.tab_order.retain(|&tab_id| tab_id != id);
         if self.state.active_tab == Some(id) {
@@ -101,8 +101,11 @@ pub(crate) fn create_local_session(
                 id,
                 title: "Local".into(),
                 custom_title: None,
-                pty: local,
+                backend: crate::state::SessionBackend::Local(local),
                 event_rx,
+                status: conch_plugin_sdk::SessionStatus::Connected,
+                status_detail: None,
+                connect_started: None,
             };
             Some((id, session))
         }
@@ -122,7 +125,7 @@ pub(crate) fn open_local_terminal(
 ) -> Option<Uuid> {
     let cwd = state
         .active_session()
-        .map(|s| s.pty.child_pid())
+        .and_then(|s| s.child_pid())
         .and_then(conch_pty::get_cwd_of_pid);
     let (id, session) = create_local_session(&state.user_config, cwd)?;
     if last_cols > 0 && last_rows > 0 {

@@ -306,6 +306,12 @@ pub struct TreeNode {
     pub id: String,
     pub label: String,
     pub icon: Option<String>,
+    /// Color hint for the icon (e.g., "blue", "muted"). Maps to theme colors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_color: Option<String>,
+    /// Render the label in bold (e.g., for active/connected items).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bold: Option<bool>,
     /// Optional status badge (e.g., "connected").
     pub badge: Option<String>,
     /// Whether this node is expanded (only meaningful if `children` is non-empty).
@@ -458,7 +464,7 @@ pub enum WidgetEvent {
 ///
 /// This wraps both widget events and system events (IPC, lifecycle).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PluginEvent {
     /// A widget interaction in one of the plugin's panels.
     Widget(WidgetEvent),
@@ -692,6 +698,8 @@ mod tests {
                     id: "root".into(),
                     label: "Root".into(),
                     icon: Some("folder".into()),
+                    icon_color: None,
+                    bold: None,
                     badge: None,
                     expanded: Some(true),
                     children: vec![
@@ -699,6 +707,8 @@ mod tests {
                             id: "child".into(),
                             label: "Child".into(),
                             icon: None,
+                            icon_color: None,
+                            bold: None,
                             badge: Some("new".into()),
                             expanded: None,
                             children: vec![],
@@ -1057,6 +1067,20 @@ mod tests {
     }
 
     // -- PluginEvent serde roundtrips --
+
+    #[test]
+    fn plugin_event_widget_roundtrip() {
+        let e = PluginEvent::Widget(WidgetEvent::ButtonClick { id: "add_server".into() });
+        let json = serde_json::to_string(&e).unwrap();
+        // Verify no "type" collision — "kind" tags the outer, "type" tags the inner.
+        assert!(json.contains("\"kind\":\"widget\""), "expected kind tag, got: {json}");
+        assert!(json.contains("\"type\":\"button_click\""), "expected type tag, got: {json}");
+        if let PluginEvent::Widget(WidgetEvent::ButtonClick { id }) = roundtrip_plugin_event(&e) {
+            assert_eq!(id, "add_server");
+        } else {
+            panic!("Wrong variant after roundtrip");
+        }
+    }
 
     #[test]
     fn plugin_event_menu_action() {

@@ -13,6 +13,7 @@
 //! well-known C symbols. The host discovers and loads them at runtime via `dlopen`.
 
 pub mod host_api;
+pub mod icons;
 pub mod plugin_info;
 pub mod session;
 pub mod widgets;

@@ -9,10 +9,14 @@ use std::sync::{Arc, OnceLock};
 
 use conch_plugin::bus::PluginBus;
 use conch_plugin_sdk::{
-    HostApi, OpenSessionResult, PanelHandle, PanelLocation, SessionBackendVtable, SessionHandle,
-    SessionMeta,
+    HostApi, OpenSessionResult, PanelHandle, PanelLocation,
+    SessionBackendVtable, SessionHandle, SessionMeta,
 };
 use parking_lot::Mutex;
+use tokio::sync::oneshot;
+
+use super::dialogs::{self, DialogRequest, DialogSender};
+use super::session_bridge::PluginSessionBridge;
 
 // ---------------------------------------------------------------------------
 // Panel Registry
@@ -83,6 +87,53 @@ impl PanelRegistry {
 struct BridgeInner {
     bus: Arc<PluginBus>,
     panels: Arc<Mutex<PanelRegistry>>,
+    dialog_tx: DialogSender,
+    session_registry: Arc<Mutex<SessionRegistry>>,
+}
+
+/// A status update queued by a plugin for one of its sessions.
+pub struct SessionStatusUpdate {
+    pub handle: SessionHandle,
+    pub status: conch_plugin_sdk::SessionStatus,
+    pub detail: Option<String>,
+}
+
+/// Registry of pending session open/close requests from plugins.
+pub struct SessionRegistry {
+    pub pending_open: Vec<PendingSession>,
+    pub pending_close: Vec<SessionHandle>,
+    pub pending_status: Vec<SessionStatusUpdate>,
+    next_handle: u64,
+}
+
+/// A session that a plugin wants to open — drained by ConchApp each frame.
+pub struct PendingSession {
+    pub handle: SessionHandle,
+    pub title: String,
+    pub bridge: PluginSessionBridge,
+    pub vtable: SessionBackendVtable,
+    pub backend_handle: *mut c_void,
+}
+
+// SAFETY: PendingSession contains raw pointer backend_handle which is only
+// accessed through the vtable callbacks (thread-safe by plugin contract).
+unsafe impl Send for PendingSession {}
+
+impl SessionRegistry {
+    pub fn new() -> Self {
+        Self {
+            pending_open: Vec::new(),
+            pending_close: Vec::new(),
+            pending_status: Vec::new(),
+            next_handle: 1,
+        }
+    }
+
+    fn next_handle(&mut self) -> SessionHandle {
+        let h = SessionHandle(self.next_handle);
+        self.next_handle += 1;
+        h
+    }
 }
 
 static BRIDGE: OnceLock<BridgeInner> = OnceLock::new();
@@ -91,9 +142,14 @@ static BRIDGE: OnceLock<BridgeInner> = OnceLock::new();
 ///
 /// Must be called exactly once before any plugin invokes a `HostApi` function.
 /// Typically called during app startup after creating the bus and panel registry.
-pub fn init_bridge(bus: Arc<PluginBus>, panels: Arc<Mutex<PanelRegistry>>) {
+pub fn init_bridge(
+    bus: Arc<PluginBus>,
+    panels: Arc<Mutex<PanelRegistry>>,
+    dialog_tx: DialogSender,
+    session_registry: Arc<Mutex<SessionRegistry>>,
+) {
     BRIDGE
-        .set(BridgeInner { bus, panels })
+        .set(BridgeInner { bus, panels, dialog_tx, session_registry })
         .ok()
         .expect("init_bridge must be called exactly once");
 }
@@ -105,6 +161,7 @@ pub fn build_host_api() -> HostApi {
         set_widgets: host_set_widgets,
         open_session: host_open_session,
         close_session: host_close_session,
+        set_session_status: host_set_session_status,
         show_form: host_show_form,
         show_confirm: host_show_confirm,
         show_prompt: host_show_prompt,
@@ -211,20 +268,50 @@ extern "C" fn host_set_widgets(handle: PanelHandle, json: *const c_char, len: us
 }
 
 // ---------------------------------------------------------------------------
-// Session Backends (stub)
+// Session Backends
 // ---------------------------------------------------------------------------
 
 extern "C" fn host_open_session(
-    _meta: *const SessionMeta,
-    _vtable: *const SessionBackendVtable,
-    _backend_handle: *mut c_void,
+    meta: *const SessionMeta,
+    vtable: *const SessionBackendVtable,
+    backend_handle: *mut c_void,
 ) -> OpenSessionResult {
-    log::warn!("host_open_session: not yet implemented");
-    // Return a zeroed result — handle 0 signals failure.
+    if meta.is_null() || vtable.is_null() {
+        log::error!("host_open_session: null meta or vtable");
+        return OpenSessionResult {
+            handle: SessionHandle(0),
+            output_cb: stub_output_cb,
+            output_ctx: std::ptr::null_mut(),
+        };
+    }
+
+    let b = bridge();
+    let meta_ref = unsafe { &*meta };
+    let vtable_val = unsafe { *vtable };
+    let title = unsafe { cstr_to_str(meta_ref.title) }.to_string();
+
+    let mut registry = b.session_registry.lock();
+    let handle = registry.next_handle();
+
+    // Create the bridge — provides term + output callback for the plugin.
+    let term_config = alacritty_terminal::term::Config::default();
+    let (bridge, output_cb, output_ctx) =
+        PluginSessionBridge::new(handle, 80, 24, term_config);
+
+    registry.pending_open.push(PendingSession {
+        handle,
+        title,
+        bridge,
+        vtable: vtable_val,
+        backend_handle,
+    });
+
+    log::info!("host_open_session: queued session {:?}", handle);
+
     OpenSessionResult {
-        handle: SessionHandle(0),
-        output_cb: stub_output_cb,
-        output_ctx: std::ptr::null_mut(),
+        handle,
+        output_cb,
+        output_ctx,
     }
 }
 
@@ -232,42 +319,119 @@ extern "C" fn stub_output_cb(_ctx: *mut c_void, _buf: *const u8, _len: usize) {
     // no-op stub
 }
 
-extern "C" fn host_close_session(_handle: SessionHandle) {
-    log::warn!("host_close_session: not yet implemented");
+extern "C" fn host_close_session(handle: SessionHandle) {
+    let b = bridge();
+    b.session_registry.lock().pending_close.push(handle);
+    log::info!("host_close_session: queued close for {:?}", handle);
+}
+
+extern "C" fn host_set_session_status(
+    handle: SessionHandle,
+    status: conch_plugin_sdk::SessionStatus,
+    detail: *const c_char,
+) {
+    let detail_str = if detail.is_null() {
+        None
+    } else {
+        Some(unsafe { cstr_to_str(detail) }.to_string())
+    };
+
+    let b = bridge();
+    b.session_registry.lock().pending_status.push(SessionStatusUpdate {
+        handle,
+        status,
+        detail: detail_str,
+    });
+    log::debug!("host_set_session_status: {:?} -> {:?}", handle, status);
 }
 
 // ---------------------------------------------------------------------------
-// Dialogs (stub)
+// Dialogs
 // ---------------------------------------------------------------------------
 
-extern "C" fn host_show_form(_json: *const c_char, _len: usize) -> *mut c_char {
-    log::debug!("host_show_form: stub — returning null (cancelled)");
-    std::ptr::null_mut()
+extern "C" fn host_show_form(json: *const c_char, len: usize) -> *mut c_char {
+    let json_str = unsafe { slice_to_str(json, len) };
+    let descriptor = match dialogs::parse_form_descriptor(json_str) {
+        Some(d) => d,
+        None => {
+            log::warn!("host_show_form: invalid form descriptor JSON");
+            return std::ptr::null_mut();
+        }
+    };
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _ = bridge().dialog_tx.send(DialogRequest::Form {
+        descriptor,
+        reply: reply_tx,
+    });
+
+    // Block the plugin thread until the UI thread responds.
+    match reply_rx.blocking_recv() {
+        Ok(Some(result)) => alloc_cstring(&result),
+        Ok(None) | Err(_) => std::ptr::null_mut(),
+    }
 }
 
-extern "C" fn host_show_confirm(_msg: *const c_char) -> bool {
-    log::debug!("host_show_confirm: stub — returning false");
-    false
+extern "C" fn host_show_confirm(msg: *const c_char) -> bool {
+    let msg_str = unsafe { cstr_to_str(msg) }.to_string();
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _ = bridge().dialog_tx.send(DialogRequest::Confirm {
+        msg: msg_str,
+        reply: reply_tx,
+    });
+
+    reply_rx.blocking_recv().unwrap_or(false)
 }
 
 extern "C" fn host_show_prompt(
-    _msg: *const c_char,
-    _default_value: *const c_char,
+    msg: *const c_char,
+    default_value: *const c_char,
 ) -> *mut c_char {
-    log::debug!("host_show_prompt: stub — returning null (cancelled)");
-    std::ptr::null_mut()
+    let msg_str = unsafe { cstr_to_str(msg) }.to_string();
+    let default = unsafe { cstr_to_str(default_value) }.to_string();
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _ = bridge().dialog_tx.send(DialogRequest::Prompt {
+        msg: msg_str,
+        default_value: default,
+        reply: reply_tx,
+    });
+
+    match reply_rx.blocking_recv() {
+        Ok(Some(result)) => alloc_cstring(&result),
+        Ok(None) | Err(_) => std::ptr::null_mut(),
+    }
 }
 
-extern "C" fn host_show_alert(_title: *const c_char, _msg: *const c_char) {
-    let title = unsafe { cstr_to_str(_title) };
-    let msg = unsafe { cstr_to_str(_msg) };
-    log::info!("host_show_alert: [{title}] {msg}");
+extern "C" fn host_show_alert(title: *const c_char, msg: *const c_char) {
+    let title_str = unsafe { cstr_to_str(title) }.to_string();
+    let msg_str = unsafe { cstr_to_str(msg) }.to_string();
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _ = bridge().dialog_tx.send(DialogRequest::Alert {
+        title: title_str,
+        msg: msg_str,
+        reply: reply_tx,
+    });
+
+    // Block until user dismisses.
+    let _ = reply_rx.blocking_recv();
 }
 
-extern "C" fn host_show_error(_title: *const c_char, _msg: *const c_char) {
-    let title = unsafe { cstr_to_str(_title) };
-    let msg = unsafe { cstr_to_str(_msg) };
-    log::error!("host_show_error: [{title}] {msg}");
+extern "C" fn host_show_error(title: *const c_char, msg: *const c_char) {
+    let title_str = unsafe { cstr_to_str(title) }.to_string();
+    let msg_str = unsafe { cstr_to_str(msg) }.to_string();
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _ = bridge().dialog_tx.send(DialogRequest::Error {
+        title: title_str,
+        msg: msg_str,
+        reply: reply_tx,
+    });
+
+    // Block until user dismisses.
+    let _ = reply_rx.blocking_recv();
 }
 
 // ---------------------------------------------------------------------------
@@ -356,16 +520,48 @@ extern "C" fn host_register_service(name: *const c_char) {
 }
 
 // ---------------------------------------------------------------------------
-// Config Persistence (stub)
+// Config Persistence
 // ---------------------------------------------------------------------------
 
-extern "C" fn host_get_config(_key: *const c_char) -> *mut c_char {
-    log::debug!("host_get_config: stub — returning null");
-    std::ptr::null_mut()
+/// Get the per-plugin config directory: `~/.config/conch/plugins/{plugin_name}/`
+fn plugin_config_dir(plugin_name: &str) -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("conch").join("plugins").join(plugin_name))
 }
 
-extern "C" fn host_set_config(_key: *const c_char, _value: *const c_char) {
-    log::debug!("host_set_config: stub — no-op");
+extern "C" fn host_get_config(key: *const c_char) -> *mut c_char {
+    let key_str = unsafe { cstr_to_str(key) };
+    let plugin = current_plugin_name();
+
+    let Some(dir) = plugin_config_dir(&plugin) else {
+        return std::ptr::null_mut();
+    };
+    let path = dir.join(format!("{key_str}.json"));
+
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => alloc_cstring(&contents),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+extern "C" fn host_set_config(key: *const c_char, value: *const c_char) {
+    let key_str = unsafe { cstr_to_str(key) };
+    let value_str = unsafe { cstr_to_str(value) };
+    let plugin = current_plugin_name();
+
+    let Some(dir) = plugin_config_dir(&plugin) else {
+        log::error!("host_set_config: cannot determine config directory");
+        return;
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log::error!("host_set_config: failed to create config dir: {e}");
+        return;
+    }
+
+    let path = dir.join(format!("{key_str}.json"));
+    if let Err(e) = std::fs::write(&path, value_str) {
+        log::error!("host_set_config: failed to write {}: {e}", path.display());
+    }
 }
 
 // ---------------------------------------------------------------------------

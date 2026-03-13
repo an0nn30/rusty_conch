@@ -38,6 +38,7 @@ notify = "7"
 
 # Terminal emulation (for types)
 alacritty_terminal = "0.25"
+rfd = "0.17.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

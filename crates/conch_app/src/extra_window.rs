@@ -70,7 +70,7 @@ impl ExtraWindow {
     pub fn open_local_tab(&mut self, user_config: &config::UserConfig) {
         let cwd = self.active_tab
             .and_then(|id| self.sessions.get(&id))
-            .map(|s| s.pty.child_pid())
+            .and_then(|s| s.child_pid())
             .and_then(conch_pty::get_cwd_of_pid);
         if let Some((id, session)) = create_local_session(user_config, cwd) {
             if self.last_cols > 0 && self.last_rows > 0 {
