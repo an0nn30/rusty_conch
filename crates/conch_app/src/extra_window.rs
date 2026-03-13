@@ -31,6 +31,9 @@ pub(crate) struct SharedState<'a> {
     pub colors: &'a ResolvedColors,
     pub shortcuts: &'a ResolvedShortcuts,
     pub theme: &'a UiTheme,
+    pub effective_decorations: config::WindowDecorations,
+    pub show_in_window_menu: bool,
+    pub theme_dirty: bool,
 }
 
 /// An extra OS window with its own sessions and tabs.
@@ -130,8 +133,8 @@ impl ExtraWindow {
         // Clear pending actions from previous frame.
         self.pending_actions.clear();
 
-        // Apply theme on first frame (and when changed).
-        if !self.style_applied {
+        // Apply theme on first frame and when it changes.
+        if !self.style_applied || shared.theme_dirty {
             shared.theme.apply(ctx);
             crate::apply_appearance_mode(ctx, shared.user_config.colors.appearance_mode);
             self.style_applied = true;
@@ -223,6 +226,28 @@ impl ExtraWindow {
 
         let bg_color = shared.theme.bg;
 
+        // Buttonless drag region (matches main window).
+        if shared.effective_decorations == config::WindowDecorations::Buttonless {
+            let drag_h = self.cell_height.max(6.0);
+            egui::TopBottomPanel::top("drag_region")
+                .exact_height(drag_h)
+                .frame(egui::Frame::NONE.fill(shared.theme.bg_with_alpha(180)))
+                .show(ctx, |ui| {
+                    let rect = ui.available_rect_before_wrap();
+                    let response = ui.interact(rect, ui.id().with("drag"), egui::Sense::drag());
+                    if response.drag_started() {
+                        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+                    }
+                });
+        }
+
+        // In-window menu bar (when not using native OS menu).
+        if shared.show_in_window_menu {
+            if let Some(action) = crate::menu_bar::egui_menu::show(ctx) {
+                self.handle_menu_action(action, ctx, shared.user_config);
+            }
+        }
+
         // Tab bar.
         let tabs: Vec<(Uuid, String)> = self.tab_order.iter().map(|&id| {
             let title = self.sessions.get(&id)
@@ -300,6 +325,47 @@ impl ExtraWindow {
 
         // Request repaint after 500ms for cursor blink.
         ctx.request_repaint_after(Duration::from_millis(500));
+    }
+
+    /// Handle a menu bar action locally within this extra window.
+    fn handle_menu_action(&mut self, action: crate::menu_bar::MenuAction, ctx: &egui::Context, user_config: &config::UserConfig) {
+        use crate::menu_bar::MenuAction;
+        match action {
+            MenuAction::NewTab => self.open_local_tab(user_config),
+            MenuAction::NewWindow => self.pending_actions.push(ExtraWindowAction::SpawnNewWindow),
+            MenuAction::CloseTab => {
+                if let Some(id) = self.active_tab {
+                    self.remove_session(id);
+                }
+            }
+            MenuAction::Quit => self.pending_actions.push(ExtraWindowAction::QuitApp),
+            MenuAction::Copy => {
+                if let Some((start, end)) = self.selection.normalized() {
+                    if let Some(session) = self.active_session() {
+                        let text = widget::get_selected_text(session.term(), start, end);
+                        if !text.is_empty() {
+                            ctx.copy_text(text);
+                        }
+                    }
+                }
+            }
+            MenuAction::Paste => {
+                ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+            }
+            MenuAction::ZoomIn => {
+                let current = ctx.pixels_per_point();
+                ctx.set_pixels_per_point(current + 0.5);
+            }
+            MenuAction::ZoomOut => {
+                let current = ctx.pixels_per_point();
+                ctx.set_pixels_per_point((current - 0.5).max(0.5));
+            }
+            MenuAction::ZoomReset => {
+                ctx.set_pixels_per_point(1.0);
+            }
+            // Actions not applicable to extra windows.
+            MenuAction::SelectAll | MenuAction::ZenMode | MenuAction::PluginManager => {}
+        }
     }
 
     /// Handle keyboard input: app shortcuts and PTY forwarding.

@@ -431,11 +431,17 @@ impl eframe::App for ConchApp {
         // ── Render extra windows ──
         // Take windows out of self to avoid borrow conflict in the closure.
         let mut windows = std::mem::take(&mut self.extra_windows);
+        let effective_decorations = self.platform.effective_decorations(
+            self.state.user_config.window.decorations,
+        );
         let shared = crate::extra_window::SharedState {
             user_config: &self.state.user_config,
             colors: &self.state.colors,
             shortcuts: &self.shortcuts,
             theme: &self.state.theme,
+            effective_decorations,
+            show_in_window_menu: self.menu_bar_state.is_in_window(),
+            theme_dirty: self.state.theme_dirty,
         };
 
         for window in &mut windows {
