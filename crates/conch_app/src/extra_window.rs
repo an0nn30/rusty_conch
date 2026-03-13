@@ -353,6 +353,7 @@ impl ExtraWindow {
                                 session.status_detail.as_deref(),
                                 session.connect_started,
                                 session.prompt.as_mut(),
+                                None, // icon_cache not available in extra windows on this branch
                             );
                             match action {
                                 crate::app::ConnectingAction::Accept => {

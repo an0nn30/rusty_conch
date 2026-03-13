@@ -396,6 +396,7 @@ impl ConchApp {
                 detail: prompt_req.detail,
                 password_buf: String::new(),
                 focus_password: true,
+                show_password: false,
                 reply: Some(prompt_req.reply),
             };
 
@@ -649,6 +650,7 @@ impl eframe::App for ConchApp {
                                 session.status_detail.as_deref(),
                                 session.connect_started,
                                 session.prompt.as_mut(),
+                                self.icon_cache.as_ref(),
                             );
                             match action {
                                 ConnectingAction::Accept => {
@@ -801,6 +803,7 @@ pub(crate) fn show_connecting_screen(
     detail: Option<&str>,
     started: Option<std::time::Instant>,
     prompt: Option<&mut crate::state::SessionPrompt>,
+    icon_cache: Option<&crate::icons::IconCache>,
 ) -> ConnectingAction {
     let rect = ui.available_rect_before_wrap();
     let bg = if ui.visuals().dark_mode {
@@ -866,21 +869,20 @@ pub(crate) fn show_connecting_screen(
                     );
 
                     ui.add_space(12.0);
-                    let btn_size = egui::Vec2::new(95.0, 26.0);
-                    let spacing = ui.spacing().item_spacing.x;
-                    let total_w = btn_size.x * 2.0 + spacing;
-                    ui.allocate_ui_with_layout(
-                        egui::Vec2::new(total_w, btn_size.y),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            if ui.add_sized(btn_size, egui::Button::new("Accept")).clicked() {
-                                action = ConnectingAction::Accept;
-                            }
-                            if ui.add_sized(btn_size, egui::Button::new("Reject")).clicked() {
-                                action = ConnectingAction::Reject;
-                            }
-                        },
-                    );
+                    let btn_size = egui::Vec2::new(120.0, 34.0);
+                    ui.horizontal(|ui| {
+                        let total_w = btn_size.x * 2.0 + ui.spacing().item_spacing.x;
+                        let avail = ui.available_width();
+                        if avail > total_w {
+                            ui.add_space((avail - total_w) / 2.0);
+                        }
+                        if ui.add_sized(btn_size, egui::Button::new("Accept")).clicked() {
+                            action = ConnectingAction::Accept;
+                        }
+                        if ui.add_sized(btn_size, egui::Button::new("Reject")).clicked() {
+                            action = ConnectingAction::Reject;
+                        }
+                    });
                 });
             });
         } else {
@@ -902,10 +904,39 @@ pub(crate) fn show_connecting_screen(
                         );
                     }
                     ui.add_space(16.0);
-                    let pw_resp = ui.add(
+
+                    // Combined password field with inline eye + lock buttons.
+                    let field_width = 340.0;
+                    let field_height = 34.0;
+                    let btn_zone = 32.0; // space for the eye icon button
+
+                    let (outer_rect, _) = ui.allocate_exact_size(
+                        egui::Vec2::new(field_width, field_height),
+                        egui::Sense::hover(),
+                    );
+
+                    // Draw the outer frame (rounded rect with focus glow).
+                    let visuals = ui.visuals();
+                    let rounding = egui::CornerRadius::same(6);
+                    let stroke = visuals.widgets.active.bg_stroke;
+                    ui.painter().rect(outer_rect, rounding, visuals.widgets.inactive.bg_fill, stroke, egui::StrokeKind::Outside);
+
+                    // Text edit area (left portion).
+                    let text_rect = egui::Rect::from_min_max(
+                        outer_rect.min,
+                        egui::Pos2::new(outer_rect.max.x - btn_zone, outer_rect.max.y),
+                    );
+                    let mut text_child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(text_rect.shrink2(egui::vec2(8.0, 0.0))),
+                    );
+                    let pw_resp = text_child.add(
                         egui::TextEdit::singleline(&mut prompt.password_buf)
-                            .password(true)
-                            .desired_width(300.0)
+                            .password(!prompt.show_password)
+                            .frame(false)
+                            .margin(egui::Margin { left: 0, right: 0, top: 8, bottom: 4 })
+                            .font(egui::TextStyle::Body)
+                            .desired_width(text_rect.width() - 16.0)
                             .hint_text("Password"),
                     );
                     if prompt.focus_password {
@@ -914,20 +945,53 @@ pub(crate) fn show_connecting_screen(
                     }
                     let enter_pressed = pw_resp.lost_focus()
                         && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                    // Icon button area (right portion, inset to avoid overlapping border).
+                    let btn_rect = egui::Rect::from_min_max(
+                        egui::Pos2::new(outer_rect.max.x - btn_zone, outer_rect.min.y),
+                        outer_rect.max,
+                    ).shrink(4.0);
+                    let dark_mode = ui.visuals().dark_mode;
+                    let can_submit = !prompt.password_buf.is_empty();
+
+                    // Eye icon: toggle show/hide password.
+                    let tooltip = if prompt.show_password { "Hide password" } else { "Show password" };
+                    let icon_size = egui::vec2(16.0, 16.0);
+                    let icon_pos = egui::Pos2::new(
+                        btn_rect.center().x - 8.0,
+                        btn_rect.center().y - 8.0,
+                    );
+                    let icon_rect = egui::Rect::from_min_size(icon_pos, icon_size);
+                    let eye_resp = ui.allocate_rect(icon_rect, egui::Sense::click());
+
+                    if let Some(img) = icon_cache
+                        .and_then(|ic| ic.themed_image(crate::icons::Icon::Eye, dark_mode))
+                    {
+                        img.fit_to_exact_size(icon_size).paint_at(ui, icon_rect);
+                    }
+                    if eye_resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tooltip).clicked() {
+                        prompt.show_password = !prompt.show_password;
+                    }
+
+                    // Submit on Enter.
+                    if enter_pressed && can_submit {
+                        action = ConnectingAction::SubmitPassword(
+                            prompt.password_buf.clone(),
+                        );
+                    }
+
                     ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        let can_submit = !prompt.password_buf.is_empty();
-                        if ui.add_enabled(can_submit, egui::Button::new("Connect")).clicked()
-                            || (enter_pressed && can_submit)
-                        {
-                            action = ConnectingAction::SubmitPassword(
-                                prompt.password_buf.clone(),
-                            );
-                        }
-                        if ui.button("Cancel").clicked() {
-                            action = ConnectingAction::Reject;
-                        }
-                    });
+                    // Cancel link.
+                    let cancel_text = egui::RichText::new("Cancel")
+                        .size(13.0)
+                        .color(if ui.visuals().dark_mode {
+                            egui::Color32::from_gray(140)
+                        } else {
+                            egui::Color32::from_gray(100)
+                        });
+                    if ui.add(egui::Label::new(cancel_text).sense(egui::Sense::click())).clicked() {
+                        action = ConnectingAction::Reject;
+                    }
                 });
             });
         }

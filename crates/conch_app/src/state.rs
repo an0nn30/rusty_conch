@@ -30,6 +30,8 @@ pub struct SessionPrompt {
     pub password_buf: String,
     /// Whether to auto-focus the password field on next frame.
     pub focus_password: bool,
+    /// Whether to reveal the password text.
+    pub show_password: bool,
     /// Channel to send the user's response back to the plugin thread.
     pub reply: Option<tokio::sync::oneshot::Sender<Option<String>>>,
 }

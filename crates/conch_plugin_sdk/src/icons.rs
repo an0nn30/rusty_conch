@@ -72,3 +72,12 @@ pub const TRANSFER_DOWN: &str = "transfer-down";
 
 /// Upload/transfer-up icon.
 pub const TRANSFER_UP: &str = "transfer-up";
+
+/// Locked padlock icon.
+pub const LOCKED: &str = "locked";
+
+/// Unlocked padlock icon.
+pub const UNLOCKED: &str = "unlocked";
+
+/// Eye/view icon (show/hide toggle).
+pub const EYE: &str = "eye";

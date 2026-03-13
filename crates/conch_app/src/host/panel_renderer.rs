@@ -323,7 +323,9 @@ fn render_widget(
                 .entry(id.clone())
                 .or_insert_with(|| value.clone());
 
-            let mut te = egui::TextEdit::singleline(buf).font(egui::TextStyle::Body);
+            let mut te = egui::TextEdit::singleline(buf)
+                .font(egui::TextStyle::Body)
+                .margin(theme.text_edit_margin());
             if let Some(h) = hint {
                 te = te.hint_text(h);
             }
@@ -362,6 +364,7 @@ fn render_widget(
             let desired_rows = lines.unwrap_or(4) as usize;
             let mut te = egui::TextEdit::multiline(buf)
                 .font(egui::TextStyle::Monospace)
+                .margin(theme.text_edit_margin())
                 .desired_rows(desired_rows);
             if let Some(h) = hint {
                 te = te.hint_text(h);
@@ -841,6 +844,7 @@ fn render_toolbar_item(
                 .or_insert_with(|| value.clone());
             let mut te = egui::TextEdit::singleline(buf)
                 .font(egui::TextStyle::Body)
+                .margin(theme.text_edit_margin())
                 .desired_width(120.0);
             if let Some(h) = hint {
                 te = te.hint_text(h);

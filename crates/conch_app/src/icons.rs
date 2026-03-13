@@ -46,6 +46,12 @@ const TRANSFER_DOWN_DARK_PNG: &[u8] = include_bytes!("../icons/transfer-down-dar
 const TRANSFER_DOWN_LIGHT_PNG: &[u8] = include_bytes!("../icons/transfer-down-light.png");
 const TRANSFER_UP_DARK_PNG: &[u8] = include_bytes!("../icons/transfer-up-dark.png");
 const TRANSFER_UP_LIGHT_PNG: &[u8] = include_bytes!("../icons/transfer-up-light.png");
+const LOCKED_DARK_PNG: &[u8] = include_bytes!("../icons/locked-dark.png");
+const LOCKED_LIGHT_PNG: &[u8] = include_bytes!("../icons/locked-light.png");
+const UNLOCKED_DARK_PNG: &[u8] = include_bytes!("../icons/unlocked-dark.png");
+const UNLOCKED_LIGHT_PNG: &[u8] = include_bytes!("../icons/unlocked-light.png");
+const EYE_DARK_PNG: &[u8] = include_bytes!("../icons/eye-dark.png");
+const EYE_LIGHT_PNG: &[u8] = include_bytes!("../icons/eye-light.png");
 
 // ---------------------------------------------------------------------------
 // Icon enum
@@ -77,6 +83,9 @@ pub enum Icon {
     TabClose,
     TransferDown,
     TransferUp,
+    Locked,
+    Unlocked,
+    Eye,
 }
 
 /// Resolve a string icon name (as used in plugin widget JSON) to an `Icon`.
@@ -106,6 +115,9 @@ pub fn icon_from_name(name: &str) -> Option<Icon> {
         "tab-close" | "tab_close" | "close" => Some(Icon::TabClose),
         "transfer-down" | "transfer_down" | "download" => Some(Icon::TransferDown),
         "transfer-up" | "transfer_up" | "upload" => Some(Icon::TransferUp),
+        "locked" | "lock" => Some(Icon::Locked),
+        "unlocked" | "unlock" => Some(Icon::Unlocked),
+        "eye" | "view" | "show" => Some(Icon::Eye),
         _ => None,
     }
 }
@@ -125,6 +137,7 @@ const THEMED_ICONS: &[Icon] = &[
     Icon::File, Icon::TabSessions, Icon::TabClose, Icon::GoUp, Icon::GoHome,
     Icon::Refresh, Icon::FolderNew, Icon::SidebarFolder, Icon::GoPrevious,
     Icon::GoNext, Icon::Computer, Icon::TransferDown, Icon::TransferUp,
+    Icon::Locked, Icon::Unlocked, Icon::Eye,
 ];
 
 fn is_themed(icon: Icon) -> bool {
@@ -155,6 +168,9 @@ fn single_bytes(icon: Icon) -> &'static [u8] {
         Icon::GoNext => GO_NEXT_DARK_PNG,
         Icon::TransferDown => TRANSFER_DOWN_DARK_PNG,
         Icon::TransferUp => TRANSFER_UP_DARK_PNG,
+        Icon::Locked => LOCKED_DARK_PNG,
+        Icon::Unlocked => UNLOCKED_DARK_PNG,
+        Icon::Eye => EYE_DARK_PNG,
     }
 }
 
@@ -173,6 +189,9 @@ fn dark_bytes(icon: Icon) -> &'static [u8] {
         Icon::GoNext => GO_NEXT_DARK_PNG,
         Icon::TransferDown => TRANSFER_DOWN_DARK_PNG,
         Icon::TransferUp => TRANSFER_UP_DARK_PNG,
+        Icon::Locked => LOCKED_DARK_PNG,
+        Icon::Unlocked => UNLOCKED_DARK_PNG,
+        Icon::Eye => EYE_DARK_PNG,
         _ => unreachable!(),
     }
 }
@@ -192,6 +211,9 @@ fn light_bytes(icon: Icon) -> &'static [u8] {
         Icon::GoNext => GO_NEXT_LIGHT_PNG,
         Icon::TransferDown => TRANSFER_DOWN_LIGHT_PNG,
         Icon::TransferUp => TRANSFER_UP_LIGHT_PNG,
+        Icon::Locked => LOCKED_LIGHT_PNG,
+        Icon::Unlocked => UNLOCKED_LIGHT_PNG,
+        Icon::Eye => EYE_LIGHT_PNG,
         _ => unreachable!(),
     }
 }

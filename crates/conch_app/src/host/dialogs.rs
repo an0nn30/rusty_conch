@@ -479,10 +479,10 @@ fn form_values_to_json_with_action(values: &HashMap<String, FormValue>, action: 
 const BTN_MIN_SIZE: egui::Vec2 = egui::Vec2::new(95.0, 26.0);
 const BTN_FONT_SIZE: f32 = 14.0;
 const TEXT_EDIT_MARGIN: egui::Margin = egui::Margin {
-    left: 4,
-    right: 4,
-    top: 4,
-    bottom: 4,
+    left: 8,
+    right: 8,
+    top: 6,
+    bottom: 6,
 };
 
 /// Consistently styled text edit matching the main branch.
@@ -832,7 +832,9 @@ fn show_prompt_dialog(ctx: &egui::Context, msg: &str, value: &mut String, submit
         .show(ctx, |ui| {
             ui.label(msg);
             let is_password = msg.to_lowercase().contains("password");
-            let mut edit = egui::TextEdit::singleline(value);
+            let mut edit = egui::TextEdit::singleline(value)
+                .margin(TEXT_EDIT_MARGIN)
+                .font(egui::TextStyle::Body);
             if is_password {
                 edit = edit.password(true);
             }

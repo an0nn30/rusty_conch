@@ -38,6 +38,8 @@ pub struct UiTheme {
     pub text_muted: Color32,
     /// Accent color for highlights, active indicators, links.
     pub accent: Color32,
+    /// Soft focus glow color (sky blue).
+    pub focus_glow: Color32,
     /// Divider/border color.
     pub border: Color32,
     /// Warning color.
@@ -103,12 +105,17 @@ impl UiTheme {
                 (colors.foreground[2] * 90.0) as u8,
             ),
             accent: to_color32(colors.normal[4]), // blue
+            focus_glow: if dark_mode {
+                Color32::from_rgb(100, 160, 230) // soft sky blue
+            } else {
+                Color32::from_rgb(80, 140, 210)
+            },
             border,
             warn: to_color32(colors.normal[3]),  // yellow
             error: to_color32(colors.normal[1]), // red
-            rounding: 0,
+            rounding: 6,
             font_small: 11.0,
-            font_normal: 13.0,
+            font_normal: 14.0,
             menu_width: 120.0,
             dark_mode,
         }
@@ -140,19 +147,19 @@ impl UiTheme {
         let hovered = WidgetVisuals {
             bg_fill: self.surface_raised,
             weak_bg_fill: self.surface_raised,
-            bg_stroke: Stroke::new(1.0, self.accent),
+            bg_stroke: Stroke::new(1.5, self.focus_glow),
             corner_radius: rounding,
             fg_stroke: Stroke::new(1.5, self.text),
-            expansion: 0.0,
+            expansion: 1.0,
         };
 
         let active = WidgetVisuals {
             bg_fill: self.surface_top,
             weak_bg_fill: self.surface_top,
-            bg_stroke: Stroke::new(1.0, self.accent),
+            bg_stroke: Stroke::new(2.0, self.focus_glow),
             corner_radius: rounding,
             fg_stroke: Stroke::new(2.0, self.text),
-            expansion: 0.0,
+            expansion: 2.0,
         };
 
         let open = WidgetVisuals {
@@ -218,6 +225,14 @@ impl UiTheme {
         Color32::from_rgba_unmultiplied(self.bg.r(), self.bg.g(), self.bg.b(), alpha)
     }
 
+    /// Standard inner margin for text edit widgets.
+    ///
+    /// Use this with `TextEdit::singleline(buf).margin(theme.text_edit_margin())`
+    /// so all text inputs share consistent padding.
+    pub fn text_edit_margin(&self) -> egui::Margin {
+        egui::Margin::symmetric(8, 6)
+    }
+
     /// Apply this theme to an egui context.
     ///
     /// Sets both `Visuals` (colors, rounding, shadows) and `Spacing`
@@ -227,6 +242,20 @@ impl UiTheme {
         let mut style = (*ctx.style()).clone();
         style.visuals = self.to_visuals();
         style.spacing.menu_width = self.menu_width;
+
+        // Generous padding for a macOS-like feel.
+        style.spacing.button_padding = egui::vec2(8.0, 6.0);
+        style.spacing.interact_size.y = 30.0;
+
+        // Override the default body font size.
+        use egui::{FontId, TextStyle};
+        style
+            .text_styles
+            .insert(TextStyle::Body, FontId::proportional(self.font_normal));
+        style
+            .text_styles
+            .insert(TextStyle::Button, FontId::proportional(self.font_normal));
+
         ctx.set_style(style);
     }
 }
@@ -435,9 +464,9 @@ mod tests {
     #[test]
     fn from_colors_default_metrics() {
         let theme = UiTheme::from_colors(&dark_colors(), AppearanceMode::Dark);
-        assert_eq!(theme.rounding, 0);
+        assert_eq!(theme.rounding, 6);
         assert_eq!(theme.font_small, 11.0);
-        assert_eq!(theme.font_normal, 13.0);
+        assert_eq!(theme.font_normal, 14.0);
         assert_eq!(theme.menu_width, 120.0);
     }
 
@@ -480,13 +509,14 @@ mod tests {
     }
 
     #[test]
-    fn to_visuals_all_expansion_zero() {
+    fn to_visuals_expansion_values() {
         let theme = UiTheme::from_colors(&dark_colors(), AppearanceMode::Dark);
         let v = theme.to_visuals();
         assert_eq!(v.widgets.noninteractive.expansion, 0.0);
         assert_eq!(v.widgets.inactive.expansion, 0.0);
-        assert_eq!(v.widgets.hovered.expansion, 0.0);
-        assert_eq!(v.widgets.active.expansion, 0.0);
+        // Hovered and active have expansion for focus glow effect.
+        assert_eq!(v.widgets.hovered.expansion, 1.0);
+        assert_eq!(v.widgets.active.expansion, 2.0);
         assert_eq!(v.widgets.open.expansion, 0.0);
     }
 
