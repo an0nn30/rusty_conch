@@ -147,7 +147,7 @@ macro_rules! declare_plugin {
             args_json: *const ::std::ffi::c_char,
             args_len: usize,
         ) -> *mut ::std::ffi::c_char {
-            let $qself = unsafe { &*(handle as *mut $state_ty) };
+            let $qself = unsafe { &mut *(handle as *mut $state_ty) };
             let $method = unsafe { ::std::ffi::CStr::from_ptr(method_ptr) }
                 .to_str()
                 .unwrap_or("");

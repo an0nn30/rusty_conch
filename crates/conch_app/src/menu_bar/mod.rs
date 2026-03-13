@@ -37,6 +37,11 @@ pub enum MenuAction {
     ZoomReset,
     // Tools
     PluginManager,
+    /// Action from a plugin-registered menu item.
+    PluginAction {
+        plugin_name: String,
+        action: String,
+    },
 }
 
 /// Resolved rendering strategy for the menu bar.
@@ -186,6 +191,11 @@ pub fn handle_action(
         }
         MenuAction::PluginManager => {
             app.show_plugin_manager = !app.show_plugin_manager;
+        }
+        MenuAction::PluginAction { plugin_name, action } => {
+            // Dispatch as a plugin event via the IPC bus.
+            let data = serde_json::json!({ "action": action });
+            app.plugin_bus.publish(&plugin_name, "menu_action", data);
         }
     }
 }

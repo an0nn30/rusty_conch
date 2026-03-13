@@ -692,21 +692,53 @@ fn register_session_table(lua: &Lua) -> LuaResult<()> {
         })?,
     )?;
 
-    // Stub: exec requires session backend wiring.
+    // Execute a command locally (not in the terminal PTY).
+    // For SSH session exec, use app.query_plugin("ssh", "exec", {...}).
     session.set(
         "exec",
-        lua.create_function(|_lua, _cmd: String| -> LuaResult<Option<String>> {
-            // TODO: Wire to active session's exec capability.
-            Ok(None)
+        lua.create_function(|_lua, cmd: String| -> LuaResult<LuaTable> {
+            let result = _lua.create_table()?;
+            match std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&cmd)
+                .output()
+            {
+                Ok(output) => {
+                    result.set("stdout", String::from_utf8_lossy(&output.stdout).to_string())?;
+                    result.set("stderr", String::from_utf8_lossy(&output.stderr).to_string())?;
+                    result.set("exit_code", output.status.code().unwrap_or(-1))?;
+                    result.set("status", "ok")?;
+                }
+                Err(e) => {
+                    result.set("stdout", "")?;
+                    result.set("stderr", e.to_string())?;
+                    result.set("exit_code", -1)?;
+                    result.set("status", "error")?;
+                }
+            }
+            Ok(result)
         })?,
     )?;
 
-    // Stub: current session info.
+    // Get info about the currently active session.
+    // Returns a table with basic session info. For detailed info about SSH
+    // sessions, use app.query_plugin("ssh", "get_sessions").
     session.set(
         "current",
-        lua.create_function(|_lua, ()| -> LuaResult<Option<LuaTable>> {
-            // TODO: Wire to host's active session info.
-            Ok(None)
+        lua.create_function(|_lua, ()| -> LuaResult<LuaTable> {
+            let tbl = _lua.create_table()?;
+            let platform = if cfg!(target_os = "macos") {
+                "macos"
+            } else if cfg!(target_os = "linux") {
+                "linux"
+            } else if cfg!(target_os = "windows") {
+                "windows"
+            } else {
+                "unknown"
+            };
+            tbl.set("platform", platform)?;
+            tbl.set("type", "local")?;
+            Ok(tbl)
         })?,
     )?;
 
@@ -733,12 +765,15 @@ fn register_net_table(lua: &Lua) -> LuaResult<()> {
         })?,
     )?;
 
-    // Stubs for network operations.
     net.set(
         "resolve",
-        lua.create_function(|_lua, _host: String| -> LuaResult<Vec<String>> {
-            // TODO: DNS resolution via host.
-            Ok(vec![])
+        lua.create_function(|_lua, host: String| -> LuaResult<Vec<String>> {
+            use std::net::ToSocketAddrs;
+            let addr = format!("{host}:0");
+            match addr.to_socket_addrs() {
+                Ok(addrs) => Ok(addrs.map(|a| a.ip().to_string()).collect()),
+                Err(_) => Ok(vec![]),
+            }
         })?,
     )?;
 
@@ -746,15 +781,40 @@ fn register_net_table(lua: &Lua) -> LuaResult<()> {
         "scan",
         lua.create_function(
             |_lua,
-             (_host, _ports, _timeout_ms, _concurrency): (
+             (host, ports, timeout_ms, _concurrency): (
                 String,
                 Vec<u16>,
                 Option<u64>,
                 Option<u32>,
             )|
              -> LuaResult<Vec<LuaTable>> {
-                // TODO: Port scanning via host.
-                Ok(vec![])
+                use std::net::{TcpStream, ToSocketAddrs};
+                use std::time::Duration;
+
+                let timeout = Duration::from_millis(timeout_ms.unwrap_or(1000));
+                let mut results = Vec::new();
+
+                for port in ports {
+                    let addr_str = format!("{host}:{port}");
+                    let open = match addr_str.to_socket_addrs() {
+                        Ok(mut addrs) => {
+                            if let Some(addr) = addrs.next() {
+                                TcpStream::connect_timeout(&addr, timeout).is_ok()
+                            } else {
+                                false
+                            }
+                        }
+                        Err(_) => false,
+                    };
+                    if open {
+                        let tbl = _lua.create_table()?;
+                        tbl.set("port", port)?;
+                        tbl.set("open", true)?;
+                        results.push(tbl);
+                    }
+                }
+
+                Ok(results)
             },
         )?,
     )?;

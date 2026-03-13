@@ -48,6 +48,16 @@ impl SshConfig {
             })
     }
 
+    /// Find a server by its display label (name).
+    pub fn find_server_by_label(&self, label: &str) -> Option<&ServerEntry> {
+        self.ungrouped.iter().find(|s| s.label == label)
+            .or_else(|| {
+                self.folders.iter()
+                    .flat_map(|f| f.entries.iter())
+                    .find(|s| s.label == label)
+            })
+    }
+
     pub fn add_server(&mut self, entry: ServerEntry) {
         self.ungrouped.push(entry);
     }

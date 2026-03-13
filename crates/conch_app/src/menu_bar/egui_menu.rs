@@ -1,6 +1,7 @@
 //! Fallback in-window menu bar using egui widgets.
 //! Used on Linux and Windows where there's no native global menu.
 
+use crate::host::bridge;
 use super::MenuAction;
 
 /// Render the egui in-window menu bar. Returns any triggered action.
@@ -79,6 +80,34 @@ pub fn show_with_id(ctx: &egui::Context, panel_id: egui::Id) -> Option<MenuActio
                         ui.close_menu();
                     }
                 });
+
+                // Plugin-registered menu items grouped by menu name.
+                let plugin_items = bridge::plugin_menu_items();
+                if !plugin_items.is_empty() {
+                    // Collect unique menu names that aren't standard menus.
+                    let mut plugin_menus = std::collections::BTreeMap::<String, Vec<&bridge::PluginMenuItem>>::new();
+                    for item in &plugin_items {
+                        plugin_menus
+                            .entry(item.menu.clone())
+                            .or_default()
+                            .push(item);
+                    }
+
+                    for (menu_name, items) in &plugin_menus {
+                        ui.menu_button(menu_name.as_str(), |ui| {
+                            ui.set_min_width(menu_width);
+                            for item in items {
+                                if ui.button(&item.label).clicked() {
+                                    action = Some(MenuAction::PluginAction {
+                                        plugin_name: item.plugin_name.clone(),
+                                        action: item.action.clone(),
+                                    });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
+                }
 
                 ui.menu_button("Help", |ui| {
                     ui.set_min_width(menu_width);

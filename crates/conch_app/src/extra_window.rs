@@ -391,7 +391,7 @@ impl ExtraWindow {
                 self.show_plugin_manager = !self.show_plugin_manager;
             }
             // Actions not yet implemented.
-            MenuAction::SelectAll | MenuAction::ZenMode => {}
+            MenuAction::SelectAll | MenuAction::ZenMode | MenuAction::PluginAction { .. } => {}
         }
     }
 

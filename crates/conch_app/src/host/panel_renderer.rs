@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 
-use conch_plugin_sdk::widgets::{BadgeVariant, TextStyle, Widget, WidgetEvent};
+use conch_plugin_sdk::widgets::{
+    BadgeVariant, SplitDirection, TableCell, TableColumn, TableRow, TextStyle, Widget, WidgetEvent,
+};
 use egui::RichText;
 
 use crate::icons::IconCache;
@@ -411,22 +413,45 @@ fn render_widget(
 
         // -- Complex Widgets (MVP placeholders) -------------------------------
 
-        Widget::SplitPane { left, right, .. } => {
-            // MVP: render children sequentially with a separator.
-            render_widget(ui, left, theme, text_input_state, events, icon_cache);
-            ui.separator();
-            render_widget(ui, right, theme, text_input_state, events, icon_cache);
+        Widget::SplitPane {
+            direction, left, right, ..
+        } => {
+            match direction {
+                SplitDirection::Horizontal => {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            render_widget(ui, left, theme, text_input_state, events, icon_cache);
+                        });
+                        ui.separator();
+                        ui.vertical(|ui| {
+                            render_widget(ui, right, theme, text_input_state, events, icon_cache);
+                        });
+                    });
+                }
+                SplitDirection::Vertical => {
+                    render_widget(ui, left, theme, text_input_state, events, icon_cache);
+                    ui.separator();
+                    render_widget(ui, right, theme, text_input_state, events, icon_cache);
+                }
+            }
         }
 
-        Widget::Tabs { tabs, active, .. } => {
-            // MVP: render only the active tab's children.
+        Widget::Tabs { id, tabs, active } => {
+            // Tab selector row.
+            ui.horizontal(|ui| {
+                for (i, tab) in tabs.iter().enumerate() {
+                    let selected = i == *active;
+                    if ui.selectable_label(selected, &tab.label).clicked() && !selected {
+                        events.push(WidgetEvent::TabChanged {
+                            id: id.clone(),
+                            active: i,
+                        });
+                    }
+                }
+            });
+            ui.separator();
+            // Render active tab's children.
             if let Some(pane) = tabs.get(*active) {
-                ui.label(
-                    RichText::new(&pane.label)
-                        .size(theme.font_small)
-                        .strong()
-                        .color(theme.text_secondary),
-                );
                 for child in &pane.children {
                     render_widget(ui, child, theme, text_input_state, events, icon_cache);
                 }
@@ -461,11 +486,13 @@ fn render_widget(
             }
         }
 
-        Widget::Table { .. } => {
-            ui.label(
-                RichText::new("[Table]")
-                    .size(theme.font_small)
-                    .color(theme.text_muted),
+        Widget::Table {
+            id, columns, rows, sort_column, sort_ascending, selected_row,
+        } => {
+            render_table(
+                ui, id, columns, rows,
+                sort_column.as_deref(), *sort_ascending,
+                selected_row.as_deref(), theme, events,
             );
         }
 
@@ -475,19 +502,30 @@ fn render_widget(
             }
         }
 
-        Widget::PathBar { segments, .. } => {
+        Widget::PathBar { id, segments } => {
             ui.horizontal(|ui| {
-                for segment in segments {
-                    ui.label(
-                        RichText::new(segment)
-                            .size(theme.font_small)
-                            .color(theme.text_secondary),
+                for (i, segment) in segments.iter().enumerate() {
+                    if i > 0 {
+                        ui.label(
+                            RichText::new("›")
+                                .size(theme.font_small)
+                                .color(theme.text_muted),
+                        );
+                    }
+                    let resp = ui.add(
+                        egui::Label::new(
+                            RichText::new(segment)
+                                .size(theme.font_small)
+                                .color(theme.accent),
+                        )
+                        .sense(egui::Sense::click()),
                     );
-                    ui.label(
-                        RichText::new("/")
-                            .size(theme.font_small)
-                            .color(theme.text_muted),
-                    );
+                    if resp.clicked() {
+                        events.push(WidgetEvent::PathBarNavigate {
+                            id: id.clone(),
+                            segment_index: i,
+                        });
+                    }
                 }
             });
         }
@@ -820,6 +858,106 @@ fn render_toolbar_item(
                     value: buf.clone(),
                 });
             }
+        }
+    }
+}
+
+/// Render a Table widget with sortable columns, selectable rows, and context menus.
+fn render_table(
+    ui: &mut egui::Ui,
+    table_id: &str,
+    columns: &[TableColumn],
+    rows: &[TableRow],
+    sort_column: Option<&str>,
+    sort_ascending: Option<bool>,
+    selected_row: Option<&str>,
+    theme: &UiTheme,
+    events: &mut Vec<WidgetEvent>,
+) {
+    // Header row.
+    ui.horizontal(|ui| {
+        for col in columns {
+            let is_sorted = sort_column == Some(col.id.as_str());
+            let asc = sort_ascending.unwrap_or(true);
+            let label = if is_sorted {
+                let arrow = if asc { " ▲" } else { " ▼" };
+                format!("{}{arrow}", col.label)
+            } else {
+                col.label.clone()
+            };
+
+            let sortable = col.sortable.unwrap_or(false);
+            let width = col.width.unwrap_or(100.0);
+            let response = ui.add_sized(
+                [width, ui.spacing().interact_size.y],
+                egui::Label::new(
+                    RichText::new(label)
+                        .size(theme.font_small)
+                        .strong()
+                        .color(theme.text),
+                )
+                .sense(if sortable { egui::Sense::click() } else { egui::Sense::hover() }),
+            );
+
+            if sortable && response.clicked() {
+                let new_asc = if is_sorted { !asc } else { true };
+                events.push(WidgetEvent::TableSort {
+                    id: table_id.to_string(),
+                    column: col.id.clone(),
+                    ascending: new_asc,
+                });
+            }
+        }
+    });
+
+    ui.separator();
+
+    // Data rows.
+    for row in rows {
+        let is_selected = selected_row == Some(row.id.as_str());
+
+        let response = ui.horizontal(|ui| {
+            for (i, cell) in row.cells.iter().enumerate() {
+                let width = columns.get(i).and_then(|c| c.width).unwrap_or(100.0);
+                let text = match cell {
+                    TableCell::Text(t) => t.as_str(),
+                    TableCell::Rich { text, .. } => text.as_str(),
+                };
+                ui.add_sized(
+                    [width, ui.spacing().interact_size.y],
+                    egui::SelectableLabel::new(is_selected, text),
+                );
+            }
+        });
+
+        if response.response.clicked() {
+            events.push(WidgetEvent::TableSelect {
+                id: table_id.to_string(),
+                row_id: row.id.clone(),
+            });
+        }
+        if response.response.double_clicked() {
+            events.push(WidgetEvent::TableActivate {
+                id: table_id.to_string(),
+                row_id: row.id.clone(),
+            });
+        }
+
+        if let Some(menu_items) = &row.context_menu {
+            response.response.context_menu(|ui| {
+                for item in menu_items {
+                    let enabled = item.enabled.unwrap_or(true);
+                    let btn = egui::Button::new(&item.label);
+                    if ui.add_enabled(enabled, btn).clicked() {
+                        events.push(WidgetEvent::TableContextMenu {
+                            id: table_id.to_string(),
+                            row_id: row.id.clone(),
+                            action: item.id.clone(),
+                        });
+                        ui.close_menu();
+                    }
+                }
+            });
         }
     }
 }

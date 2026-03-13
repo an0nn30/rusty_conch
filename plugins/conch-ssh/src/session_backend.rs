@@ -37,8 +37,12 @@ impl OutputSink {
 pub struct SshBackendState {
     /// Set after `activate()` — sends input to the channel loop.
     input_tx: Option<mpsc::UnboundedSender<BackendMsg>>,
+    /// SSH connection handle for opening additional channels (exec, SFTP).
+    ssh_handle: Option<russh::client::Handle<super::SshHandler>>,
     pub host: String,
     pub user: String,
+    pub port: u16,
+    pub connected: bool,
 }
 
 enum BackendMsg {
@@ -50,11 +54,14 @@ enum BackendMsg {
 impl SshBackendState {
     /// Pre-allocate a backend state (before we have the output callback).
     /// Call `activate()` after getting the callback from `open_session`.
-    pub fn new_preallocated(host: String, user: String) -> Box<Self> {
+    pub fn new_preallocated(host: String, user: String, port: u16) -> Box<Self> {
         Box::new(Self {
             input_tx: None,
+            ssh_handle: None,
             host,
             user,
+            port,
+            connected: false,
         })
     }
 
@@ -68,6 +75,7 @@ impl SshBackendState {
     pub fn activate(
         &mut self,
         channel: russh::Channel<russh::client::Msg>,
+        ssh_handle: russh::client::Handle<super::SshHandler>,
         output_cb: OutputCallback,
         output_ctx: *mut c_void,
         rt: &TokioHandle,
@@ -76,6 +84,8 @@ impl SshBackendState {
     ) {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         self.input_tx = Some(input_tx);
+        self.ssh_handle = Some(ssh_handle);
+        self.connected = true;
 
         let sink = OutputSink::new(output_cb, output_ctx);
         rt.spawn(channel_loop(channel, sink, input_rx, session_handle, close_session));
@@ -87,6 +97,57 @@ impl SshBackendState {
 
     pub fn user(&self) -> &str {
         &self.user
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Execute a command on a separate SSH channel, returning (stdout, stderr, exit_code).
+    pub async fn exec(&self, command: &str) -> Result<(String, String, u32), String> {
+        let handle = self.ssh_handle.as_ref()
+            .ok_or_else(|| "session not connected".to_string())?;
+
+        let mut channel = handle.channel_open_session()
+            .await
+            .map_err(|e| format!("failed to open exec channel: {e}"))?;
+
+        channel.exec(true, command)
+            .await
+            .map_err(|e| format!("exec failed: {e}"))?;
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_code = 0u32;
+
+        loop {
+            match channel.wait().await {
+                Some(ChannelMsg::Data { data }) => {
+                    stdout.extend_from_slice(&data[..]);
+                }
+                Some(ChannelMsg::ExtendedData { data, ext }) => {
+                    if ext == 1 {
+                        // stderr
+                        stderr.extend_from_slice(&data[..]);
+                    } else {
+                        stdout.extend_from_slice(&data[..]);
+                    }
+                }
+                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                    exit_code = exit_status;
+                }
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        Ok((
+            String::from_utf8_lossy(&stdout).to_string(),
+            String::from_utf8_lossy(&stderr).to_string(),
+            exit_code,
+        ))
     }
 }
 

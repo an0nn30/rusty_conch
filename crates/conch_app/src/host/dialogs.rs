@@ -38,6 +38,10 @@ pub enum DialogRequest {
         msg: String,
         reply: oneshot::Sender<()>,
     },
+    ContextMenu {
+        items_json: String,
+        reply: oneshot::Sender<Option<String>>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +210,24 @@ enum ActiveDialog {
         msg: String,
         reply: oneshot::Sender<()>,
     },
+    ContextMenu {
+        items: Vec<ContextMenuEntry>,
+        selected: Option<String>,
+        reply: oneshot::Sender<Option<String>>,
+    },
+}
+
+/// A single entry in a plugin-requested context menu.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ContextMenuEntry {
+    id: String,
+    label: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -252,6 +274,9 @@ impl DialogState {
             ActiveDialog::Error { title, msg, .. } => {
                 should_close = show_alert_dialog(ctx, title, msg, true);
             }
+            ActiveDialog::ContextMenu { items, selected, .. } => {
+                should_close = show_context_menu_dialog(ctx, items, selected);
+            }
         }
 
         if should_close {
@@ -294,6 +319,15 @@ fn activate_request(request: DialogRequest) -> ActiveDialog {
         },
         DialogRequest::Alert { title, msg, reply } => ActiveDialog::Alert { title, msg, reply },
         DialogRequest::Error { title, msg, reply } => ActiveDialog::Error { title, msg, reply },
+        DialogRequest::ContextMenu { items_json, reply } => {
+            let items: Vec<ContextMenuEntry> =
+                serde_json::from_str(&items_json).unwrap_or_default();
+            ActiveDialog::ContextMenu {
+                items,
+                selected: None,
+                reply,
+            }
+        }
     }
 }
 
@@ -367,6 +401,9 @@ fn send_dialog_result(dialog: ActiveDialog) {
         }
         ActiveDialog::Alert { reply, .. } | ActiveDialog::Error { reply, .. } => {
             let _ = reply.send(());
+        }
+        ActiveDialog::ContextMenu { selected, reply, .. } => {
+            let _ = reply.send(selected);
         }
     }
 }
@@ -807,6 +844,45 @@ fn show_alert_dialog(ctx: &egui::Context, title: &str, msg: &str, is_error: bool
                 close = true;
             }
         });
+
+    close
+}
+
+fn show_context_menu_dialog(
+    ctx: &egui::Context,
+    items: &[ContextMenuEntry],
+    selected: &mut Option<String>,
+) -> bool {
+    let mut close = false;
+
+    // Show as a small floating window at the cursor position.
+    let pos = ctx.input(|i| i.pointer.hover_pos().unwrap_or_default());
+    egui::Area::new(egui::Id::new("plugin_context_menu"))
+        .fixed_pos(pos)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                for item in items {
+                    let btn = egui::Button::new(&item.label).frame(false);
+                    let response = ui.add_enabled(item.enabled, btn);
+                    if response.clicked() {
+                        *selected = Some(item.id.clone());
+                        close = true;
+                    }
+                }
+            });
+        });
+
+    // Click outside → dismiss.
+    if !close && ctx.input(|i| i.pointer.any_click()) {
+        let area_rect = ctx
+            .memory(|m| m.area_rect(egui::Id::new("plugin_context_menu")));
+        if let Some(rect) = area_rect {
+            if !rect.contains(ctx.input(|i| i.pointer.hover_pos().unwrap_or_default())) {
+                close = true;
+            }
+        }
+    }
 
     close
 }
