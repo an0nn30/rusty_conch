@@ -103,6 +103,11 @@ impl SshBackendState {
         self.port
     }
 
+    /// Get the SSH connection handle (for opening exec/SFTP channels).
+    pub fn ssh_handle(&self) -> Option<&russh::client::Handle<super::SshHandler>> {
+        self.ssh_handle.as_ref()
+    }
+
     /// Execute a command on a separate SSH channel, returning (stdout, stderr, exit_code).
     pub async fn exec(&self, command: &str) -> Result<(String, String, u32), String> {
         let handle = self.ssh_handle.as_ref()
