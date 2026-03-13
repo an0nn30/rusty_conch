@@ -7,7 +7,6 @@ mod host;
 mod icons;
 mod input;
 mod ipc;
-mod layout;
 mod menu_bar;
 mod mouse;
 mod platform;

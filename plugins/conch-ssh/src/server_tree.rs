@@ -283,7 +283,7 @@ mod tests {
     fn connected_server_is_bold_not_badged() {
         let cfg = make_config_with_folder();
         let entry = &cfg.ungrouped[0];
-        let backend = SshBackendState::new_preallocated(entry.host.clone(), entry.user.clone());
+        let backend = SshBackendState::new_preallocated(entry.host.clone(), entry.user.clone(), entry.port);
         let mut sessions = HashMap::new();
         sessions.insert(1, backend);
 
@@ -302,7 +302,7 @@ mod tests {
     fn no_active_sessions_section() {
         let cfg = make_config_with_folder();
         let entry = &cfg.ungrouped[0];
-        let backend = SshBackendState::new_preallocated(entry.host.clone(), entry.user.clone());
+        let backend = SshBackendState::new_preallocated(entry.host.clone(), entry.user.clone(), entry.port);
         let mut sessions = HashMap::new();
         sessions.insert(42, backend);
 
