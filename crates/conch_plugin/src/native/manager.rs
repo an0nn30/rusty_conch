@@ -302,6 +302,12 @@ mod tests {
         }
         extern "C" fn stub_output_cb(_: *mut c_void, _: *const u8, _: usize) {}
         extern "C" fn stub_close_session(_: SessionHandle) {}
+        extern "C" fn stub_set_session_status(
+            _: SessionHandle,
+            _: conch_plugin_sdk::SessionStatus,
+            _: *const c_char,
+        ) {
+        }
         extern "C" fn stub_show_form(_: *const c_char, _: usize) -> *mut c_char {
             std::ptr::null_mut()
         }
@@ -365,6 +371,7 @@ mod tests {
             set_widgets: stub_set_widgets,
             open_session: stub_open_session,
             close_session: stub_close_session,
+            set_session_status: stub_set_session_status,
             show_form: stub_show_form,
             show_confirm: stub_show_confirm,
             show_prompt: stub_show_prompt,

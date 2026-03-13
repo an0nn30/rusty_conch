@@ -141,6 +141,57 @@ static BRIDGE: OnceLock<BridgeInner> = OnceLock::new();
 /// Shared theme JSON, updated whenever the app theme changes.
 static THEME_JSON: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
 
+// ---------------------------------------------------------------------------
+// Plugin Menu Items
+// ---------------------------------------------------------------------------
+
+/// A menu item registered by a plugin at runtime.
+#[derive(Debug, Clone)]
+pub struct PluginMenuItem {
+    pub menu: String,
+    pub label: String,
+    pub action: String,
+    pub keybind: Option<String>,
+    pub plugin_name: String,
+}
+
+/// Global registry of plugin-registered menu items.
+static MENU_ITEMS: parking_lot::Mutex<Vec<PluginMenuItem>> = parking_lot::Mutex::new(Vec::new());
+
+/// Get a snapshot of all registered plugin menu items.
+pub fn plugin_menu_items() -> Vec<PluginMenuItem> {
+    MENU_ITEMS.lock().clone()
+}
+
+/// Remove all menu items registered by a specific plugin.
+pub fn remove_menu_items_for_plugin(plugin_name: &str) {
+    MENU_ITEMS.lock().retain(|item| item.plugin_name != plugin_name);
+}
+
+// ---------------------------------------------------------------------------
+// Active Session Info (for Lua session.current())
+// ---------------------------------------------------------------------------
+
+/// Metadata about the currently active session, updated each frame by the app.
+#[derive(Debug, Clone, Default)]
+pub struct ActiveSessionInfo {
+    pub title: String,
+    pub session_type: String, // "local" or "ssh"
+}
+
+static ACTIVE_SESSION: parking_lot::Mutex<Option<ActiveSessionInfo>> =
+    parking_lot::Mutex::new(None);
+
+/// Update the active session info (called by the app each frame).
+pub fn set_active_session(info: Option<ActiveSessionInfo>) {
+    *ACTIVE_SESSION.lock() = info;
+}
+
+/// Get the current active session info.
+pub fn get_active_session() -> Option<ActiveSessionInfo> {
+    ACTIVE_SESSION.lock().clone()
+}
+
 /// Update the theme JSON that plugins receive via `get_theme()`.
 ///
 /// Called by the app whenever `theme_dirty` is set.
@@ -597,13 +648,33 @@ extern "C" fn host_set_config(key: *const c_char, value: *const c_char) {
 // ---------------------------------------------------------------------------
 
 extern "C" fn host_register_menu_item(
-    _menu: *const c_char,
-    _label: *const c_char,
-    _action: *const c_char,
-    _keybind: *const c_char,
+    menu: *const c_char,
+    label: *const c_char,
+    action: *const c_char,
+    keybind: *const c_char,
 ) {
-    let label = unsafe { cstr_to_str(_label) };
-    log::debug!("host_register_menu_item: stub — '{label}'");
+    let menu_str = unsafe { cstr_to_str(menu) }.to_string();
+    let label_str = unsafe { cstr_to_str(label) }.to_string();
+    let action_str = unsafe { cstr_to_str(action) }.to_string();
+    let keybind_str = if keybind.is_null() {
+        None
+    } else {
+        let s = unsafe { cstr_to_str(keybind) }.to_string();
+        if s.is_empty() { None } else { Some(s) }
+    };
+    let plugin_name = current_plugin_name();
+
+    log::info!(
+        "plugin '{plugin_name}' registering menu item '{label_str}' in '{menu_str}' (action: {action_str})"
+    );
+
+    MENU_ITEMS.lock().push(PluginMenuItem {
+        menu: menu_str,
+        label: label_str,
+        action: action_str,
+        keybind: keybind_str,
+        plugin_name,
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -657,9 +728,19 @@ extern "C" fn host_get_theme() -> *mut c_char {
 // Context Menu (stub)
 // ---------------------------------------------------------------------------
 
-extern "C" fn host_show_context_menu(_json: *const c_char, _len: usize) -> *mut c_char {
-    log::debug!("host_show_context_menu: stub — returning null");
-    std::ptr::null_mut()
+extern "C" fn host_show_context_menu(json: *const c_char, len: usize) -> *mut c_char {
+    let json_str = unsafe { slice_to_str(json, len) };
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _ = bridge().dialog_tx.send(DialogRequest::ContextMenu {
+        items_json: json_str.to_string(),
+        reply: reply_tx,
+    });
+
+    match reply_rx.blocking_recv() {
+        Ok(Some(selected_id)) => alloc_cstring(&selected_id),
+        Ok(None) | Err(_) => std::ptr::null_mut(),
+    }
 }
 
 // ---------------------------------------------------------------------------
