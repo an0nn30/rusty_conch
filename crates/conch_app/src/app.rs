@@ -452,63 +452,7 @@ impl eframe::App for ConchApp {
         }
 
         // ── Render extra windows ──
-        // Take windows out of self to avoid borrow conflict in the closure.
-        let mut windows = std::mem::take(&mut self.extra_windows);
-        let effective_decorations = self.platform.effective_decorations(
-            self.state.user_config.window.decorations,
-        );
-        let shared = crate::extra_window::SharedState {
-            user_config: &self.state.user_config,
-            colors: &self.state.colors,
-            shortcuts: &self.shortcuts,
-            theme: &self.state.theme,
-            effective_decorations,
-            show_in_window_menu: self.menu_bar_state.is_in_window(),
-            theme_dirty: self.state.theme_dirty,
-        };
-
-        for window in &mut windows {
-            if window.should_close {
-                continue;
-            }
-
-            let viewport_id = window.viewport_id;
-            let builder = window.viewport_builder.clone().with_title(&window.title);
-
-            ctx.show_viewport_immediate(
-                viewport_id,
-                builder,
-                |vp_ctx, _class| {
-                    window.update(vp_ctx, &shared, &mut self.plugin_manager);
-                },
-            );
-        }
-
-        // Collect pending actions from extra windows.
-        let mut spawn_new_window = false;
-        for window in &mut windows {
-            for action in window.pending_actions.drain(..) {
-                match action {
-                    crate::extra_window::ExtraWindowAction::SpawnNewWindow => {
-                        spawn_new_window = true;
-                    }
-                    crate::extra_window::ExtraWindowAction::QuitApp => {
-                        self.quit_requested = true;
-                    }
-                    crate::extra_window::ExtraWindowAction::PluginAction(pm_action) => {
-                        self.handle_plugin_manager_action(pm_action);
-                    }
-                }
-            }
-        }
-
-        // Remove closed windows and move back.
-        windows.retain(|w| !w.should_close);
-        self.extra_windows = windows;
-
-        if spawn_new_window {
-            self.spawn_extra_window();
-        }
+        let effective_decorations = self.render_extra_windows(ctx);
 
         // If the main window is hidden and all extra windows are closed, quit.
         if !main_visible && self.extra_windows.is_empty() {
@@ -530,9 +474,6 @@ impl eframe::App for ConchApp {
 
         // Buttonless: no native title bar, so add a thin drag region at the top
         // so the user can still move the window.
-        let effective_decorations = self.platform.effective_decorations(
-            self.state.user_config.window.decorations,
-        );
         if effective_decorations == config::WindowDecorations::Buttonless {
             let drag_h = self.cell_height.max(6.0);
             egui::TopBottomPanel::top("drag_region")

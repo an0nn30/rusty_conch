@@ -7,6 +7,7 @@ use conch_core::config;
 use egui::{ViewportBuilder, ViewportCommand};
 use uuid::Uuid;
 
+use crate::app::ConchApp;
 use crate::input::{self, ResolvedShortcuts};
 use crate::mouse::Selection;
 use crate::sessions::create_local_session;
@@ -486,5 +487,72 @@ impl ExtraWindow {
                 _ => {}
             }
         }
+    }
+}
+
+// ── Extra window orchestration on ConchApp ──
+
+impl ConchApp {
+    /// Render all extra windows and drain their pending actions.
+    ///
+    /// Returns the `effective_decorations` value so the caller can reuse it
+    /// for the main window without recomputing.
+    pub(crate) fn render_extra_windows(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> config::WindowDecorations {
+        // Take windows out of self to avoid borrow conflict in the closure.
+        let mut windows = std::mem::take(&mut self.extra_windows);
+        let effective_decorations = self.platform.effective_decorations(
+            self.state.user_config.window.decorations,
+        );
+        let shared = SharedState {
+            user_config: &self.state.user_config,
+            colors: &self.state.colors,
+            shortcuts: &self.shortcuts,
+            theme: &self.state.theme,
+            effective_decorations,
+            show_in_window_menu: self.menu_bar_state.is_in_window(),
+            theme_dirty: self.state.theme_dirty,
+        };
+
+        for window in &mut windows {
+            if window.should_close {
+                continue;
+            }
+            let viewport_id = window.viewport_id;
+            let builder = window.viewport_builder.clone().with_title(&window.title);
+            ctx.show_viewport_immediate(
+                viewport_id,
+                builder,
+                |vp_ctx, _class| {
+                    window.update(vp_ctx, &shared, &mut self.plugin_manager);
+                },
+            );
+        }
+
+        // Drain pending actions from extra windows.
+        let mut spawn_new_window = false;
+        for window in &mut windows {
+            for action in window.pending_actions.drain(..) {
+                match action {
+                    ExtraWindowAction::SpawnNewWindow => spawn_new_window = true,
+                    ExtraWindowAction::QuitApp => self.quit_requested = true,
+                    ExtraWindowAction::PluginAction(pm_action) => {
+                        self.handle_plugin_manager_action(pm_action);
+                    }
+                }
+            }
+        }
+
+        // Remove closed windows and move back.
+        windows.retain(|w| !w.should_close);
+        self.extra_windows = windows;
+
+        if spawn_new_window {
+            self.spawn_extra_window();
+        }
+
+        effective_decorations
     }
 }
