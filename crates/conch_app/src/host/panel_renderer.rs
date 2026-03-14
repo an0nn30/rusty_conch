@@ -119,16 +119,45 @@ pub fn render_panel_header<'a>(
                 );
             }
             if let Some(ref items) = toolbar_items {
-                let available = ui.available_width();
-                ui.allocate_ui_with_layout(
-                    egui::vec2(available, ui.spacing().interact_size.y),
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        for item in items.iter().rev() {
-                            render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
-                        }
-                    },
-                );
+                use conch_plugin_sdk::widgets::ToolbarItem;
+
+                // Split items into: before text input, text input, after text input.
+                // Buttons after the text input are rendered first (right-aligned)
+                // so the text input can fill the remaining space.
+                let text_idx = items.iter().position(|i| matches!(i, ToolbarItem::TextInput { .. }));
+
+                if let Some(idx) = text_idx {
+                    let before = &items[..idx];
+                    let text_item = &items[idx];
+                    let after = &items[idx + 1..];
+
+                    // Render items before the text input (e.g. back/forward arrows).
+                    for item in before {
+                        render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
+                    }
+
+                    // Render buttons after text input on the right side first,
+                    // then give text input the remaining space.
+                    let right_width = {
+                        let btn_count = after.iter().filter(|i| matches!(i, ToolbarItem::Button { .. })).count();
+                        let sep_count = after.iter().filter(|i| matches!(i, ToolbarItem::Separator)).count();
+                        let icon_size = ui.spacing().icon_width + ui.spacing().button_padding.x * 2.0;
+                        let spacing = ui.spacing().item_spacing.x;
+                        (btn_count as f32) * (icon_size + spacing) + (sep_count as f32) * (8.0 + spacing)
+                    };
+
+                    let text_width = (ui.available_width() - right_width - ui.spacing().item_spacing.x).max(60.0);
+                    render_toolbar_text_input(ui, text_item, theme, text_input_state, events, text_width);
+
+                    for item in after {
+                        render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
+                    }
+                } else {
+                    // No text input — render everything normally.
+                    for item in items.iter() {
+                        render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
+                    }
+                }
             }
         });
     }
@@ -950,6 +979,47 @@ fn render_toolbar_item(
                     value: buf.clone(),
                 });
             }
+        }
+    }
+}
+
+/// Render a toolbar text input with a specific width.
+fn render_toolbar_text_input(
+    ui: &mut egui::Ui,
+    item: &conch_plugin_sdk::widgets::ToolbarItem,
+    theme: &UiTheme,
+    text_input_state: &mut HashMap<String, String>,
+    events: &mut Vec<WidgetEvent>,
+    width: f32,
+) {
+    if let conch_plugin_sdk::widgets::ToolbarItem::TextInput { id, value, hint } = item {
+        let buf = text_input_state
+            .entry(id.clone())
+            .or_insert_with(|| value.clone());
+        if buf != value && !ui.memory(|m| m.has_focus(ui.id().with(id))) {
+            *buf = value.clone();
+        }
+        let te_id = ui.id().with(id);
+        let mut te = egui::TextEdit::singleline(buf)
+            .id(te_id)
+            .font(egui::TextStyle::Body)
+            .margin(theme.text_edit_margin())
+            .desired_width(width);
+        if let Some(h) = hint {
+            te = te.hint_text(h);
+        }
+        let response = ui.add(te);
+        if response.changed() {
+            events.push(WidgetEvent::ToolbarInputChanged {
+                id: id.clone(),
+                value: buf.clone(),
+            });
+        }
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            events.push(WidgetEvent::ToolbarInputSubmit {
+                id: id.clone(),
+                value: buf.clone(),
+            });
         }
     }
 }
