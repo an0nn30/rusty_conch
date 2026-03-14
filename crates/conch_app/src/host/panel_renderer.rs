@@ -933,7 +933,7 @@ fn render_toolbar_item(
                 .id(te_id)
                 .font(egui::TextStyle::Body)
                 .margin(theme.text_edit_margin())
-                .desired_width(120.0);
+                .desired_width(ui.available_width());
             if let Some(h) = hint {
                 te = te.hint_text(h);
             }
