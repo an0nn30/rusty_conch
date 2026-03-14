@@ -10,5 +10,6 @@
 //!   its own OS thread with a bounded thread pool.
 
 pub mod bus;
+pub mod jvm;
 pub mod lua;
 pub mod native;

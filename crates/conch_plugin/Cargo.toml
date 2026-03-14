@@ -12,3 +12,5 @@ log = { workspace = true }
 serde_json = { workspace = true }
 libloading = "0.8"
 mlua = { workspace = true }
+jni = { version = "0.21", features = ["invocation"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
