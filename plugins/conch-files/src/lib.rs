@@ -327,12 +327,17 @@ impl FilesPlugin {
                     .spawn(move || {
                         // Try direct SFTP vtable first, fall back to query_plugin IPC.
                         let sftp = sftp_direct::SftpAccess::acquire(api, session_id);
+                        if sftp.is_some() {
+                            host_log(api, 1, "download: using direct SFTP vtable");
+                        } else {
+                            host_log(api, 1, "download: falling back to query_plugin IPC");
+                        }
 
                         let result = if is_dir {
                             download_dir(api, session_id, &remote_path, &local_dest, &state, sftp.as_ref())
                         } else if let Some(ref sftp) = sftp {
                             // Direct path: raw bytes, no base64.
-                            download_file_direct(sftp, &remote_path, &local_dest, file_size, &name, api)
+                            download_file_direct(sftp, &remote_path, &local_dest, file_size, &name, api, &state)
                         } else {
                             // Fallback: query_plugin IPC with base64.
                             let name2 = name.clone();
@@ -450,18 +455,19 @@ impl FilesPlugin {
                     .spawn(move || {
                         // Try direct SFTP vtable first, fall back to query_plugin IPC.
                         let sftp = sftp_direct::SftpAccess::acquire(api, session_id);
+                        if sftp.is_some() {
+                            host_log(api, 1, "upload: using direct SFTP vtable");
+                        } else {
+                            host_log(api, 1, "upload: falling back to query_plugin IPC");
+                        }
 
                         let result = if is_dir {
                             upload_dir(api, session_id, &local_path, &remote_dest, &state, sftp.as_ref())
+                        } else if let Some(ref sftp) = sftp {
+                            upload_file_direct(sftp, &local_path, &remote_dest, &name, api, &state)
                         } else {
                             match std::fs::read(&local_path) {
-                                Ok(data) => {
-                                    if let Some(ref sftp) = sftp {
-                                        sftp.write_file(&remote_dest, &data)
-                                    } else {
-                                        remote::write_file(api, session_id, &remote_dest, &data)
-                                    }
-                                }
+                                Ok(data) => remote::write_file(api, session_id, &remote_dest, &data),
                                 Err(e) => Err(e.to_string()),
                             }
                         };
@@ -687,6 +693,7 @@ fn download_file_direct(
     file_size: u64,
     name: &str,
     api: &HostApi,
+    state: &SharedTransferState,
 ) -> Result<(), String> {
     use std::io::Write;
 
@@ -695,6 +702,10 @@ fn download_file_direct(
     let mut offset: u64 = 0;
 
     loop {
+        if state.is_cancelled() {
+            return Err("cancelled".into());
+        }
+
         let chunk = sftp.read_chunk(remote_path, offset, chunk_size)?;
         let n = chunk.len();
         if n == 0 {
@@ -706,6 +717,16 @@ fn download_file_direct(
         if file_size > 0 {
             let frac = (offset as f32 / file_size as f32).min(1.0);
             host_set_status(api, &format!("Downloading: {name}"), 0, frac);
+            state.set_message(
+                format!("Downloading: {} ({})", name, format_bytes(offset)),
+                TextStyle::Secondary,
+            );
+        } else {
+            host_set_status(api, &format!("Downloading: {name} ({})", format_bytes(offset)), 0, -1.0);
+            state.set_message(
+                format!("Downloading: {} ({})", name, format_bytes(offset)),
+                TextStyle::Secondary,
+            );
         }
 
         if (n as u64) < chunk_size {
@@ -714,6 +735,50 @@ fn download_file_direct(
     }
 
     Ok(())
+}
+
+/// Upload a single file via direct SFTP vtable with progress.
+fn upload_file_direct(
+    sftp: &sftp_direct::SftpAccess,
+    local_path: &str,
+    remote_dest: &str,
+    name: &str,
+    api: &HostApi,
+    state: &SharedTransferState,
+) -> Result<(), String> {
+    let data = std::fs::read(local_path).map_err(|e| format!("read {name}: {e}"))?;
+    let total = data.len() as u64;
+
+    if state.is_cancelled() {
+        return Err("cancelled".into());
+    }
+
+    // For files <= 1MB, just write in one shot.
+    if total <= 1024 * 1024 {
+        sftp.write_file(remote_dest, &data)?;
+        host_set_status(api, &format!("Uploading: {name}"), 0, 1.0);
+        return Ok(());
+    }
+
+    // For larger files, write in chunks so we can report progress and check cancel.
+    // Note: SFTP write_file creates/truncates, so we write full file.
+    // TODO: chunked write if the vtable supports append. For now, full write.
+    sftp.write_file(remote_dest, &data)?;
+    host_set_status(api, &format!("Uploading: {name}"), 0, 1.0);
+    Ok(())
+}
+
+/// Format a byte count as a human-readable string.
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 /// Download a directory, using direct SFTP if available, else IPC fallback.
@@ -772,6 +837,9 @@ fn download_dir_inner(
                 let mut offset = 0u64;
                 let chunk_size = 1024 * 1024u64;
                 loop {
+                    if state.is_cancelled() {
+                        return Err("cancelled".into());
+                    }
                     let chunk = sftp.read_chunk(&remote_path, offset, chunk_size)?;
                     let n = chunk.len();
                     all.extend_from_slice(&chunk);
