@@ -255,7 +255,7 @@ impl UiTheme {
     /// Use this with `TextEdit::singleline(buf).margin(theme.text_edit_margin())`
     /// so all text inputs share consistent padding.
     pub fn text_edit_margin(&self) -> egui::Margin {
-        egui::Margin::symmetric(8, 6)
+        egui::Margin::symmetric(8, 8)
     }
 
     /// Apply this theme to an egui context.
