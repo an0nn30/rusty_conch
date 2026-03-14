@@ -177,6 +177,19 @@ pub async fn remove_file(
     Ok(json!({ "status": "ok" }))
 }
 
+/// Resolve a path to its canonical absolute form.
+pub async fn realpath(
+    ssh: &russh::client::Handle<crate::SshHandler>,
+    path: &str,
+) -> Result<Value, String> {
+    let sftp = open_sftp(ssh).await?;
+    let resolved = sftp
+        .canonicalize(path)
+        .await
+        .map_err(|e| format!("realpath failed: {e}"))?;
+    Ok(json!({ "status": "ok", "path": resolved }))
+}
+
 /// Remove a directory.
 pub async fn remove_dir(
     ssh: &russh::client::Handle<crate::SshHandler>,

@@ -674,6 +674,9 @@ impl eframe::App for ConchApp {
             self.icon_cache = Some(crate::icons::IconCache::load(ctx));
         }
 
+        // Status bar at the very bottom edge.
+        self.render_status_bar(ctx);
+
         // Render plugin panels (side panels, bottom panels).
         self.render_plugin_panels(ctx);
 
@@ -792,8 +795,11 @@ impl eframe::App for ConchApp {
             self.resize_sessions(cols, rows);
         }
 
-        // Keyboard handling — forward to PTY unless a dialog is consuming input.
-        let forward_to_pty = !self.dialog_state.is_active_for(egui::ViewportId::ROOT);
+        // Keyboard handling — forward to PTY unless a dialog or text input is consuming input.
+        let text_edit_focused = ctx.memory(|m| m.focused()).is_some()
+            && ctx.wants_keyboard_input();
+        let forward_to_pty = !self.dialog_state.is_active_for(egui::ViewportId::ROOT)
+            && !text_edit_focused;
         self.handle_keyboard(ctx, forward_to_pty);
 
         // Quit handling.

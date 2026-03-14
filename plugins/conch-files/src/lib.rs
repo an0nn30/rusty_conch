@@ -318,8 +318,10 @@ impl FilesPlugin {
                 let state = self.transfer.clone();
 
                 state.start();
-                host_set_status(api, &format!("Downloading: {remote_name}"), 0, 0.0);
-                state.set_message(format!("Downloading: {remote_name}"), TextStyle::Secondary);
+                let size_label = if file_size > 0 { format_bytes(file_size) } else { "?".into() };
+                let init_label = format!("{remote_name} — 0 B / {size_label}");
+                host_set_status(api, &init_label, 0, 0.0);
+                state.set_message(init_label, TextStyle::Secondary);
 
                 let name = remote_name.clone();
                 std::thread::Builder::new()
@@ -344,7 +346,8 @@ impl FilesPlugin {
                             let progress_cb = move |downloaded: u64, total: u64| {
                                 if total > 0 {
                                     let frac = (downloaded as f32 / total as f32).min(1.0);
-                                    host_set_status(api, &format!("Downloading: {name2}"), 0, frac);
+                                    let label = format!("{name2} — {} / {}", format_bytes(downloaded), format_bytes(total));
+                                    host_set_status(api, &label, 0, frac);
                                 }
                             };
                             let cb: Option<&dyn Fn(u64, u64)> = if file_size > 0 {
@@ -446,8 +449,11 @@ impl FilesPlugin {
                 let state = self.transfer.clone();
 
                 state.start();
-                host_set_status(api, &format!("Uploading: {local_name}"), 0, 0.0);
-                state.set_message(format!("Uploading: {local_name}"), TextStyle::Secondary);
+                let file_size_upload = self.local_pane.selected_size();
+                let size_label = if file_size_upload > 0 { format_bytes(file_size_upload) } else { "?".into() };
+                let init_label = format!("{local_name} — 0 B / {size_label}");
+                host_set_status(api, &init_label, 0, 0.0);
+                state.set_message(init_label, TextStyle::Secondary);
 
                 let name = local_name.clone();
                 std::thread::Builder::new()
@@ -540,7 +546,7 @@ impl FilesPlugin {
     fn render(&self) -> Vec<Widget> {
         let local_widgets = self.local_pane.render_widgets();
         let remote_widgets = self.remote_pane.render_widgets();
-        let (msg, active) = self.transfer.snapshot();
+        let (_msg, active) = self.transfer.snapshot();
 
         // Empty heading suppresses the default "Files" panel header.
         let mut all = vec![Widget::Heading { text: "".into() }];
@@ -585,18 +591,9 @@ impl FilesPlugin {
             centered: Some(true),
         };
 
-        // Transfer status label below the buttons.
-        let mut transfer_widgets = vec![transfer_buttons];
-        if let Some((text, style)) = &msg {
-            transfer_widgets.push(Widget::Label {
-                text: text.clone(),
-                style: Some(style.clone()),
-            });
-        }
-
         let transfer_bar = Widget::Vertical {
             id: Some("transfer_section".into()),
-            children: transfer_widgets,
+            children: vec![transfer_buttons],
             spacing: Some(2.0),
         };
 
@@ -716,17 +713,13 @@ fn download_file_direct(
 
         if file_size > 0 {
             let frac = (offset as f32 / file_size as f32).min(1.0);
-            host_set_status(api, &format!("Downloading: {name}"), 0, frac);
-            state.set_message(
-                format!("Downloading: {} ({})", name, format_bytes(offset)),
-                TextStyle::Secondary,
-            );
+            let label = format!("{} — {} / {}", name, format_bytes(offset), format_bytes(file_size));
+            host_set_status(api, &label, 0, frac);
+            state.set_message(label, TextStyle::Secondary);
         } else {
-            host_set_status(api, &format!("Downloading: {name} ({})", format_bytes(offset)), 0, -1.0);
-            state.set_message(
-                format!("Downloading: {} ({})", name, format_bytes(offset)),
-                TextStyle::Secondary,
-            );
+            let label = format!("{} — {}", name, format_bytes(offset));
+            host_set_status(api, &label, 0, -1.0);
+            state.set_message(label, TextStyle::Secondary);
         }
 
         if (n as u64) < chunk_size {
@@ -737,7 +730,7 @@ fn download_file_direct(
     Ok(())
 }
 
-/// Upload a single file via direct SFTP vtable with progress.
+/// Upload a single file via direct SFTP vtable with chunked writes and progress.
 fn upload_file_direct(
     sftp: &sftp_direct::SftpAccess,
     local_path: &str,
@@ -746,25 +739,38 @@ fn upload_file_direct(
     api: &HostApi,
     state: &SharedTransferState,
 ) -> Result<(), String> {
-    let data = std::fs::read(local_path).map_err(|e| format!("read {name}: {e}"))?;
-    let total = data.len() as u64;
+    use std::io::Read;
 
-    if state.is_cancelled() {
-        return Err("cancelled".into());
+    let file_meta = std::fs::metadata(local_path).map_err(|e| format!("stat {name}: {e}"))?;
+    let total = file_meta.len();
+    let total_label = format_bytes(total);
+    let chunk_size: usize = 1024 * 1024; // 1 MB chunks
+
+    let mut file = std::fs::File::open(local_path).map_err(|e| format!("open {name}: {e}"))?;
+    let mut offset: u64 = 0;
+    let mut buf = vec![0u8; chunk_size];
+    let mut first = true;
+
+    loop {
+        if state.is_cancelled() {
+            return Err("cancelled".into());
+        }
+
+        let n = file.read(&mut buf).map_err(|e| format!("read {name}: {e}"))?;
+        if n == 0 {
+            break;
+        }
+
+        sftp.write_at(remote_dest, &buf[..n], offset, first)?;
+        first = false;
+        offset += n as u64;
+
+        let frac = if total > 0 { (offset as f32 / total as f32).min(1.0) } else { -1.0 };
+        let label = format!("{name} — {} / {total_label}", format_bytes(offset));
+        host_set_status(api, &label, 0, frac);
+        state.set_message(label, TextStyle::Secondary);
     }
 
-    // For files <= 1MB, just write in one shot.
-    if total <= 1024 * 1024 {
-        sftp.write_file(remote_dest, &data)?;
-        host_set_status(api, &format!("Uploading: {name}"), 0, 1.0);
-        return Ok(());
-    }
-
-    // For larger files, write in chunks so we can report progress and check cancel.
-    // Note: SFTP write_file creates/truncates, so we write full file.
-    // TODO: chunked write if the vtable supports append. For now, full write.
-    sftp.write_file(remote_dest, &data)?;
-    host_set_status(api, &format!("Uploading: {name}"), 0, 1.0);
     Ok(())
 }
 

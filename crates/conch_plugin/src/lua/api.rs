@@ -375,6 +375,7 @@ fn register_ui_table(lua: &Lua) -> LuaResult<()> {
                     id: None,
                     children,
                     spacing,
+                    centered: None,
                 })
             });
             Ok(())

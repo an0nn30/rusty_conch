@@ -644,7 +644,7 @@ impl SshPlugin {
                 }
             }
             // SFTP operations — all require session_id and an SSH handle.
-            "list_dir" | "stat" | "read_file" | "write_file" | "mkdir" | "rename" | "delete" => {
+            "list_dir" | "stat" | "read_file" | "write_file" | "mkdir" | "rename" | "delete" | "realpath" => {
                 let session_id = args["session_id"].as_u64().unwrap_or(0);
                 match self.sessions.get(&session_id) {
                     Some(backend) if backend.connected => {
@@ -687,6 +687,10 @@ impl SshPlugin {
                                     } else {
                                         sftp::remove_file(ssh_handle, path).await
                                     }
+                                }
+                                "realpath" => {
+                                    let path = args["path"].as_str().unwrap_or(".");
+                                    sftp::realpath(ssh_handle, path).await
                                 }
                                 _ => unreachable!(),
                             }

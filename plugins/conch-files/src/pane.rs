@@ -49,6 +49,8 @@ pub struct Pane {
     pub error: Option<String>,
     pub dirty: bool,
     pub home_path: String,
+    /// The local home directory — preserved across mode switches.
+    local_home: String,
 }
 
 impl Pane {
@@ -72,7 +74,8 @@ impl Pane {
             col_modified_visible: false,
             error: None,
             dirty: true,
-            home_path: home,
+            home_path: home.clone(),
+            local_home: home,
         };
         pane.load_entries(None);
         pane
@@ -83,10 +86,16 @@ impl Pane {
     // -------------------------------------------------------------------
 
     pub fn navigate_to(&mut self, path: &str, api: Option<&HostApi>) {
+        // Resolve "~" to the actual home directory for remote SFTP.
+        let resolved = if matches!(self.mode, PaneMode::Remote { .. }) && (path == "~" || path.starts_with("~/")) {
+            path.replacen("~", &self.home_path, 1)
+        } else {
+            path.to_string()
+        };
         self.back_stack.push(self.current_path.clone());
         self.forward_stack.clear();
-        self.current_path = path.to_string();
-        self.path_input = path.to_string();
+        self.current_path = resolved.clone();
+        self.path_input = resolved;
         self.selected_row = None;
         self.load_entries(api);
     }
@@ -186,8 +195,9 @@ impl Pane {
         self.mode = PaneMode::Local;
         self.back_stack.clear();
         self.forward_stack.clear();
-        self.current_path = self.home_path.clone();
-        self.path_input = self.home_path.clone();
+        self.home_path = self.local_home.clone();
+        self.current_path = self.local_home.clone();
+        self.path_input = self.local_home.clone();
         self.selected_row = None;
         self.load_entries(None);
     }
@@ -200,8 +210,12 @@ impl Pane {
         };
         self.back_stack.clear();
         self.forward_stack.clear();
-        self.current_path = ".".to_string();
-        self.path_input = ".".to_string();
+
+        // Resolve the actual home directory path via SFTP realpath(".").
+        let home = remote::realpath(api, session_id, ".").unwrap_or_else(|_| ".".to_string());
+        self.current_path = home.clone();
+        self.path_input = home.clone();
+        self.home_path = home;
         self.selected_row = None;
         self.load_entries(Some(api));
     }
@@ -445,12 +459,19 @@ impl Pane {
         })
     }
 
+    /// Size of the selected entry in bytes (0 if not found or directory).
+    pub fn selected_size(&self) -> u64 {
+        self.selected_row.as_ref().map_or(0, |name| {
+            self.entries.iter().find(|e| e.name == *name).map_or(0, |e| e.size)
+        })
+    }
+
     /// Render this pane as a list of widgets (toolbar + table + footer).
     pub fn render_widgets(&self) -> Vec<Widget> {
         let p = &self.prefix;
         let mut widgets = Vec::new();
 
-        // Label showing the pane title.
+        // Label showing the pane title (hostname or user@host).
         widgets.push(Widget::Label {
             text: self.title(),
             style: Some(TextStyle::Secondary),

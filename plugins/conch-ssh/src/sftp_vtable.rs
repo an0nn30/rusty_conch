@@ -66,6 +66,7 @@ pub static SFTP_VTABLE: SftpVtable = SftpVtable {
     list_dir: sftp_list_dir,
     read_chunk: sftp_read_chunk,
     write_file: sftp_write_file,
+    write_at: sftp_write_at,
     mkdir: sftp_mkdir,
     rename: sftp_rename,
     delete: sftp_delete,
@@ -287,6 +288,84 @@ extern "C" fn sftp_write_file(
             .create(path_str)
             .await
             .map_err(|e| format!("create failed: {e}"))?;
+        file.write_all(data_slice)
+            .await
+            .map_err(|e| format!("write failed: {e}"))?;
+        Ok::<(), String>(())
+    });
+
+    match result {
+        Ok(()) => SftpSimpleResult {
+            ok: true,
+            error: std::ptr::null_mut(),
+            error_len: 0,
+        },
+        Err(e) => {
+            let (ep, el) = error_buf(&e);
+            SftpSimpleResult {
+                ok: false,
+                error: ep,
+                error_len: el,
+            }
+        }
+    }
+}
+
+extern "C" fn sftp_write_at(
+    ctx: *mut c_void,
+    path: *const u8,
+    path_len: usize,
+    data: *const u8,
+    data_len: usize,
+    offset: u64,
+    truncate: bool,
+) -> SftpSimpleResult {
+    let context = unsafe { &*(ctx as *const SftpContext) };
+    let path_str = unsafe { ptr_to_str(path, path_len) };
+    let data_slice = if data.is_null() || data_len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(data, data_len) }
+    };
+
+    let ssh_handle = match context.ssh_handle() {
+        Ok(h) => h,
+        Err(e) => {
+            let (ep, el) = error_buf(&e);
+            return SftpSimpleResult {
+                ok: false,
+                error: ep,
+                error_len: el,
+            };
+        }
+    };
+
+    let result = context.rt.block_on(async {
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+        let sftp_session = sftp::open_sftp_pub(ssh_handle).await?;
+        let mut file = if truncate {
+            sftp_session
+                .create(path_str)
+                .await
+                .map_err(|e| format!("create failed: {e}"))?
+        } else {
+            use russh_sftp::protocol::OpenFlags;
+            sftp_session
+                .open_with_flags(
+                    path_str,
+                    OpenFlags::CREATE | OpenFlags::WRITE,
+                )
+                .await
+                .map_err(|e| format!("open failed: {e}"))?
+        };
+
+        if offset > 0 {
+            file.seek(std::io::SeekFrom::Start(offset))
+                .await
+                .map_err(|e| format!("seek failed: {e}"))?;
+        }
+
         file.write_all(data_slice)
             .await
             .map_err(|e| format!("write failed: {e}"))?;

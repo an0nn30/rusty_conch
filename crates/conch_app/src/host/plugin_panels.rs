@@ -398,6 +398,57 @@ impl ConchApp {
             self.state.persistent.layout.bottom_panel_height = h;
         }
     }
+
+    /// Render the global status bar at the very bottom of the window.
+    pub(crate) fn render_status_bar(&self, ctx: &egui::Context) {
+        use super::bridge;
+
+        let mut entry = bridge::get_status_bar();
+
+        // Auto-clear info/success messages after 10 seconds.
+        if let Some(ref e) = entry {
+            if (e.level == 0 || e.level == 3)
+                && e.progress < 0.0
+                && e.timestamp.elapsed().as_secs() > 10
+            {
+                bridge::set_status_bar(None);
+                entry = None;
+            }
+        }
+
+        egui::TopBottomPanel::bottom("status_bar")
+            .exact_height(18.0)
+            .frame(egui::Frame::NONE.fill(self.state.theme.surface))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.add_space(6.0);
+                    if let Some(entry) = &entry {
+                        let color = match entry.level {
+                            1 => self.state.theme.warn,
+                            2 => self.state.theme.error,
+                            3 => self.state.theme.accent,
+                            _ => self.state.theme.text_secondary,
+                        };
+
+                        if entry.progress >= 0.0 {
+                            // Label on the left, then a small progress bar.
+                            ui.colored_label(color, &entry.text);
+                            ui.add_space(8.0);
+                            let progress = entry.progress.clamp(0.0, 1.0);
+                            let bar = egui::ProgressBar::new(progress)
+                                .desired_width(100.0)
+                                .desired_height(10.0);
+                            ui.add(bar);
+                        } else {
+                            ui.colored_label(color, &entry.text);
+                        }
+                    } else {
+                        ui.colored_label(self.state.theme.text_muted, "Ready");
+                    }
+                });
+            });
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -23,6 +23,9 @@ pub enum Widget {
         id: Option<String>,
         children: Vec<Widget>,
         spacing: Option<f32>,
+        /// When true, the row is centered within its parent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        centered: Option<bool>,
     },
 
     /// Vertical column of child widgets.
@@ -544,6 +547,7 @@ impl Widget {
             id: None,
             children,
             spacing: None,
+            centered: None,
         }
     }
 

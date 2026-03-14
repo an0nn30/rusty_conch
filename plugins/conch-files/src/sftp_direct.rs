@@ -119,6 +119,20 @@ impl SftpAccess {
         check_simple(vtable, result)
     }
 
+    pub fn write_at(&self, path: &str, data: &[u8], offset: u64, truncate: bool) -> Result<(), String> {
+        let vtable = unsafe { &*self.handle.vtable };
+        let result = (vtable.write_at)(
+            self.handle.ctx,
+            path.as_ptr(),
+            path.len(),
+            data.as_ptr(),
+            data.len(),
+            offset,
+            truncate,
+        );
+        check_simple(vtable, result)
+    }
+
     pub fn mkdir(&self, path: &str) -> Result<(), String> {
         let vtable = unsafe { &*self.handle.vtable };
         let result = (vtable.mkdir)(

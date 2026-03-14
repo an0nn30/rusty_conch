@@ -54,6 +54,11 @@ pub struct SftpVtable {
     pub list_dir: extern "C" fn(ctx: *mut c_void, path: *const u8, path_len: usize) -> SftpListResult,
     pub read_chunk: extern "C" fn(ctx: *mut c_void, path: *const u8, path_len: usize, offset: u64, length: u64) -> SftpReadResult,
     pub write_file: extern "C" fn(ctx: *mut c_void, path: *const u8, path_len: usize, data: *const u8, data_len: usize) -> SftpSimpleResult,
+    /// Write a chunk of data at a given offset.
+    ///
+    /// If `truncate` is true, the file is created/truncated first (use for offset 0).
+    /// If `truncate` is false, the file is opened for writing and seeked to `offset`.
+    pub write_at: extern "C" fn(ctx: *mut c_void, path: *const u8, path_len: usize, data: *const u8, data_len: usize, offset: u64, truncate: bool) -> SftpSimpleResult,
     pub mkdir: extern "C" fn(ctx: *mut c_void, path: *const u8, path_len: usize) -> SftpSimpleResult,
     pub rename: extern "C" fn(ctx: *mut c_void, from: *const u8, from_len: usize, to: *const u8, to_len: usize) -> SftpSimpleResult,
     pub delete: extern "C" fn(ctx: *mut c_void, path: *const u8, path_len: usize, is_dir: bool) -> SftpSimpleResult,
