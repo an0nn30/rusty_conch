@@ -347,7 +347,7 @@ fn render_widget(
                         let dark_mode = ui.visuals().dark_mode;
                         if let Some(ic) = icon_cache {
                             if let Some(img) = ic.image_by_name(icon_name, dark_mode) {
-                                if ui.add(egui::ImageButton::new(img)).clicked() {
+                                if ui.add(egui::ImageButton::new(img).frame(false)).clicked() {
                                     events.push(WidgetEvent::ButtonClick { id: id.clone() });
                                 }
                             }
@@ -367,7 +367,8 @@ fn render_widget(
                             RichText::new(label)
                                 .size(theme.font_normal)
                                 .color(text_color),
-                        );
+                        )
+                        .frame(false);
                         if ui.add(button).clicked() {
                             events.push(WidgetEvent::ButtonClick { id: id.clone() });
                         }
@@ -881,7 +882,7 @@ fn render_toolbar_item(
                 if let Some(icon_name) = icon {
                     if let Some(ic) = icon_cache {
                         if let Some(img) = ic.image_by_name(icon_name, dark_mode) {
-                            let resp = ui.add_enabled(is_enabled, egui::ImageButton::new(img));
+                            let resp = ui.add_enabled(is_enabled, egui::ImageButton::new(img).frame(false));
                             if resp.clicked() {
                                 did_click = true;
                             }
@@ -901,7 +902,7 @@ fn render_toolbar_item(
                         }
                     }
                 }
-                let resp = ui.add_enabled(is_enabled, egui::Button::new(label.as_deref().unwrap()));
+                let resp = ui.add_enabled(is_enabled, egui::Button::new(label.as_deref().unwrap()).frame(false));
                 let did_click = resp.clicked();
                 if let Some(tt) = tooltip {
                     resp.on_hover_text(tt);
