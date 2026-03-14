@@ -490,6 +490,40 @@ impl ConchApp {
 }
 
 impl eframe::App for ConchApp {
+    /// Runs *before* egui's `begin_pass()` — strip Tab key events from raw
+    /// input so egui never uses them for focus navigation. The Tab bytes are
+    /// written directly to the active PTY session here.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // If a dialog is open, let egui handle Tab normally.
+        if self.dialog_state.is_active_for(egui::ViewportId::ROOT) {
+            return;
+        }
+
+        let mut tab_bytes: Option<Vec<u8>> = None;
+        raw_input.events.retain(|e| match e {
+            egui::Event::Key {
+                key: egui::Key::Tab,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
+                tab_bytes = Some(if modifiers.shift {
+                    b"\x1b[Z".to_vec()
+                } else {
+                    b"\t".to_vec()
+                });
+                false
+            }
+            _ => true,
+        });
+
+        if let Some(bytes) = tab_bytes {
+            if let Some(session) = self.state.active_session() {
+                session.write(&bytes);
+            }
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Request continuous repainting for terminal output and cursor blink.
         ctx.request_repaint();
