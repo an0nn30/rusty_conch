@@ -11,6 +11,7 @@ use conch_plugin::bus::PluginBus;
 use conch_plugin_sdk::{
     HostApi, OpenSessionResult, PanelHandle, PanelLocation,
     SessionBackendVtable, SessionHandle, SessionMeta,
+    SftpHandle, SftpVtable,
 };
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
@@ -152,6 +153,33 @@ impl SessionRegistry {
 }
 
 static BRIDGE: OnceLock<BridgeInner> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// Status Bar
+// ---------------------------------------------------------------------------
+
+/// A status bar entry set by a plugin.
+#[derive(Debug, Clone)]
+pub struct StatusBarEntry {
+    pub text: String,
+    /// 0=info, 1=warn, 2=error, 3=success.
+    pub level: u8,
+    /// Optional progress fraction (0.0–1.0). Negative means no progress bar.
+    pub progress: f32,
+    pub timestamp: std::time::Instant,
+}
+
+static STATUS_BAR: parking_lot::Mutex<Option<StatusBarEntry>> = parking_lot::Mutex::new(None);
+
+/// Set the global status bar entry. Pass `None` to clear.
+pub fn set_status_bar(entry: Option<StatusBarEntry>) {
+    *STATUS_BAR.lock() = entry;
+}
+
+/// Get the current status bar entry (if any).
+pub fn get_status_bar() -> Option<StatusBarEntry> {
+    STATUS_BAR.lock().clone()
+}
 
 /// Shared theme JSON, updated whenever the app theme changes.
 static THEME_JSON: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
@@ -308,6 +336,9 @@ pub fn build_host_api() -> HostApi {
         session_prompt: host_session_prompt,
         show_context_menu: host_show_context_menu,
         free_string: host_free_string,
+        set_status: host_set_status,
+        register_sftp: host_register_sftp,
+        acquire_sftp: host_acquire_sftp,
     }
 }
 
@@ -878,6 +909,104 @@ extern "C" fn host_show_context_menu(json: *const c_char, len: usize) -> *mut c_
     match reply_rx.blocking_recv() {
         Ok(Some(selected_id)) => alloc_cstring(&selected_id),
         Ok(None) | Err(_) => std::ptr::null_mut(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Status Bar
+// ---------------------------------------------------------------------------
+
+extern "C" fn host_set_status(text: *const c_char, level: u8, progress: f32) {
+    if text.is_null() {
+        set_status_bar(None);
+    } else {
+        let text_str = unsafe { cstr_to_str(text) }.to_string();
+        set_status_bar(Some(StatusBarEntry {
+            text: text_str,
+            level,
+            progress,
+            timestamp: std::time::Instant::now(),
+        }));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SFTP Vtable Registry
+// ---------------------------------------------------------------------------
+
+struct SftpEntry {
+    vtable: *const SftpVtable,
+    ctx: *mut c_void,
+}
+
+// SAFETY: SftpEntry contains raw pointers but they are only accessed through
+// the vtable functions which are thread-safe by contract.
+unsafe impl Send for SftpEntry {}
+unsafe impl Sync for SftpEntry {}
+
+static SFTP_REGISTRY: parking_lot::Mutex<Option<HashMap<u64, SftpEntry>>> =
+    parking_lot::Mutex::new(None);
+
+fn sftp_registry() -> &'static parking_lot::Mutex<Option<HashMap<u64, SftpEntry>>> {
+    &SFTP_REGISTRY
+}
+
+extern "C" fn host_register_sftp(session_id: u64, vtable: *const SftpVtable, ctx: *mut c_void) {
+    if vtable.is_null() || ctx.is_null() {
+        log::warn!("host_register_sftp: null vtable or ctx");
+        return;
+    }
+
+    // Retain the context so the registry holds a reference.
+    unsafe { ((*vtable).retain)(ctx) };
+
+    let mut guard = sftp_registry().lock();
+    let map = guard.get_or_insert_with(HashMap::new);
+
+    // If there was a previous entry, release it.
+    if let Some(old) = map.remove(&session_id) {
+        unsafe { ((*old.vtable).release)(old.ctx) };
+    }
+
+    map.insert(session_id, SftpEntry { vtable, ctx });
+    log::info!("host_register_sftp: registered SFTP for session {session_id}");
+}
+
+extern "C" fn host_acquire_sftp(session_id: u64) -> SftpHandle {
+    let zeroed = SftpHandle {
+        vtable: std::ptr::null(),
+        ctx: std::ptr::null_mut(),
+    };
+
+    let guard = sftp_registry().lock();
+    let Some(map) = guard.as_ref() else {
+        return zeroed;
+    };
+
+    let Some(entry) = map.get(&session_id) else {
+        return zeroed;
+    };
+
+    // Retain the context for the caller.
+    unsafe { ((*entry.vtable).retain)(entry.ctx) };
+
+    SftpHandle {
+        vtable: entry.vtable,
+        ctx: entry.ctx,
+    }
+}
+
+/// Deregister and release the SFTP handle for a session.
+///
+/// Called when an SSH session disconnects. The entry's release is called to
+/// drop the registry's reference.
+pub fn deregister_sftp(session_id: u64) {
+    let mut guard = sftp_registry().lock();
+    if let Some(map) = guard.as_mut() {
+        if let Some(entry) = map.remove(&session_id) {
+            unsafe { ((*entry.vtable).release)(entry.ctx) };
+            log::info!("deregister_sftp: removed SFTP for session {session_id}");
+        }
     }
 }
 

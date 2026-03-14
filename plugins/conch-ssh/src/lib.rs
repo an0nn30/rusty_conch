@@ -5,6 +5,7 @@ mod known_hosts;
 mod server_tree;
 mod session_backend;
 mod sftp;
+pub(crate) mod sftp_vtable;
 mod ssh_config_parser;
 
 use std::collections::HashMap;
@@ -944,6 +945,20 @@ fn do_ssh_connect_sync(
                 rt.handle(),
                 session_handle,
                 api.close_session,
+            );
+
+            // Register SFTP vtable so other plugins can do direct SFTP.
+            // SAFETY: backend_state is Box-heap-allocated and will live in
+            // self.sessions for the entire session lifetime. The vtable
+            // registration is removed when the session disconnects.
+            let backend_ptr: *const SshBackendState = &*backend_state as *const SshBackendState;
+            let sftp_ctx = unsafe {
+                sftp_vtable::SftpContext::new(backend_ptr, rt.handle().clone())
+            };
+            (api.register_sftp)(
+                session_handle.0,
+                &sftp_vtable::SFTP_VTABLE as *const _,
+                sftp_ctx as *mut std::ffi::c_void,
             );
 
             // Transition to Connected — host now renders the terminal.

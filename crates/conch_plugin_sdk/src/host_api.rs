@@ -6,6 +6,7 @@
 use std::ffi::{c_char, c_void};
 
 use crate::session::{OpenSessionResult, PanelHandle, SessionBackendVtable, SessionHandle, SessionMeta, SessionStatus};
+use crate::sftp::{SftpHandle, SftpVtable};
 use crate::plugin_info::PanelLocation;
 
 /// The complete host API available to native plugins.
@@ -234,6 +235,26 @@ pub struct HostApi {
     /// All host functions that return `*mut c_char` allocate via the host's
     /// allocator. The plugin MUST call this to free them.
     pub free_string: extern "C" fn(ptr: *mut c_char),
+
+    // -- Status Bar --------------------------------------------------------
+
+    /// Set the global status bar message with optional progress bar.
+    ///
+    /// `text` is null-terminated UTF-8. Pass null to clear the status bar.
+    /// `level`: 0=info, 1=warn, 2=error, 3=success.
+    /// `progress`: 0.0–1.0 to show a progress bar, or negative to hide it.
+    pub set_status: extern "C" fn(text: *const c_char, level: u8, progress: f32),
+
+    // -- SFTP Vtable Registry ----------------------------------------------
+
+    /// Register an SFTP vtable for a session. Other plugins can acquire it
+    /// by session_id to perform direct SFTP operations without IPC overhead.
+    pub register_sftp: extern "C" fn(session_id: u64, vtable: *const SftpVtable, ctx: *mut c_void),
+
+    /// Acquire an SFTP handle for a session. Returns a zeroed handle if not
+    /// found. Caller must call `vtable->release(ctx)` when done (or use
+    /// `SftpAccess` wrapper which does this automatically via `Drop`).
+    pub acquire_sftp: extern "C" fn(session_id: u64) -> SftpHandle,
 }
 
 // SAFETY: HostApi is a table of function pointers, all of which are thread-safe

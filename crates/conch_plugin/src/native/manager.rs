@@ -279,6 +279,7 @@ mod tests {
     /// exist only to construct a valid HostApi struct.
     fn dummy_host_api() -> conch_plugin_sdk::HostApi {
         use conch_plugin_sdk::*;
+        use conch_plugin_sdk::sftp::{SftpHandle, SftpVtable};
         use std::ffi::c_void;
 
         extern "C" fn stub_register_panel(
@@ -373,6 +374,11 @@ mod tests {
             std::ptr::null_mut()
         }
         extern "C" fn stub_free_string(_: *mut c_char) {}
+        extern "C" fn stub_set_status(_: *const c_char, _: u8, _: f32) {}
+        extern "C" fn stub_register_sftp(_: u64, _: *const SftpVtable, _: *mut c_void) {}
+        extern "C" fn stub_acquire_sftp(_: u64) -> SftpHandle {
+            SftpHandle { vtable: std::ptr::null(), ctx: std::ptr::null_mut() }
+        }
 
         HostApi {
             register_panel: stub_register_panel,
@@ -400,6 +406,9 @@ mod tests {
             show_context_menu: stub_show_context_menu,
             session_prompt: stub_session_prompt,
             free_string: stub_free_string,
+            set_status: stub_set_status,
+            register_sftp: stub_register_sftp,
+            acquire_sftp: stub_acquire_sftp,
         }
     }
 

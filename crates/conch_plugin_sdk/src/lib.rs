@@ -16,12 +16,14 @@ pub mod host_api;
 pub mod icons;
 pub mod plugin_info;
 pub mod session;
+pub mod sftp;
 pub mod widgets;
 
 // Re-export core types at crate root for convenience.
 pub use host_api::*;
 pub use plugin_info::*;
 pub use session::*;
+pub use sftp::*;
 pub use widgets::{PluginEvent, Widget, WidgetEvent};
 
 /// Declare a native Conch plugin by implementing the required C ABI exports.

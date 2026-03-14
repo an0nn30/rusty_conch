@@ -7,6 +7,13 @@
 use russh_sftp::client::SftpSession;
 use serde_json::{json, Value};
 
+/// Open an SFTP session on the given SSH handle (public for vtable use).
+pub async fn open_sftp_pub(
+    ssh: &russh::client::Handle<crate::SshHandler>,
+) -> Result<SftpSession, String> {
+    open_sftp(ssh).await
+}
+
 /// Open an SFTP session on the given SSH handle.
 async fn open_sftp(
     ssh: &russh::client::Handle<crate::SshHandler>,
