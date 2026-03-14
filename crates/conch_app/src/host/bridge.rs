@@ -369,7 +369,10 @@ fn bridge() -> &'static BridgeInner {
 fn current_plugin_name() -> String {
     std::thread::current()
         .name()
-        .and_then(|n| n.strip_prefix("plugin:"))
+        .and_then(|n| {
+            n.strip_prefix("plugin:")
+                .or_else(|| n.strip_prefix("lua-plugin:"))
+        })
         .unwrap_or("unknown")
         .to_string()
 }
@@ -692,6 +695,17 @@ extern "C" fn host_show_error(title: *const c_char, msg: *const c_char) {
 extern "C" fn host_notify(json: *const c_char, len: usize) {
     let json_str = unsafe { slice_to_str(json, len) };
     log::info!("plugin notification: {json_str}");
+
+    // Parse JSON and push to the notification system.
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+        let title = v.get("title").and_then(|t| t.as_str()).map(String::from);
+        let body = v.get("body").and_then(|b| b.as_str()).unwrap_or("").to_string();
+        let level_str = v.get("level").and_then(|l| l.as_str()).unwrap_or("info");
+        let level = crate::notifications::NotificationLevel::from_str(level_str);
+        let duration_ms = v.get("duration_ms").and_then(|d| d.as_u64());
+        let notif = crate::notifications::Notification::new(title, body, level, duration_ms);
+        crate::notifications::push(notif);
+    }
 }
 
 extern "C" fn host_log(level: u8, msg: *const c_char) {

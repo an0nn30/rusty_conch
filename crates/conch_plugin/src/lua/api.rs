@@ -602,6 +602,31 @@ fn register_app_table(lua: &Lua) -> LuaResult<()> {
     )?;
 
     app.set(
+        "register_menu_item",
+        lua.create_function(
+            |lua, (menu, label, action, keybind): (String, String, String, Option<String>)| {
+                with_host_api(lua, |api| {
+                    let c_menu = CString::new(menu).unwrap_or_default();
+                    let c_label = CString::new(label).unwrap_or_default();
+                    let c_action = CString::new(action).unwrap_or_default();
+                    let c_keybind = keybind.as_deref().map(|s| CString::new(s).unwrap_or_default());
+                    let keybind_ptr = c_keybind
+                        .as_ref()
+                        .map(|c| c.as_ptr())
+                        .unwrap_or(std::ptr::null());
+                    (api.register_menu_item)(
+                        c_menu.as_ptr(),
+                        c_label.as_ptr(),
+                        c_action.as_ptr(),
+                        keybind_ptr,
+                    );
+                });
+                Ok(())
+            },
+        )?,
+    )?;
+
+    app.set(
         "query_plugin",
         lua.create_function(
             |lua, (target, method, args): (String, String, Option<LuaValue>)| {

@@ -60,11 +60,12 @@ pub fn spawn_lua_plugin(
     // Cast the host_api pointer to usize for Send across thread boundary.
     let host_api_addr = host_api as usize;
 
+    let thread_meta = meta.clone();
     let thread = std::thread::Builder::new()
         .name(format!("lua-plugin:{}", plugin_name))
         .spawn(move || {
             let api = host_api_addr as *const HostApi;
-            lua_plugin_thread(api, &source, &path, mailbox_rx);
+            lua_plugin_thread(api, &source, &path, &thread_meta, mailbox_rx);
         })
         .map_err(|e| format!("Failed to spawn Lua plugin thread: {e}"))?;
 
@@ -80,6 +81,7 @@ fn lua_plugin_thread(
     host_api: *const HostApi,
     source: &str,
     path: &Path,
+    meta: &LuaPluginMeta,
     mut mailbox: mpsc::Receiver<PluginMail>,
 ) {
     // Create Lua VM.
@@ -112,6 +114,13 @@ fn lua_plugin_thread(
         }
     }
 
+    // If this is a panel plugin, register the panel with the host.
+    if matches!(meta.plugin_type, conch_plugin_sdk::PluginType::Panel) {
+        let api = unsafe { &*host_api };
+        let name = std::ffi::CString::new(meta.name.as_str()).unwrap_or_default();
+        (api.register_panel)(meta.panel_location, name.as_ptr(), std::ptr::null());
+    }
+
     log::info!("Lua plugin '{}' started", chunk_name);
 
     // Enter mailbox loop.
@@ -141,8 +150,14 @@ fn lua_plugin_thread(
 
             PluginMail::WidgetEvent { json } => {
                 // Parse and dispatch as a PluginEvent to on_event().
-                if let Ok(event) = serde_json::from_str::<conch_plugin_sdk::PluginEvent>(&json) {
-                    dispatch_event(&lua, &event);
+                match serde_json::from_str::<conch_plugin_sdk::PluginEvent>(&json) {
+                    Ok(event) => {
+                        log::debug!("[lua:{chunk_name}] dispatching event: {json}");
+                        dispatch_event(&lua, &event);
+                    }
+                    Err(e) => {
+                        log::warn!("[lua:{chunk_name}] failed to parse PluginEvent: {e} — json: {json}");
+                    }
                 }
             }
 
@@ -172,6 +187,7 @@ fn handle_bus_event(lua: &Lua, event_type: &str, data: &serde_json::Value) {
 /// Dispatch a PluginEvent to the Lua `on_event()` function.
 fn dispatch_event(lua: &Lua, event: &PluginEvent) {
     let Ok(on_event) = lua.globals().get::<LuaFunction>("on_event") else {
+        log::debug!("dispatch_event: no on_event function");
         return;
     };
 
@@ -181,14 +197,20 @@ fn dispatch_event(lua: &Lua, event: &PluginEvent) {
     };
 
     // Parse the JSON into a Lua table so the plugin gets a native table.
-    let Ok(tbl) = lua.load(&format!("return {}", json_to_lua_literal(&json))).eval::<LuaTable>()
+    let lua_literal = json_to_lua_literal(&json);
+    let Ok(tbl) = lua.load(&format!("return {}", lua_literal)).eval::<LuaTable>()
     else {
+        log::warn!("dispatch_event: failed to eval lua literal: {lua_literal}");
         // Fallback: pass as string.
-        let _ = on_event.call::<()>(json);
+        if let Err(e) = on_event.call::<()>(json) {
+            log::warn!("dispatch_event: on_event(string) error: {e}");
+        }
         return;
     };
 
-    let _ = on_event.call::<()>(tbl);
+    if let Err(e) = on_event.call::<()>(tbl) {
+        log::warn!("dispatch_event: on_event(table) error: {e}");
+    }
 }
 
 /// Handle a render request by calling the Lua `render()` function.
@@ -304,6 +326,20 @@ mod tests {
     fn json_to_lua_literal_null() {
         let lua_str = json_to_lua_literal(r#"{"x":null}"#);
         assert!(lua_str.contains("nil"));
+    }
+
+    #[test]
+    fn json_to_lua_literal_menu_action() {
+        use conch_plugin_sdk::PluginEvent;
+        let event = PluginEvent::MenuAction { action: "trigger_notification".into() };
+        let json = serde_json::to_string(&event).unwrap();
+        eprintln!("JSON: {json}");
+        let lua_str = json_to_lua_literal(&json);
+        eprintln!("Lua: {lua_str}");
+        assert!(lua_str.contains("kind"));
+        assert!(lua_str.contains("menu_action"));
+        assert!(lua_str.contains("action"));
+        assert!(lua_str.contains("trigger_notification"));
     }
 
     #[test]

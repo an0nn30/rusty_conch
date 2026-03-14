@@ -234,6 +234,11 @@ impl NativePluginManager {
         self.plugins.values().map(|p| &p.meta).collect()
     }
 
+    /// Get the host API pointer (for sharing with Lua plugin runner).
+    pub fn host_api_ptr(&self) -> *const conch_plugin_sdk::HostApi {
+        self.host_api
+    }
+
     /// Check if a plugin is loaded.
     pub fn is_loaded(&self, name: &str) -> bool {
         self.plugins.contains_key(name)

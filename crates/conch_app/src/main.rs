@@ -9,6 +9,7 @@ mod input;
 mod ipc;
 mod menu_bar;
 mod mouse;
+mod notifications;
 mod platform;
 mod sessions;
 mod shortcuts;

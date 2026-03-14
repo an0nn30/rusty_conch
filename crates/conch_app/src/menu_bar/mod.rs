@@ -194,10 +194,13 @@ pub fn handle_action(
         }
         MenuAction::PluginAction { plugin_name, action } => {
             // Send MenuAction event directly to the target plugin.
-            let event = conch_plugin_sdk::PluginEvent::MenuAction { action };
+            let event = conch_plugin_sdk::PluginEvent::MenuAction { action: action.clone() };
             if let Ok(json) = serde_json::to_string(&event) {
                 if let Some(sender) = app.plugin_bus.sender_for(&plugin_name) {
+                    log::info!("Dispatching menu action '{action}' to plugin '{plugin_name}'");
                     let _ = sender.try_send(conch_plugin::bus::PluginMail::WidgetEvent { json });
+                } else {
+                    log::warn!("No bus sender found for plugin '{plugin_name}' (menu action '{action}')");
                 }
             }
         }

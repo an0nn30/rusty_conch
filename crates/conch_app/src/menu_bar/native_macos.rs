@@ -107,6 +107,11 @@ define_class!(
             push_action(MenuAction::ZoomReset);
         }
 
+        #[unsafe(method(pluginManager:))]
+        fn plugin_manager(&self, _sender: *mut AnyObject) {
+            push_action(MenuAction::PluginManager);
+        }
+
         #[unsafe(method(pluginMenuAction:))]
         fn plugin_menu_action(&self, sender: *mut AnyObject) {
             if sender.is_null() {
@@ -177,6 +182,8 @@ pub fn setup_menu_bar() {
 
         // ── View ──
         let view_menu = make_menu(mtm, "View");
+        view_menu.addItem(&make_item(mtm, "Plugin Manager", sel!(pluginManager:), "", &responder));
+        view_menu.addItem(&NSMenuItem::separatorItem(mtm));
         view_menu.addItem(&make_item(mtm, "Zen Mode", sel!(zenMode:), "", &responder));
         view_menu.addItem(&NSMenuItem::separatorItem(mtm));
         view_menu.addItem(&make_item(mtm, "Zoom In", sel!(zoomIn:), "+", &responder));

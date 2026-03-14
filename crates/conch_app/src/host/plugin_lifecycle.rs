@@ -5,10 +5,12 @@ use std::path::PathBuf;
 
 use conch_core::config;
 use conch_plugin::bus::PluginMail;
+use conch_plugin::lua::runner::{DiscoveredLuaPlugin, RunningLuaPlugin};
 use conch_plugin_sdk::PanelLocation;
 use tokio::sync::oneshot;
 
 use crate::app::ConchApp;
+use crate::host::bridge;
 use crate::host::plugin_manager_ui::{PluginEntry, PluginSource};
 
 impl ConchApp {
@@ -127,14 +129,30 @@ impl ConchApp {
         let to_load: Vec<String> = self.state.persistent.loaded_plugins.clone();
         for name in &to_load {
             if let Some(entry) = self.plugin_manager.find_plugin(name) {
+                let source = entry.source;
                 let path = entry.path.clone();
-                match self.native_plugin_mgr.load_plugin(&path) {
-                    Ok(meta) => {
-                        log::info!("Auto-loaded plugin '{}' v{}", meta.name, meta.version);
-                        self.plugin_manager.set_loaded(name, true);
+                match source {
+                    PluginSource::Native => {
+                        match self.native_plugin_mgr.load_plugin(&path) {
+                            Ok(meta) => {
+                                log::info!("Auto-loaded native plugin '{}' v{}", meta.name, meta.version);
+                                self.plugin_manager.set_loaded(name, true);
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to auto-load plugin '{name}': {e}");
+                            }
+                        }
                     }
-                    Err(e) => {
-                        log::warn!("Failed to auto-load plugin '{name}': {e}");
+                    PluginSource::Lua => {
+                        match self.load_lua_plugin(name, &path) {
+                            Ok(()) => {
+                                log::info!("Auto-loaded Lua plugin '{name}'");
+                                self.plugin_manager.set_loaded(name, true);
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to auto-load Lua plugin '{name}': {e}");
+                            }
+                        }
                     }
                 }
             } else {
@@ -145,12 +163,16 @@ impl ConchApp {
 
     /// Persist the current set of loaded plugin names to state.toml.
     pub(crate) fn save_loaded_plugins(&mut self) {
-        let loaded: Vec<String> = self
+        let mut loaded: Vec<String> = self
             .native_plugin_mgr
             .loaded_plugins()
             .iter()
             .map(|m| m.name.clone())
             .collect();
+        // Include Lua plugins.
+        for name in self.lua_plugins.keys() {
+            loaded.push(name.clone());
+        }
         self.state.persistent.loaded_plugins = loaded;
         let _ = config::save_persistent_state(&self.state.persistent);
     }
@@ -167,34 +189,109 @@ impl ConchApp {
             }
             PluginManagerAction::Load(name) => {
                 if let Some(entry) = self.plugin_manager.find_plugin(&name) {
+                    let source = entry.source;
                     let path = entry.path.clone();
-                    match self.native_plugin_mgr.load_plugin(&path) {
-                        Ok(meta) => {
-                            log::info!("Loaded plugin '{}' v{}", meta.name, meta.version);
-                            self.plugin_manager.set_loaded(&name, true);
-                            self.save_loaded_plugins();
+                    match source {
+                        PluginSource::Native => {
+                            match self.native_plugin_mgr.load_plugin(&path) {
+                                Ok(meta) => {
+                                    log::info!("Loaded plugin '{}' v{}", meta.name, meta.version);
+                                    self.plugin_manager.set_loaded(&name, true);
+                                    self.save_loaded_plugins();
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to load plugin '{name}': {e}");
+                                }
+                            }
                         }
-                        Err(e) => {
-                            log::error!("Failed to load plugin '{name}': {e}");
+                        PluginSource::Lua => {
+                            match self.load_lua_plugin(&name, &path) {
+                                Ok(()) => {
+                                    log::info!("Loaded Lua plugin '{name}'");
+                                    self.plugin_manager.set_loaded(&name, true);
+                                    self.save_loaded_plugins();
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to load Lua plugin '{name}': {e}");
+                                }
+                            }
                         }
                     }
                 }
             }
             PluginManagerAction::Unload(name) => {
-                match self.native_plugin_mgr.unload_plugin(&name) {
-                    Ok(()) => {
-                        log::info!("Unloaded plugin '{name}'");
-                        self.panel_registry.lock().remove_by_plugin(&name);
-                        self.render_pending.remove(&name);
-                        self.render_cache.remove(&name);
-                        self.plugin_manager.set_loaded(&name, false);
-                        self.save_loaded_plugins();
-                    }
-                    Err(e) => {
-                        log::error!("Failed to unload plugin '{name}': {e}");
+                // Try Lua first, then native.
+                if self.lua_plugins.contains_key(&name) {
+                    self.unload_lua_plugin(&name);
+                    self.plugin_manager.set_loaded(&name, false);
+                    self.save_loaded_plugins();
+                } else {
+                    match self.native_plugin_mgr.unload_plugin(&name) {
+                        Ok(()) => {
+                            log::info!("Unloaded plugin '{name}'");
+                            self.panel_registry.lock().remove_by_plugin(&name);
+                            self.render_pending.remove(&name);
+                            self.render_cache.remove(&name);
+                            self.plugin_manager.set_loaded(&name, false);
+                            self.save_loaded_plugins();
+                        }
+                        Err(e) => {
+                            log::error!("Failed to unload plugin '{name}': {e}");
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /// Load a Lua plugin by reading its source and spawning a runner thread.
+    fn load_lua_plugin(&mut self, name: &str, path: &PathBuf) -> Result<(), String> {
+        if self.lua_plugins.contains_key(name) {
+            return Err(format!("Lua plugin '{name}' is already loaded"));
+        }
+
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        let meta = conch_plugin::lua::metadata::parse_lua_metadata(&source);
+        let discovered = DiscoveredLuaPlugin {
+            path: path.clone(),
+            source,
+            meta,
+        };
+
+        // Register on the bus and get the mailbox.
+        let mailbox_rx = self.plugin_bus.register_plugin(name);
+        let mailbox_tx = self.plugin_bus.sender_for(name).unwrap();
+        let host_api = self.native_plugin_mgr.host_api_ptr();
+
+        let running = conch_plugin::lua::runner::spawn_lua_plugin(
+            &discovered,
+            host_api,
+            mailbox_tx,
+            mailbox_rx,
+        )?;
+
+        self.lua_plugins.insert(name.to_string(), running);
+        Ok(())
+    }
+
+    /// Unload a Lua plugin: send shutdown, join thread, clean up.
+    fn unload_lua_plugin(&mut self, name: &str) {
+        if let Some(mut running) = self.lua_plugins.remove(name) {
+            // Send shutdown signal.
+            if running.sender.try_send(PluginMail::Shutdown).is_err() {
+                log::warn!("Lua plugin [{name}]: failed to send shutdown");
+            }
+            // Wait for thread to exit.
+            if let Some(handle) = running.thread.take() {
+                let _ = handle.join();
+            }
+            // Clean up bus, panels, caches.
+            self.plugin_bus.unregister_plugin(name);
+            self.panel_registry.lock().remove_by_plugin(name);
+            self.render_pending.remove(name);
+            self.render_cache.remove(name);
+            log::info!("Unloaded Lua plugin '{name}'");
         }
     }
 

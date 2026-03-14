@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use conch_core::config;
 use conch_plugin::bus::PluginBus;
+use conch_plugin::lua::runner::RunningLuaPlugin;
 use conch_plugin::native::manager::NativePluginManager;
 use conch_plugin_sdk::PanelLocation;
 use egui::ViewportCommand;
@@ -20,6 +21,7 @@ use crate::input::ResolvedShortcuts;
 use crate::ipc::{IpcListener, IpcMessage};
 use crate::menu_bar::MenuBarState;
 use crate::mouse::Selection;
+use crate::notifications::NotificationManager;
 use crate::platform::PlatformCapabilities;
 use crate::sessions::create_local_session;
 use crate::state::AppState;
@@ -62,6 +64,8 @@ pub struct ConchApp {
     pub(crate) plugin_bus: Arc<PluginBus>,
     pub(crate) panel_registry: Arc<Mutex<PanelRegistry>>,
     pub(crate) native_plugin_mgr: NativePluginManager,
+    /// Running Lua plugins, keyed by name.
+    pub(crate) lua_plugins: HashMap<String, RunningLuaPlugin>,
     /// Pending render responses from plugin threads (plugin_name → receiver).
     pub(crate) render_pending: HashMap<String, oneshot::Receiver<String>>,
     /// Cached widget JSON per plugin name (for rendering between polls).
@@ -98,6 +102,7 @@ pub struct ConchApp {
     pub(crate) has_ever_had_session: bool,
     pub(crate) quit_requested: bool,
     pub(crate) rt: Arc<tokio::runtime::Runtime>,
+    pub(crate) notifications: NotificationManager,
 }
 
 impl ConchApp {
@@ -121,6 +126,8 @@ impl ConchApp {
         let panel_registry = Arc::new(Mutex::new(PanelRegistry::new()));
         let (dialog_tx, dialog_state) = dialogs::dialog_channel();
         let session_registry = Arc::new(Mutex::new(SessionRegistry::new()));
+        let notification_rx = crate::notifications::init_channel();
+        let notifications = NotificationManager::new(notification_rx);
         bridge::init_bridge(
             Arc::clone(&plugin_bus),
             Arc::clone(&panel_registry),
@@ -154,6 +161,7 @@ impl ConchApp {
             plugin_bus,
             panel_registry,
             native_plugin_mgr,
+            lua_plugins: HashMap::new(),
             render_pending: HashMap::new(),
             render_cache: HashMap::new(),
             plugin_text_state: HashMap::new(),
@@ -173,6 +181,7 @@ impl ConchApp {
             has_ever_had_session: false,
             quit_requested: false,
             rt,
+            notifications,
         };
 
         // Discover plugins and auto-load previously enabled ones.
@@ -268,15 +277,31 @@ impl ConchApp {
             match change.kind {
                 FileChangeKind::Config => {
                     log::info!("Config file changed, reloading...");
-                    if let Ok(new_config) = config::load_user_config() {
-                        self.shortcuts = ResolvedShortcuts::from_config(&new_config.conch.keyboard);
-                        let scheme = conch_core::color_scheme::resolve_theme(&new_config.colors.theme);
-                        self.state.colors = ResolvedColors::from_scheme(&scheme);
-                        self.state.theme = crate::ui_theme::UiTheme::from_colors(&self.state.colors, new_config.colors.appearance_mode);
-                        self.state.theme_dirty = true;
-                        crate::apply_appearance_mode(ctx, new_config.colors.appearance_mode);
-                        self.menu_bar_state.update_mode(new_config.conch.ui.native_menu_bar, &self.platform);
-                        self.state.user_config = new_config;
+                    match config::load_user_config() {
+                        Ok(new_config) => {
+                            self.shortcuts = ResolvedShortcuts::from_config(&new_config.conch.keyboard);
+                            let scheme = conch_core::color_scheme::resolve_theme(&new_config.colors.theme);
+                            self.state.colors = ResolvedColors::from_scheme(&scheme);
+                            self.state.theme = crate::ui_theme::UiTheme::from_colors(&self.state.colors, new_config.colors.appearance_mode);
+                            self.state.theme_dirty = true;
+                            crate::apply_appearance_mode(ctx, new_config.colors.appearance_mode);
+                            self.menu_bar_state.update_mode(new_config.conch.ui.native_menu_bar, &self.platform);
+                            self.state.user_config = new_config;
+                            crate::notifications::push(crate::notifications::Notification::new(
+                                Some("Config Reloaded".into()),
+                                "Configuration updated successfully.".into(),
+                                crate::notifications::NotificationLevel::Success,
+                                None,
+                            ));
+                        }
+                        Err(e) => {
+                            crate::notifications::push(crate::notifications::Notification::new(
+                                Some("Config Error".into()),
+                                format!("Failed to reload config: {e}"),
+                                crate::notifications::NotificationLevel::Error,
+                                None,
+                            ));
+                        }
                     }
                 }
                 FileChangeKind::Themes => {
@@ -285,6 +310,12 @@ impl ConchApp {
                     self.state.colors = ResolvedColors::from_scheme(&scheme);
                     self.state.theme = crate::ui_theme::UiTheme::from_colors(&self.state.colors, self.state.user_config.colors.appearance_mode);
                     self.state.theme_dirty = true;
+                    crate::notifications::push(crate::notifications::Notification::new(
+                        Some("Theme Reloaded".into()),
+                        "Theme updated successfully.".into(),
+                        crate::notifications::NotificationLevel::Success,
+                        None,
+                    ));
                 }
             }
         }
@@ -608,6 +639,9 @@ impl eframe::App for ConchApp {
 
         // Show plugin dialogs (form, confirm, prompt, alert, error).
         self.dialog_state.show(ctx, egui::ViewportId::ROOT);
+
+        // Render toast notifications on top of everything.
+        self.notifications.show(ctx);
 
         // Determine whether the main window should hide or close.
         let mut main_visible = !self.state.sessions.is_empty();
