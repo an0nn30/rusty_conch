@@ -391,14 +391,21 @@ impl ConchApp {
                 .map(|(_, info)| (info.plugin_name.clone(), info.name.clone()))
                 .collect()
         };
+        // Drain force-render requests (from plugin keybinding dispatch).
+        let force_set: std::collections::HashSet<String> = {
+            let mut f = self.shared.force_render.lock();
+            f.drain(..).collect()
+        };
         for (plugin_name, _panel_name) in panels {
             if self.render_pending.contains_key(&plugin_name) {
-                continue; // Already waiting for a response.
+                continue;
             }
-            // Throttle: skip if we sent a request recently.
-            if let Some(last) = self.render_last_request.get(&plugin_name) {
-                if now.duration_since(*last) < Self::RENDER_POLL_INTERVAL {
-                    continue;
+            // Skip throttle for plugins with pending force-render.
+            if !force_set.contains(&plugin_name) {
+                if let Some(last) = self.render_last_request.get(&plugin_name) {
+                    if now.duration_since(*last) < Self::RENDER_POLL_INTERVAL {
+                        continue;
+                    }
                 }
             }
             if let Some(sender) = self.shared.plugin_bus.sender_for(&plugin_name) {

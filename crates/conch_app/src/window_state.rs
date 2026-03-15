@@ -84,6 +84,9 @@ pub(crate) struct SharedAppState {
     pub plugin_manager: Mutex<crate::host::plugin_manager_ui::PluginManagerState>,
     /// Platform capabilities (immutable).
     pub platform: PlatformCapabilities,
+    /// Plugins that should skip the render throttle on the next poll.
+    /// Set when a plugin keybinding fires so the UI updates immediately.
+    pub force_render: Mutex<Vec<String>>,
 }
 
 // ── WindowAction ──
@@ -936,9 +939,12 @@ pub(crate) fn handle_keyboard(
                 modifiers,
                 ..
             } => {
-                // Escape: if a text widget has focus, surrender it and
-                // re-hide any panel that was auto-revealed by a shortcut.
-                if *key == egui::Key::Escape && text_widget_focused {
+                // Escape: re-hide any panel that was auto-revealed by a
+                // plugin shortcut and return focus to the terminal.
+                // Note: egui's begin_pass() already clears focused_widget
+                // on Escape, so text_widget_focused may be false here.
+                // We check auto_revealed_panel directly instead.
+                if *key == egui::Key::Escape && win.auto_revealed_panel.is_some() {
                     if let Some(focused_id) = ctx.memory(|m| m.focused()) {
                         ctx.memory_mut(|m| m.surrender_focus(focused_id));
                     }
@@ -1074,6 +1080,10 @@ pub(crate) fn handle_keyboard(
                                 let _ = sender.try_send(conch_plugin::bus::PluginMail::WidgetEvent { json });
                             }
                         }
+                        // Force immediate render poll so the plugin's UI
+                        // updates without the 250ms throttle delay.
+                        shared.force_render.lock().push(pkb.plugin_name.clone());
+                        ctx.request_repaint();
                         plugin_handled = true;
                         break;
                     }

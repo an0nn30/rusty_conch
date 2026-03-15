@@ -151,6 +151,7 @@ impl ConchApp {
             menu_bar_state: Mutex::new(menu_bar_state),
             plugin_manager: Mutex::new(PluginManagerState::default()),
             platform,
+            force_render: Mutex::new(Vec::new()),
         });
 
         let mut app = Self {
