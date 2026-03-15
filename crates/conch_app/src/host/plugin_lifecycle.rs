@@ -98,6 +98,19 @@ impl ConchApp {
                 }
             }
 
+            // Discover Java plugins (.jar).
+            for (path, meta) in self.java_plugin_mgr.discover(dir) {
+                entries.push(PluginEntry {
+                    name: meta.name,
+                    description: meta.description,
+                    version: meta.version,
+                    plugin_type: meta.plugin_type,
+                    panel_location: meta.panel_location,
+                    source: PluginSource::Java,
+                    path,
+                });
+            }
+
             // Discover Lua plugins (.lua).
             for plugin in conch_plugin::lua::runner::discover(dir) {
                 entries.push(PluginEntry {
@@ -143,6 +156,17 @@ impl ConchApp {
                             }
                         }
                     }
+                    PluginSource::Java => {
+                        match self.java_plugin_mgr.load_plugin(&path) {
+                            Ok(meta) => {
+                                log::info!("Auto-loaded Java plugin '{}' v{}", meta.name, meta.version);
+                                self.plugin_manager.set_loaded(name, true);
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to auto-load Java plugin '{name}': {e}");
+                            }
+                        }
+                    }
                     PluginSource::Lua => {
                         match self.load_lua_plugin(name, &path) {
                             Ok(()) => {
@@ -169,6 +193,13 @@ impl ConchApp {
             .iter()
             .map(|m| m.name.clone())
             .collect();
+        // Include Java plugins.
+        loaded.extend(
+            self.java_plugin_mgr
+                .loaded_plugins()
+                .iter()
+                .map(|m| m.name.clone()),
+        );
         // Include Lua plugins.
         for name in self.lua_plugins.keys() {
             loaded.push(name.clone());
@@ -204,6 +235,18 @@ impl ConchApp {
                                 }
                             }
                         }
+                        PluginSource::Java => {
+                            match self.java_plugin_mgr.load_plugin(&path) {
+                                Ok(meta) => {
+                                    log::info!("Loaded Java plugin '{}' v{}", meta.name, meta.version);
+                                    self.plugin_manager.set_loaded(&name, true);
+                                    self.save_loaded_plugins();
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to load Java plugin '{name}': {e}");
+                                }
+                            }
+                        }
                         PluginSource::Lua => {
                             match self.load_lua_plugin(&name, &path) {
                                 Ok(()) => {
@@ -220,13 +263,18 @@ impl ConchApp {
                 }
             }
             PluginManagerAction::Unload(name) => {
-                // Try Lua first, then native.
+                // Try Lua first, then Java, then native.
                 if self.lua_plugins.contains_key(&name) {
                     self.unload_lua_plugin(&name);
                     self.plugin_manager.set_loaded(&name, false);
                     self.save_loaded_plugins();
                 } else {
-                    match self.native_plugin_mgr.unload_plugin(&name) {
+                    let result = if self.java_plugin_mgr.is_loaded(&name) {
+                        self.java_plugin_mgr.unload_plugin(&name)
+                    } else {
+                        self.native_plugin_mgr.unload_plugin(&name)
+                    };
+                    match result {
                         Ok(()) => {
                             log::info!("Unloaded plugin '{name}'");
                             self.panel_registry.lock().remove_by_plugin(&name);

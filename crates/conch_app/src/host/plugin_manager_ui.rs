@@ -28,6 +28,7 @@ pub struct PluginEntry {
 pub enum PluginSource {
     Native,
     Lua,
+    Java,
 }
 
 impl std::fmt::Display for PluginSource {
@@ -35,6 +36,7 @@ impl std::fmt::Display for PluginSource {
         match self {
             PluginSource::Native => write!(f, "Native"),
             PluginSource::Lua => write!(f, "Lua"),
+            PluginSource::Java => write!(f, "Java"),
         }
     }
 }

@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use conch_core::config;
 use conch_plugin::bus::PluginBus;
+use conch_plugin::jvm::runtime::JavaPluginManager;
 use conch_plugin::lua::runner::RunningLuaPlugin;
 use conch_plugin::native::manager::NativePluginManager;
 use conch_plugin_sdk::PanelLocation;
@@ -66,6 +67,7 @@ pub struct ConchApp {
     pub(crate) native_plugin_mgr: NativePluginManager,
     /// Running Lua plugins, keyed by name.
     pub(crate) lua_plugins: HashMap<String, RunningLuaPlugin>,
+    pub(crate) java_plugin_mgr: JavaPluginManager,
     /// Pending render responses from plugin threads (plugin_name → receiver).
     pub(crate) render_pending: HashMap<String, oneshot::Receiver<String>>,
     /// Cached widget JSON per plugin name (for rendering between polls).
@@ -105,6 +107,37 @@ pub struct ConchApp {
     pub(crate) notifications: NotificationManager,
 }
 
+/// Locate the conch-plugin-sdk.jar for the JVM plugin system.
+fn find_sdk_jar() -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    let candidates = vec![
+        // Development: relative to CWD.
+        PathBuf::from("java-sdk/build/conch-plugin-sdk.jar"),
+        // Next to the executable.
+        std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.join("conch-plugin-sdk.jar"))).unwrap_or_default(),
+        // macOS app bundle: Conch.app/Contents/Resources/
+        std::env::current_exe().ok().and_then(|exe| exe.parent().and_then(|d| d.parent()).map(|d| d.join("Resources").join("conch-plugin-sdk.jar"))).unwrap_or_default(),
+        // User config directory (macOS: ~/Library/Application Support/conch/).
+        dirs::config_dir().map(|d| d.join("conch").join("conch-plugin-sdk.jar")).unwrap_or_default(),
+        // Linux/Windows: ~/.config/conch/
+        dirs::home_dir().map(|d| d.join(".config").join("conch").join("conch-plugin-sdk.jar")).unwrap_or_default(),
+    ];
+
+    for path in &candidates {
+        if path.as_os_str().is_empty() {
+            continue;
+        }
+        if path.exists() {
+            log::info!("Found Java SDK JAR: {}", path.display());
+            return path.clone();
+        }
+    }
+
+    log::warn!("Could not find conch-plugin-sdk.jar — Java plugins will not work. Searched: {:?}", candidates);
+    PathBuf::from("conch-plugin-sdk.jar")
+}
+
 impl ConchApp {
     pub fn new(rt: Arc<tokio::runtime::Runtime>) -> Self {
         let user_config = config::load_user_config().unwrap_or_else(|e| {
@@ -135,7 +168,12 @@ impl ConchApp {
             Arc::clone(&session_registry),
         );
         let host_api = bridge::build_host_api();
+        let java_host_api = bridge::build_host_api();
         let native_plugin_mgr = NativePluginManager::new(Arc::clone(&plugin_bus), host_api);
+
+        // Locate the Java SDK JAR (next to exe, or in development).
+        let sdk_jar = find_sdk_jar();
+        let java_plugin_mgr = JavaPluginManager::new(Arc::clone(&plugin_bus), java_host_api, sdk_jar);
 
         let mut app = Self {
             state,
@@ -162,6 +200,7 @@ impl ConchApp {
             panel_registry,
             native_plugin_mgr,
             lua_plugins: HashMap::new(),
+            java_plugin_mgr,
             render_pending: HashMap::new(),
             render_cache: HashMap::new(),
             plugin_text_state: HashMap::new(),
@@ -947,7 +986,19 @@ impl eframe::App for ConchApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_loaded_plugins();
+        // Shut down Lua plugins.
+        let lua_names: Vec<String> = self.lua_plugins.keys().cloned().collect();
+        for name in lua_names {
+            if let Some(mut running) = self.lua_plugins.remove(&name) {
+                let _ = running.sender.try_send(conch_plugin::bus::PluginMail::Shutdown);
+                if let Some(handle) = running.thread.take() {
+                    let _ = handle.join();
+                }
+                self.plugin_bus.unregister_plugin(&name);
+            }
+        }
         self.native_plugin_mgr.shutdown_all();
+        self.java_plugin_mgr.shutdown_all();
         let _ = config::save_persistent_state(&self.state.persistent);
     }
 }
