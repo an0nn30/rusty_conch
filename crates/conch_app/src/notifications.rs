@@ -148,6 +148,11 @@ impl NotificationManager {
         }
     }
 
+    /// Whether there are any active (visible or pending) notifications.
+    pub(crate) fn has_active(&self) -> bool {
+        !self.notifications.is_empty()
+    }
+
     /// Render all notifications as an overlay. Call at the end of the update
     /// loop so toasts render on top of everything.
     pub(crate) fn show(&mut self, ctx: &egui::Context) {
@@ -165,9 +170,6 @@ impl NotificationManager {
         if self.notifications.is_empty() {
             return;
         }
-
-        // Schedule a repaint so timed notifications expire on time.
-        ctx.request_repaint();
 
         let screen = ctx.screen_rect();
         let card_x = screen.max.x - CARD_WIDTH - MARGIN_RIGHT;

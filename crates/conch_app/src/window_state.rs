@@ -378,10 +378,15 @@ pub(crate) fn render_window(
         win.last_pixels_per_point = ppp;
     }
 
-    // 7. Cursor blink (500ms interval).
-    if win.last_blink.elapsed().as_millis() > CURSOR_BLINK_MS {
-        win.cursor_visible = !win.cursor_visible;
-        win.last_blink = Instant::now();
+    // 7. Cursor blink (500ms interval) — only toggle when focused.
+    let mut needs_repaint = false;
+    if win.has_focus {
+        let elapsed = win.last_blink.elapsed().as_millis();
+        if elapsed >= CURSOR_BLINK_MS {
+            win.cursor_visible = !win.cursor_visible;
+            win.last_blink = Instant::now();
+            needs_repaint = true;
+        }
     }
 
     // 8. Poll session events (title changes, exit, wakeup).
@@ -390,7 +395,7 @@ pub(crate) fn render_window(
         while let Ok(event) = session.event_rx.try_recv() {
             match event {
                 alacritty_terminal::event::Event::Wakeup => {
-                    ctx.request_repaint();
+                    needs_repaint = true;
                 }
                 alacritty_terminal::event::Event::Title(t) => {
                     if session.custom_title.is_none() {
@@ -736,10 +741,25 @@ pub(crate) fn render_window(
     }
 
     // 28. Toast notifications.
-    shared.notifications.lock().show(ctx);
+    {
+        let mut notifs = shared.notifications.lock();
+        if notifs.has_active() {
+            needs_repaint = true;
+        }
+        notifs.show(ctx);
+    }
 
-    // 29. Request repaint after 500ms for cursor blink.
-    ctx.request_repaint_after(Duration::from_millis(500));
+    // 29. Schedule next repaint only when needed.
+    // When focused: schedule for next cursor blink toggle.
+    // When unfocused: don't schedule — rely on OS events + Wakeup to wake us.
+    if needs_repaint {
+        ctx.request_repaint();
+    } else if win.has_focus {
+        let elapsed = win.last_blink.elapsed().as_millis() as u64;
+        let remaining = (CURSOR_BLINK_MS as u64).saturating_sub(elapsed);
+        ctx.request_repaint_after(Duration::from_millis(remaining.max(16)));
+    }
+    // When unfocused and nothing changed: no repaint requested → true idle.
 }
 
 // ── handle_menu_action ──
