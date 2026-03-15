@@ -366,11 +366,14 @@ pub(crate) fn render_window(
         win.last_blink = Instant::now();
     }
 
-    // 8. Poll session events (title changes, exit).
+    // 8. Poll session events (title changes, exit, wakeup).
     let mut exited_sessions = Vec::new();
     for (id, session) in &mut win.sessions {
         while let Ok(event) = session.event_rx.try_recv() {
             match event {
+                alacritty_terminal::event::Event::Wakeup => {
+                    ctx.request_repaint();
+                }
                 alacritty_terminal::event::Event::Title(t) => {
                     if session.custom_title.is_none() {
                         session.title = t;

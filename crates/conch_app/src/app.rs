@@ -448,7 +448,10 @@ impl eframe::App for ConchApp {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        // The root must repaint frequently because deferred viewports are
+        // rendered as part of the root frame.  Use a short interval rather
+        // than continuous to avoid burning CPU when idle.
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
