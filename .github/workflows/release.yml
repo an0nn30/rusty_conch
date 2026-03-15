@@ -256,7 +256,7 @@ jobs:
             ./conch-v${{ steps.version.outputs.version }}-1.aarch64.rpm $GITHUB_TOKEN
 
   # ---------------------------------------------------------------------------
-  # Extras — VS Code extension, example config & plugins
+  # Extras — VS Code extension, Java SDK, example config & plugins
   # ---------------------------------------------------------------------------
   extras:
     needs: changelog
@@ -272,11 +272,34 @@ jobs:
         with:
           node-version: 20
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
       - name: Extract version
         id: version
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build Java Plugin SDK
+        run: make -C java-sdk build
+
+      - name: Upload Java Plugin SDK
+        run: |
+          cp java-sdk/build/conch-plugin-sdk.jar \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}.jar
+          cp java-sdk/build/conch-plugin-sdk-sources.jar \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}-sources.jar
+          cp java-sdk/build/conch-plugin-sdk-javadoc.jar \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}-javadoc.jar
+          ./.github/workflows/upload_asset.sh \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}.jar $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}-sources.jar $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}-javadoc.jar $GITHUB_TOKEN
 
       - name: Build VS Code extension
         working-directory: editors/vscode

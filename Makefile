@@ -20,6 +20,9 @@ help:
 	@echo "  msi            Build .msi installer (run on Windows)"
 	@echo "  exe            Build portable .exe (run on Windows)"
 	@echo ""
+	@echo "SDKs:"
+	@echo "  java-sdk       Build Java Plugin SDK (JAR + sources + javadoc)"
+	@echo ""
 	@echo "Cross-compilation (requires cross: cargo install cross):"
 	@echo "  linux-amd64    Build .deb and .rpm for Linux AMD64"
 	@echo "  linux-arm64    Build .deb and .rpm for Linux ARM64"
@@ -34,6 +37,18 @@ help:
 	@echo "Version: $(VERSION)"
 
 # ===========================================================================
+# SDKs
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Java Plugin SDK — JAR + sources + javadoc
+# ---------------------------------------------------------------------------
+.PHONY: java-sdk
+java-sdk:
+	$(MAKE) -C java-sdk build
+	@echo "Java SDK JARs in java-sdk/build/"
+
+# ===========================================================================
 # LOCAL BUILDS — run these on the target platform
 # ===========================================================================
 
@@ -41,7 +56,7 @@ help:
 # macOS — DMG (current architecture)
 # ---------------------------------------------------------------------------
 .PHONY: dmg-native
-dmg-native:
+dmg-native: java-sdk
 	cargo build --release
 	@mkdir -p "$(DIST)"
 	rm -rf "$(APP)"
@@ -62,7 +77,7 @@ dmg-native:
 # macOS — Universal DMG (ARM64 + x86_64)
 # ---------------------------------------------------------------------------
 .PHONY: dmg-universal
-dmg-universal:
+dmg-universal: java-sdk
 	rustup target add aarch64-apple-darwin x86_64-apple-darwin 2>/dev/null || true
 	cargo build --release --target=aarch64-apple-darwin
 	cargo build --release --target=x86_64-apple-darwin
@@ -217,4 +232,5 @@ changelog:
 .PHONY: clean
 clean:
 	rm -rf "$(APP)" "$(DIST)"
+	$(MAKE) -C java-sdk clean
 	cargo clean

@@ -20,12 +20,17 @@ use crate::native::{LoadError, PluginMeta};
 static HOST_API_PTR: AtomicPtr<conch_plugin_sdk::HostApi> =
     AtomicPtr::new(std::ptr::null_mut());
 
+/// The SDK JAR is embedded in the binary at compile time.
+/// It's written to a temp file on first JVM startup.
+static SDK_JAR_BYTES: &[u8] = include_bytes!("../../../../java-sdk/build/conch-plugin-sdk.jar");
+
 /// Manages JVM plugin discovery, loading, and lifecycle.
 pub struct JavaPluginManager {
     bus: Arc<PluginBus>,
     plugins: HashMap<String, LoadedPlugin>,
     jvm: Option<JavaVM>,
-    sdk_jar_path: PathBuf,
+    /// Temp file holding the extracted SDK JAR. Kept alive for JVM lifetime.
+    _sdk_jar_tempfile: Option<tempfile::NamedTempFile>,
     _host_api_box: Box<conch_plugin_sdk::HostApi>,
 }
 
@@ -33,7 +38,7 @@ pub struct JavaPluginManager {
 unsafe impl Send for JavaPluginManager {}
 
 impl JavaPluginManager {
-    pub fn new(bus: Arc<PluginBus>, host_api: conch_plugin_sdk::HostApi, sdk_jar_path: PathBuf) -> Self {
+    pub fn new(bus: Arc<PluginBus>, host_api: conch_plugin_sdk::HostApi) -> Self {
         let mut boxed = Box::new(host_api);
         let ptr: *mut conch_plugin_sdk::HostApi = &mut *boxed;
         HOST_API_PTR.store(ptr, Ordering::Release);
@@ -42,27 +47,29 @@ impl JavaPluginManager {
             bus,
             plugins: HashMap::new(),
             jvm: None,
-            sdk_jar_path,
+            _sdk_jar_tempfile: None,
             _host_api_box: boxed,
         }
     }
 
-    /// Lazily create the JVM with the SDK JAR in the classpath.
+    /// Lazily create the JVM with the embedded SDK JAR on the classpath.
     fn ensure_jvm(&mut self) -> Result<&JavaVM, LoadError> {
         if self.jvm.is_some() {
             return Ok(self.jvm.as_ref().unwrap());
         }
 
-        if !self.sdk_jar_path.exists() {
-            log::error!("jvm: SDK JAR not found at: {}", self.sdk_jar_path.display());
-            return Err(LoadError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("conch-plugin-sdk.jar not found at {}", self.sdk_jar_path.display()),
-            )));
-        }
+        // Write the embedded SDK JAR to a temp file.
+        use std::io::Write;
+        let mut tmpfile = tempfile::Builder::new()
+            .prefix("conch-plugin-sdk-")
+            .suffix(".jar")
+            .tempfile()
+            .map_err(LoadError::Io)?;
+        tmpfile.write_all(SDK_JAR_BYTES).map_err(LoadError::Io)?;
+        tmpfile.flush().map_err(LoadError::Io)?;
 
-        let classpath = format!("-Djava.class.path={}", self.sdk_jar_path.display());
-        log::info!("jvm: starting JVM with classpath: {classpath}");
+        let classpath = format!("-Djava.class.path={}", tmpfile.path().display());
+        log::info!("jvm: starting JVM with embedded SDK JAR ({} bytes) at {}", SDK_JAR_BYTES.len(), tmpfile.path().display());
 
         let jvm_args = InitArgsBuilder::new()
             .version(jni::JNIVersion::V8)
@@ -92,6 +99,7 @@ impl JavaPluginManager {
         }
 
         log::info!("jvm: JVM started successfully");
+        self._sdk_jar_tempfile = Some(tmpfile);
         self.jvm = Some(jvm);
         Ok(self.jvm.as_ref().unwrap())
     }

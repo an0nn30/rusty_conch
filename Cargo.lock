@@ -1031,6 +1031,7 @@ dependencies = [
  "mlua",
  "parking_lot",
  "serde_json",
+ "tempfile",
  "tokio",
  "zip",
 ]

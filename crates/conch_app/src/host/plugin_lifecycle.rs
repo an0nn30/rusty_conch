@@ -343,6 +343,12 @@ impl ConchApp {
         }
     }
 
+    /// Minimum interval between render requests to the same plugin.
+    /// Caps plugin render polling to ~4fps when idle, which is plenty for
+    /// panel UIs. User interactions (widget events) trigger immediate
+    /// re-renders via the event path.
+    const RENDER_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
     /// Poll pending render requests and fire new ones for panel plugins.
     pub(crate) fn poll_plugin_renders(&mut self) {
         // Check pending render responses.
@@ -365,7 +371,9 @@ impl ConchApp {
             }
         }
 
-        // Fire new render requests for loaded panel plugins that don't have a pending request.
+        // Fire new render requests for loaded panel plugins, throttled to
+        // avoid driving the app at 60fps when plugins have nothing new.
+        let now = std::time::Instant::now();
         let panels: Vec<(String, String)> = {
             let reg = self.panel_registry.lock();
             reg.panels()
@@ -374,12 +382,19 @@ impl ConchApp {
         };
         for (plugin_name, _panel_name) in panels {
             if self.render_pending.contains_key(&plugin_name) {
-                continue; // Already waiting.
+                continue; // Already waiting for a response.
+            }
+            // Throttle: skip if we sent a request recently.
+            if let Some(last) = self.render_last_request.get(&plugin_name) {
+                if now.duration_since(*last) < Self::RENDER_POLL_INTERVAL {
+                    continue;
+                }
             }
             if let Some(sender) = self.plugin_bus.sender_for(&plugin_name) {
                 let (tx, rx) = oneshot::channel();
                 if sender.try_send(PluginMail::RenderRequest { reply: tx }).is_ok() {
-                    self.render_pending.insert(plugin_name, rx);
+                    self.render_pending.insert(plugin_name.clone(), rx);
+                    self.render_last_request.insert(plugin_name, now);
                 }
             }
         }

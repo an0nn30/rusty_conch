@@ -70,6 +70,8 @@ pub struct ConchApp {
     pub(crate) java_plugin_mgr: JavaPluginManager,
     /// Pending render responses from plugin threads (plugin_name → receiver).
     pub(crate) render_pending: HashMap<String, oneshot::Receiver<String>>,
+    /// Last time a render request was sent to each plugin (for throttling).
+    pub(crate) render_last_request: HashMap<String, Instant>,
     /// Cached widget JSON per plugin name (for rendering between polls).
     pub(crate) render_cache: HashMap<String, String>,
     /// Mutable text input state for plugin panels (keyed by widget id).
@@ -107,36 +109,6 @@ pub struct ConchApp {
     pub(crate) notifications: NotificationManager,
 }
 
-/// Locate the conch-plugin-sdk.jar for the JVM plugin system.
-fn find_sdk_jar() -> std::path::PathBuf {
-    use std::path::PathBuf;
-
-    let candidates = vec![
-        // Development: relative to CWD.
-        PathBuf::from("java-sdk/build/conch-plugin-sdk.jar"),
-        // Next to the executable.
-        std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.join("conch-plugin-sdk.jar"))).unwrap_or_default(),
-        // macOS app bundle: Conch.app/Contents/Resources/
-        std::env::current_exe().ok().and_then(|exe| exe.parent().and_then(|d| d.parent()).map(|d| d.join("Resources").join("conch-plugin-sdk.jar"))).unwrap_or_default(),
-        // User config directory (macOS: ~/Library/Application Support/conch/).
-        dirs::config_dir().map(|d| d.join("conch").join("conch-plugin-sdk.jar")).unwrap_or_default(),
-        // Linux/Windows: ~/.config/conch/
-        dirs::home_dir().map(|d| d.join(".config").join("conch").join("conch-plugin-sdk.jar")).unwrap_or_default(),
-    ];
-
-    for path in &candidates {
-        if path.as_os_str().is_empty() {
-            continue;
-        }
-        if path.exists() {
-            log::info!("Found Java SDK JAR: {}", path.display());
-            return path.clone();
-        }
-    }
-
-    log::warn!("Could not find conch-plugin-sdk.jar — Java plugins will not work. Searched: {:?}", candidates);
-    PathBuf::from("conch-plugin-sdk.jar")
-}
 
 impl ConchApp {
     pub fn new(rt: Arc<tokio::runtime::Runtime>) -> Self {
@@ -170,10 +142,7 @@ impl ConchApp {
         let host_api = bridge::build_host_api();
         let java_host_api = bridge::build_host_api();
         let native_plugin_mgr = NativePluginManager::new(Arc::clone(&plugin_bus), host_api);
-
-        // Locate the Java SDK JAR (next to exe, or in development).
-        let sdk_jar = find_sdk_jar();
-        let java_plugin_mgr = JavaPluginManager::new(Arc::clone(&plugin_bus), java_host_api, sdk_jar);
+        let java_plugin_mgr = JavaPluginManager::new(Arc::clone(&plugin_bus), java_host_api);
 
         let mut app = Self {
             state,
@@ -202,6 +171,7 @@ impl ConchApp {
             lua_plugins: HashMap::new(),
             java_plugin_mgr,
             render_pending: HashMap::new(),
+            render_last_request: HashMap::new(),
             render_cache: HashMap::new(),
             plugin_text_state: HashMap::new(),
             left_panel_visible: true,
@@ -284,12 +254,13 @@ impl ConchApp {
     }
 
     /// Poll terminal events for all main-window sessions.
-    fn poll_events(&mut self) {
+    fn poll_events(&mut self, ctx: &egui::Context) {
         let mut exited_sessions = Vec::new();
 
         for (id, session) in &mut self.state.sessions {
             while let Ok(event) = session.event_rx.try_recv() {
                 match event {
+                    alacritty_terminal::event::Event::Wakeup => ctx.request_repaint(),
                     alacritty_terminal::event::Event::Title(title) => {
                         if session.custom_title.is_none() {
                             session.title = title;
@@ -640,9 +611,6 @@ impl eframe::App for ConchApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Request continuous repainting for terminal output and cursor blink.
-        ctx.request_repaint();
-
         // Measure font cell size (and re-measure on DPI changes).
         let ppp = ctx.pixels_per_point();
         if !self.cell_size_measured || (ppp - self.last_pixels_per_point).abs() > 0.001 {
@@ -655,9 +623,15 @@ impl eframe::App for ConchApp {
         }
 
         // Cursor blink.
-        if self.last_blink.elapsed().as_millis() > CURSOR_BLINK_MS {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_blink).as_millis();
+        if elapsed >= CURSOR_BLINK_MS {
             self.cursor_visible = !self.cursor_visible;
-            self.last_blink = Instant::now();
+            self.last_blink = now;
+            ctx.request_repaint_after(std::time::Duration::from_millis(CURSOR_BLINK_MS as u64));
+        } else {
+            let remaining = CURSOR_BLINK_MS - elapsed;
+            ctx.request_repaint_after(std::time::Duration::from_millis(remaining as u64));
         }
 
         // Refresh plugin keybindings when menu items change.
@@ -670,7 +644,7 @@ impl eframe::App for ConchApp {
         }
 
         // Poll events.
-        self.poll_events();
+        self.poll_events(ctx);
         self.handle_file_changes(ctx);
         self.handle_ipc();
         self.poll_plugin_renders();
