@@ -382,39 +382,36 @@ impl SshPlugin {
         let api = self.api;
         let label = tunnel.label.clone();
 
-        // Spawn a named background thread so HostApi functions (show_form,
-        // show_confirm, etc.) resolve the correct plugin name and viewport.
+        // Spawn the tunnel's async task on the plugin's long-lived runtime
+        // so it survives after the prompt-servicing thread exits.  The
+        // background thread only exists to service HostApi blocking calls
+        // (host key confirm, password prompt) during connection setup.
+        let (prompt_tx, mut prompt_rx) =
+            tokio::sync::mpsc::channel::<tunnel::PromptRequest>(4);
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+        let mgr_inner = mgr.clone();
+        let server_inner = server.clone();
+        self.rt.spawn(async move {
+            let r = mgr_inner
+                .start_tunnel(
+                    tunnel.id,
+                    &server_inner,
+                    tunnel.local_port,
+                    tunnel.remote_host.clone(),
+                    tunnel.remote_port,
+                    prompt_tx,
+                )
+                .await;
+            let _ = result_tx.send(r);
+        });
+
         std::thread::Builder::new()
             .name("plugin:conch-ssh".into())
             .spawn(move || {
-                let rt = tokio::runtime::Runtime::new().expect("tunnel runtime");
-                let (prompt_tx, mut prompt_rx) =
-                    tokio::sync::mpsc::channel::<tunnel::PromptRequest>(4);
-                let (result_tx, result_rx) = std::sync::mpsc::channel();
-
-                let mgr_inner = mgr.clone();
-                let server_inner = server.clone();
-                rt.spawn(async move {
-                    let r = mgr_inner
-                        .start_tunnel(
-                            tunnel.id,
-                            &server_inner,
-                            tunnel.local_port,
-                            tunnel.remote_host.clone(),
-                            tunnel.remote_port,
-                            prompt_tx,
-                        )
-                        .await;
-                    let _ = result_tx.send(r);
-                });
-
                 // Service prompt requests from the SSH handler while
-                // waiting for the connection result. The handler holds a
-                // clone of prompt_tx that lives as long as the SSH
-                // connection, so we can't rely on channel closure. Instead,
-                // poll result_rx between prompt requests.
+                // waiting for the connection result.
                 let result = loop {
-                    // Check if connection finished.
                     match result_rx.try_recv() {
                         Ok(r) => break r,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -422,8 +419,6 @@ impl SshPlugin {
                         }
                         Err(std::sync::mpsc::TryRecvError::Empty) => {}
                     }
-                    // Wait briefly for a prompt request, then loop back to
-                    // check result_rx again.
                     match prompt_rx.try_recv() {
                         Ok(req) => handle_tunnel_prompt(api, req),
                         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
@@ -451,7 +446,6 @@ impl SshPlugin {
                     }
                     Err(e) => {
                         log::error!("tunnel activation failed: {e}");
-                        rt.block_on(mgr.set_error(&tunnel.id, e.clone()));
                         let title = CString::new("Tunnel Error").unwrap();
                         let msg = CString::new(e).unwrap();
                         (api.show_error)(title.as_ptr(), msg.as_ptr());
@@ -791,7 +785,6 @@ impl SshPlugin {
 
             let action = form_data["_action"].as_str().unwrap_or("");
             let selected_id = form_data["selected_tunnel"].as_str().unwrap_or("");
-
             match action {
                 "new_tunnel" => {
                     self.new_tunnel_dialog();
