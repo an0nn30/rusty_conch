@@ -318,10 +318,12 @@ pub(crate) fn render_window(
     // 3. Strip Tab key events unless a dialog is open for this viewport.
     //
     // For the root viewport, raw_input_hook already stripped Tab before
-    // egui processed it.  For immediate viewports, egui's begin_pass()
-    // has already consumed the Tab event and set focus_direction in Memory.
-    // We must ALSO clear any focus that Tab triggered, so the menu bar
-    // doesn't steal focus from the terminal.
+    // egui processed it.  For immediate viewports (extra windows),
+    // egui's begin_pass() has already consumed the Tab event and set
+    // focus_direction = Next/Previous in its internal FocusState.
+    // Since focus_direction is private and only reset when a widget
+    // actually accepts focus, we absorb the focus with a zero-size
+    // dummy widget, then immediately surrender it.
     if !shared.dialog_state.lock().is_active_for(win.viewport_id) {
         let mut tab_bytes: Option<Vec<u8>> = None;
         ctx.input_mut(|input| {
@@ -343,13 +345,27 @@ pub(crate) fn render_window(
             });
         });
         if let Some(bytes) = tab_bytes {
-            // Undo the focus navigation that egui's begin_pass() already
-            // applied from this Tab event.  Without this, the menu bar in
-            // extra windows (show_viewport_immediate) gains focus because
-            // raw_input_hook only fires for the root viewport.
-            if let Some(focused_id) = ctx.memory(|m| m.focused()) {
-                ctx.memory_mut(|m| m.surrender_focus(focused_id));
-            }
+            // Absorb the pending focus_direction with a dummy focusable
+            // widget so the menu bar doesn't get it.  egui's FocusState
+            // only resets focus_direction when a widget accepts focus via
+            // interested_in_focus().  We create an invisible Area with a
+            // focusable widget to consume it, then surrender immediately.
+            let sink_id = egui::Id::new("__tab_focus_sink").with(win.viewport_id);
+            egui::Area::new(sink_id)
+                .fixed_pos(egui::Pos2::new(-100.0, -100.0))
+                .order(egui::Order::Background)
+                .show(ctx, |ui| {
+                    let r = ui.allocate_rect(
+                        egui::Rect::from_min_size(egui::Pos2::new(-100.0, -100.0), egui::Vec2::ZERO),
+                        egui::Sense::focusable_noninteractive(),
+                    );
+                    // The allocate_rect with focusable sense calls interested_in_focus,
+                    // which consumes focus_direction.  Now surrender the focus.
+                    if r.gained_focus() {
+                        ui.memory_mut(|m| m.surrender_focus(r.id));
+                    }
+                });
+
             if let Some(session) = win.active_session() {
                 session.write(&bytes);
             }
