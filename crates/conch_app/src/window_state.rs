@@ -733,11 +733,14 @@ pub(crate) fn render_window(
     // 26. Keyboard handling.
     handle_keyboard(ctx, win, &shortcuts, &plugin_keybindings, shared);
 
-    // 27. Update window title.
+    // 27. Update window title — only send when changed to avoid triggering
+    // a repaint loop (send_viewport_cmd always calls request_repaint).
     if let Some(session) = win.active_session() {
-        let title = format!("{} — Conch", session.display_title());
-        win.title = session.display_title().to_string();
-        ctx.send_viewport_cmd(ViewportCommand::Title(title));
+        let new_title = session.display_title().to_string();
+        if new_title != win.title {
+            win.title = new_title;
+            ctx.send_viewport_cmd(ViewportCommand::Title(format!("{} — Conch", &win.title)));
+        }
     }
 
     // 28. Toast notifications.
@@ -750,8 +753,6 @@ pub(crate) fn render_window(
     }
 
     // 29. Schedule next repaint only when needed.
-    // When focused: schedule for next cursor blink toggle.
-    // When unfocused: don't schedule — rely on OS events + Wakeup to wake us.
     if needs_repaint {
         ctx.request_repaint();
     } else if win.has_focus {
