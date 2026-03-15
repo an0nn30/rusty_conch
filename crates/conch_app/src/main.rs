@@ -2,7 +2,6 @@
 
 mod app;
 mod context_menu;
-mod extra_window;
 mod host;
 mod icons;
 mod input;
@@ -12,7 +11,6 @@ mod mouse;
 mod notifications;
 mod platform;
 mod sessions;
-mod shortcuts;
 mod state;
 mod tab_bar;
 mod terminal;
@@ -329,17 +327,17 @@ fn main() -> eframe::Result<()> {
             .expect("Failed to create tokio runtime"),
     );
 
-    let platform = platform::PlatformCapabilities::current();
-    let decorations = platform.effective_decorations(user_config.window.decorations);
-
-    let base_viewport = egui::ViewportBuilder::default()
-        .with_inner_size(window_size)
-        .with_icon(Arc::new(load_app_icon()));
-
-    let viewport = build_viewport(base_viewport, decorations, &platform);
+    // The root viewport is the hidden coordinator — all visible windows are
+    // deferred viewports.  Keep it minimal to avoid a window flash on startup.
+    let icon = Arc::new(load_app_icon());
+    let root_viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1.0, 1.0])
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_icon(Arc::clone(&icon));
 
     let options = eframe::NativeOptions {
-        viewport,
+        viewport: root_viewport,
         ..Default::default()
     };
 
@@ -351,7 +349,7 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             setup_system_ui_font(&cc.egui_ctx);
             apply_appearance_mode(&cc.egui_ctx, appearance_mode);
-            Ok(Box::new(ConchApp::new(rt)))
+            Ok(Box::new(ConchApp::new(rt, window_size, icon)))
         }),
     )
 }

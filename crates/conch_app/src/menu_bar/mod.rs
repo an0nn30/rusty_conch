@@ -14,8 +14,6 @@ mod native_macos;
 
 pub(crate) mod egui_menu;
 
-use egui::ViewportCommand;
-
 use crate::platform::PlatformCapabilities;
 
 /// Actions that menu items can trigger.
@@ -142,70 +140,5 @@ pub fn show(
     }
 }
 
-/// Handle a menu action, mutating app state as needed.
-pub fn handle_action(
-    action: MenuAction,
-    ctx: &egui::Context,
-    app: &mut super::app::ConchApp,
-) {
-    match action {
-        MenuAction::NewTab => {
-            let user_config = app.shared.config.lock().user_config.clone();
-            app.main_window.open_local_tab(&user_config);
-        }
-        MenuAction::NewWindow => app.spawn_extra_window(),
-        MenuAction::CloseTab => {
-            if let Some(id) = app.main_window.active_tab {
-                app.main_window.remove_session(id);
-            }
-        }
-        MenuAction::Quit => {
-            app.quit_requested = true;
-        }
-        MenuAction::Copy => {
-            if let Some((start, end)) = app.main_window.selection.normalized() {
-                if let Some(session) = app.main_window.active_session() {
-                    let text = crate::terminal::widget::get_selected_text(session.term(), start, end);
-                    if !text.is_empty() {
-                        ctx.copy_text(text);
-                    }
-                }
-            }
-        }
-        MenuAction::Paste => {
-            ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
-        }
-        MenuAction::SelectAll => {
-            // TODO: implement select-all for terminal content
-        }
-        MenuAction::ZenMode => {
-            app.main_window.toggle_zen_mode();
-        }
-        MenuAction::ZoomIn => {
-            let current = ctx.pixels_per_point();
-            ctx.set_pixels_per_point(current + 0.5);
-        }
-        MenuAction::ZoomOut => {
-            let current = ctx.pixels_per_point();
-            ctx.set_pixels_per_point((current - 0.5).max(0.5));
-        }
-        MenuAction::ZoomReset => {
-            ctx.set_pixels_per_point(1.0);
-        }
-        MenuAction::PluginManager => {
-            app.main_window.show_plugin_manager = !app.main_window.show_plugin_manager;
-        }
-        MenuAction::PluginAction { plugin_name, action } => {
-            // Send MenuAction event directly to the target plugin.
-            let event = conch_plugin_sdk::PluginEvent::MenuAction { action: action.clone() };
-            if let Ok(json) = serde_json::to_string(&event) {
-                if let Some(sender) = app.shared.plugin_bus.sender_for(&plugin_name) {
-                    log::info!("Dispatching menu action '{action}' to plugin '{plugin_name}'");
-                    let _ = sender.try_send(conch_plugin::bus::PluginMail::WidgetEvent { json });
-                } else {
-                    log::warn!("No bus sender found for plugin '{plugin_name}' (menu action '{action}')");
-                }
-            }
-        }
-    }
-}
+// NOTE: handle_action has moved to window_state::handle_menu_action() so it
+// can operate on WindowState + SharedAppState without needing &mut ConchApp.

@@ -2,7 +2,11 @@
 //!
 //! `WindowState` — all state unique to a single OS window.
 //! `SharedAppState` — global state shared across all windows (Arc-wrapped).
+//! `SharedConfig` — read-mostly configuration, theme, shortcuts.
 //! `WindowAction` — cross-cutting actions sent from windows to the coordinator.
+//! `render_window()` — THE single rendering path for ALL windows.
+//! `handle_menu_action()` — free function replacing menu_bar::handle_action.
+//! `handle_keyboard()` — free function replacing shortcuts.rs.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,21 +19,23 @@ use parking_lot::Mutex;
 use uuid::Uuid;
 
 use crate::context_menu::ContextMenuState;
-use crate::host::bridge::PanelRegistry;
-use crate::host::bridge::SessionRegistry;
+use crate::host::bridge::{PanelRegistry, SessionRegistry};
 use crate::host::dialogs::DialogState;
 use crate::icons::IconCache;
-use crate::input::{ResolvedPluginKeybind, ResolvedShortcuts};
-use crate::menu_bar::MenuBarState;
+use crate::input::{self, ResolvedPluginKeybind, ResolvedShortcuts};
+use crate::menu_bar::{MenuAction, MenuBarState};
 use crate::mouse::Selection;
 use crate::notifications::NotificationManager;
 use crate::platform::PlatformCapabilities;
 use crate::sessions::create_local_session;
 use crate::state::Session;
-use crate::tab_bar::TabBarState;
+use crate::tab_bar::{self, TabBarState};
 use crate::terminal::color::ResolvedColors;
-use crate::terminal::widget::TerminalFrameCache;
+use crate::terminal::widget::{self, TerminalFrameCache};
 use crate::ui_theme::UiTheme;
+
+/// Cursor blink interval in milliseconds.
+const CURSOR_BLINK_MS: u128 = 500;
 
 // ── SharedConfig ──
 
@@ -43,6 +49,9 @@ pub(crate) struct SharedConfig {
     pub shortcuts: ResolvedShortcuts,
     pub plugin_keybindings: Vec<ResolvedPluginKeybind>,
     pub plugin_keybindings_version: u64,
+    /// Monotonically increasing version bumped whenever the theme changes.
+    /// Windows compare this to `last_theme_version` to know when to re-apply.
+    pub theme_version: u64,
 }
 
 // ── SharedAppState ──
@@ -138,13 +147,14 @@ pub(crate) struct WindowState {
     pub viewport_builder: Option<egui::ViewportBuilder>,
     pub title: String,
     pub should_close: bool,
-    pub style_applied: bool,
+    /// Theme version that was last applied to this window's egui context.
+    pub last_theme_version: u64,
     /// Whether this window had OS focus during the last frame.
     pub has_focus: bool,
     /// Pending actions to send to the coordinator.
     pub pending_actions: Vec<WindowAction>,
     /// Menu actions routed from the native menu bar.
-    pub pending_menu_actions: Vec<crate::menu_bar::MenuAction>,
+    pub pending_menu_actions: Vec<MenuAction>,
 }
 
 impl WindowState {
@@ -177,7 +187,7 @@ impl WindowState {
             viewport_builder: None,
             title: String::new(),
             should_close: false,
-            style_applied: false,
+            last_theme_version: 0,
             has_focus: false,
             pending_actions: Vec::new(),
             pending_menu_actions: Vec::new(),
@@ -270,6 +280,675 @@ impl WindowState {
             self.left_panel_visible = true;
             self.right_panel_visible = true;
             self.show_status_bar = true;
+        }
+    }
+}
+
+// ── render_window ──
+
+/// The single rendering path for ALL windows (main and extra).
+///
+/// This replaces both the main window rendering in `app.rs update()` AND
+/// `ExtraWindow::update_deferred()`.
+pub(crate) fn render_window(
+    ctx: &egui::Context,
+    win: &mut WindowState,
+    shared: &SharedAppState,
+) {
+    use egui::ViewportCommand;
+    use std::time::Duration;
+
+    // 1. Clear pending actions from previous frame.
+    win.pending_actions.clear();
+
+    // 2. Track OS focus.
+    win.has_focus = ctx.input(|i| i.focused);
+
+    // 3. Strip Tab key events unless a dialog is open for this viewport.
+    if !shared.dialog_state.lock().is_active_for(win.viewport_id) {
+        let mut tab_bytes: Option<Vec<u8>> = None;
+        ctx.input_mut(|input| {
+            input.events.retain(|e| match e {
+                egui::Event::Key {
+                    key: egui::Key::Tab,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    tab_bytes = Some(if modifiers.shift {
+                        b"\x1b[Z".to_vec()
+                    } else {
+                        b"\t".to_vec()
+                    });
+                    false
+                }
+                _ => true,
+            });
+        });
+        if let Some(bytes) = tab_bytes {
+            if let Some(session) = win.active_session() {
+                session.write(&bytes);
+            }
+        }
+    }
+
+    // 4. Lock config. Process pending menu actions.
+    let cfg = shared.config.lock();
+    {
+        let actions = std::mem::take(&mut win.pending_menu_actions);
+        for action in actions {
+            handle_menu_action(action, ctx, win, &cfg, shared);
+        }
+    }
+
+    // 5. Apply theme if version changed.
+    if win.last_theme_version != cfg.theme_version {
+        cfg.theme.apply(ctx);
+        crate::apply_appearance_mode(ctx, cfg.user_config.colors.appearance_mode);
+        crate::host::bridge::update_theme_json(&cfg.theme);
+        win.last_theme_version = cfg.theme_version;
+    }
+
+    // 6. Measure cell size (re-measure on DPI change).
+    let ppp = ctx.pixels_per_point();
+    if !win.cell_size_measured || (ppp - win.last_pixels_per_point).abs() > 0.001 {
+        let font_size = cfg.user_config.font.size;
+        let (cw, ch) = widget::measure_cell_size(ctx, font_size);
+        win.cell_width = cw;
+        win.cell_height = ch;
+        win.cell_size_measured = true;
+        win.last_pixels_per_point = ppp;
+    }
+
+    // 7. Cursor blink (500ms interval).
+    if win.last_blink.elapsed().as_millis() > CURSOR_BLINK_MS {
+        win.cursor_visible = !win.cursor_visible;
+        win.last_blink = Instant::now();
+    }
+
+    // 8. Poll session events (title changes, exit).
+    let mut exited_sessions = Vec::new();
+    for (id, session) in &mut win.sessions {
+        while let Ok(event) = session.event_rx.try_recv() {
+            match event {
+                alacritty_terminal::event::Event::Title(t) => {
+                    if session.custom_title.is_none() {
+                        session.title = t;
+                    }
+                }
+                alacritty_terminal::event::Event::Exit => {
+                    exited_sessions.push(*id);
+                }
+                _ => {}
+            }
+        }
+    }
+    for id in exited_sessions {
+        win.sessions.remove(&id);
+        win.tab_order.retain(|&tab_id| tab_id != id);
+        if win.active_tab == Some(id) {
+            win.active_tab = win.tab_order.last().copied();
+        }
+    }
+
+    // 9. Close window if no sessions remain.
+    if win.sessions.is_empty() {
+        win.should_close = true;
+        ctx.send_viewport_cmd(ViewportCommand::Close);
+        drop(cfg);
+        return;
+    }
+
+    // 10. Handle window close request (shut down all sessions).
+    if ctx.input(|i| i.viewport().close_requested()) {
+        for (_, session) in &win.sessions {
+            session.shutdown();
+        }
+        win.should_close = true;
+        drop(cfg);
+        return;
+    }
+
+    // 11. Copy/Paste handling.
+    let copy_requested = ctx.input(|i| {
+        i.events.iter().any(|e| matches!(e, egui::Event::Copy))
+    });
+    if copy_requested {
+        if let Some((start, end)) = win.selection.normalized() {
+            if let Some(session) = win.active_session() {
+                let text = widget::get_selected_text(session.term(), start, end);
+                if !text.is_empty() {
+                    ctx.copy_text(text);
+                }
+            }
+        }
+    }
+
+    let paste_text: Option<String> = ctx.input(|i| {
+        i.events.iter().find_map(|e| {
+            if let egui::Event::Paste(text) = e { Some(text.clone()) } else { None }
+        })
+    });
+    if let Some(text) = paste_text {
+        if let Some(session) = win.active_session() {
+            session.write(text.as_bytes());
+        }
+    }
+
+    // 12. Lazy-init icon cache on first frame.
+    {
+        let mut ic = shared.icon_cache.lock();
+        if ic.is_none() {
+            *ic = Some(IconCache::load(ctx));
+        }
+    }
+
+    // 13. Compute effective decorations from platform + config.
+    let effective_decorations = shared.platform.effective_decorations(
+        cfg.user_config.window.decorations,
+    );
+
+    let bg_color = cfg.theme.bg;
+    let theme_clone = cfg.theme.clone();
+    let colors_clone = cfg.colors.clone();
+    let font_size = cfg.user_config.font.size;
+    let scroll_sensitivity = cfg.user_config.terminal.scroll_sensitivity;
+    let shortcuts = cfg.shortcuts.clone();
+    let plugin_keybindings = cfg.plugin_keybindings.clone();
+    let layout = cfg.persistent.layout.clone();
+
+    // 14. Buttonless drag region.
+    if effective_decorations == config::WindowDecorations::Buttonless {
+        let drag_h = win.cell_height.max(6.0);
+        egui::TopBottomPanel::top("drag_region")
+            .exact_height(drag_h)
+            .frame(egui::Frame::NONE.fill(theme_clone.bg_with_alpha(180)))
+            .show(ctx, |ui| {
+                let rect = ui.available_rect_before_wrap();
+                let response = ui.interact(rect, ui.id().with("drag"), egui::Sense::drag());
+                if response.drag_started() {
+                    ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+                }
+            });
+    }
+
+    // 15. macOS fullsize_content_view titlebar spacer.
+    if effective_decorations == config::WindowDecorations::Full
+        && cfg!(target_os = "macos")
+    {
+        let title_bar_h = 34.0;
+        egui::TopBottomPanel::top("titlebar_spacer")
+            .exact_height(title_bar_h)
+            .frame(egui::Frame::NONE.fill(theme_clone.surface))
+            .show(ctx, |_ui| {});
+    }
+
+    // 16. In-window menu bar (egui_menu::show_with_id with viewport-unique ID).
+    let show_in_window_menu = shared.menu_bar_state.lock().is_in_window();
+    if show_in_window_menu {
+        let menu_id = egui::Id::new("menu_bar").with(win.viewport_id);
+        if let Some(action) = crate::menu_bar::egui_menu::show_with_id(ctx, menu_id) {
+            handle_menu_action(action, ctx, win, &cfg, shared);
+        }
+    }
+
+    // Native menu bar — only drain if this window has focus.
+    if win.has_focus && !show_in_window_menu {
+        if let Some(action) = crate::menu_bar::show(ctx, &mut *shared.menu_bar_state.lock()) {
+            handle_menu_action(action, ctx, win, &cfg, shared);
+        }
+    }
+
+    // 17. Plugin manager floating window.
+    if win.show_plugin_manager {
+        let pm_actions = crate::host::plugin_manager_ui::show_plugin_manager_window(
+            ctx,
+            &mut win.show_plugin_manager,
+            &mut *shared.plugin_manager.lock(),
+            &cfg.theme,
+        );
+        for pm_action in pm_actions {
+            win.pending_actions.push(WindowAction::PluginAction(pm_action));
+        }
+    }
+
+    // 18. Drop config lock before dialog/notification locks.
+    drop(cfg);
+
+    // 19. Plugin dialogs.
+    shared.dialog_state.lock().show(ctx, win.viewport_id);
+
+    // 20. Status bar.
+    if win.show_status_bar {
+        crate::host::plugin_panels::render_status_bar(ctx, &theme_clone);
+    }
+
+    // 21. Plugin panels.
+    let panel_sizes = {
+        let render_cache = shared.render_cache.lock();
+        let icon_cache = shared.icon_cache.lock();
+        let left_w = if layout.left_panel_width > 0.0 { layout.left_panel_width } else { 240.0 };
+        let right_w = if layout.right_panel_width > 0.0 { layout.right_panel_width } else { 240.0 };
+        let bottom_h = if layout.bottom_panel_height > 0.0 { layout.bottom_panel_height } else { 180.0 };
+        crate::host::plugin_panels::render_plugin_panels_for_ctx(
+            ctx,
+            &shared.panel_registry,
+            &shared.plugin_bus,
+            &render_cache,
+            &mut win.plugin_text_state,
+            &mut win.active_panel_tab,
+            win.left_panel_visible,
+            win.right_panel_visible,
+            win.bottom_panel_visible,
+            &theme_clone,
+            icon_cache.as_ref(),
+            left_w,
+            right_w,
+            bottom_h,
+            win.viewport_id,
+        )
+    };
+
+    // If window has focus, save panel sizes via WindowAction.
+    if win.has_focus {
+        win.pending_actions.push(WindowAction::SavePanelSizes {
+            left: panel_sizes.left_width,
+            right: panel_sizes.right_width,
+            bottom: panel_sizes.bottom_height,
+        });
+    }
+
+    // 22. Tab bar.
+    {
+        let tabs: Vec<(Uuid, String)> = win.tab_order.iter().map(|&id| {
+            let title = win.sessions.get(&id)
+                .map(|s| s.display_title().to_string())
+                .unwrap_or_default();
+            (id, title)
+        }).collect();
+        for action in tab_bar::show_for(ctx, &tabs, win.active_tab, &theme_clone, &mut win.tab_bar_state) {
+            match action {
+                tab_bar::TabBarAction::SwitchTo(id) => {
+                    win.active_tab = Some(id);
+                }
+                tab_bar::TabBarAction::Close(id) => {
+                    win.remove_session(id);
+                }
+            }
+        }
+    }
+
+    // 23. Central panel: terminal rendering + mouse handling.
+    let mut pending_resize: Option<(u16, u16)> = None;
+    let mut close_tab_requested = false;
+    let mut context_action: Option<MenuAction> = None;
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(bg_color))
+        .show(ctx, |ui| {
+            if let Some(session) = win.active_tab.and_then(|id| win.sessions.get_mut(&id)) {
+                match session.status {
+                    conch_plugin_sdk::SessionStatus::Connecting => {
+                        let icon_cache = shared.icon_cache.lock();
+                        let action = crate::app::show_connecting_screen(
+                            ui,
+                            &session.title,
+                            session.status_detail.as_deref(),
+                            session.connect_started,
+                            session.prompt.as_mut(),
+                            icon_cache.as_ref(),
+                        );
+                        drop(icon_cache);
+                        match action {
+                            crate::app::ConnectingAction::Accept => {
+                                if let Some(prompt) = session.prompt.take() {
+                                    if let Some(reply) = prompt.reply {
+                                        let _ = reply.send(Some("true".to_string()));
+                                    }
+                                }
+                            }
+                            crate::app::ConnectingAction::Reject => {
+                                if let Some(prompt) = session.prompt.take() {
+                                    if let Some(reply) = prompt.reply {
+                                        let _ = reply.send(None);
+                                    }
+                                }
+                            }
+                            crate::app::ConnectingAction::SubmitPassword(pw) => {
+                                if let Some(prompt) = session.prompt.take() {
+                                    if let Some(reply) = prompt.reply {
+                                        let _ = reply.send(Some(pw));
+                                    }
+                                }
+                            }
+                            crate::app::ConnectingAction::None => {}
+                        }
+                    }
+                    conch_plugin_sdk::SessionStatus::Error => {
+                        let detail = session.status_detail.clone().unwrap_or_default();
+                        if crate::app::show_error_screen(ui, &session.title, &detail) {
+                            close_tab_requested = true;
+                        }
+                    }
+                    conch_plugin_sdk::SessionStatus::Connected => {
+                        let sel = win.selection.normalized();
+                        let term = session.term();
+                        let (response, size_info) = widget::show_terminal(
+                            ui,
+                            term,
+                            win.cell_width,
+                            win.cell_height,
+                            &colors_clone,
+                            font_size,
+                            win.cursor_visible,
+                            sel,
+                            &mut win.frame_cache,
+                        );
+
+                        pending_resize = Some((size_info.columns() as u16, size_info.rows() as u16));
+
+                        let mouse_mode = term
+                            .try_lock_unfair()
+                            .map(|t| t.mode().intersects(alacritty_terminal::term::TermMode::MOUSE_MODE))
+                            .unwrap_or(false);
+
+                        crate::mouse::handle_terminal_mouse(
+                            ctx,
+                            &response,
+                            &size_info,
+                            &mut win.selection,
+                            term,
+                            &|bytes| session.write(bytes),
+                            win.cell_height,
+                            scroll_sensitivity,
+                        );
+
+                        let has_selection = win.selection.normalized().is_some();
+                        context_action = crate::context_menu::show(
+                            &response,
+                            &mut win.context_menu_state,
+                            mouse_mode,
+                            has_selection,
+                        );
+                    }
+                }
+            }
+        });
+
+    // 24. Context menu action handling.
+    if let Some(action) = context_action {
+        let cfg = shared.config.lock();
+        handle_menu_action(action, ctx, win, &cfg, shared);
+    }
+
+    if close_tab_requested {
+        if let Some(id) = win.active_tab {
+            win.remove_session(id);
+        }
+    }
+
+    // 25. Resize sessions.
+    if let Some((cols, rows)) = pending_resize {
+        win.resize_sessions(cols, rows);
+    }
+
+    // 26. Keyboard handling.
+    handle_keyboard(ctx, win, &shortcuts, &plugin_keybindings, shared);
+
+    // 27. Update window title.
+    if let Some(session) = win.active_session() {
+        let title = format!("{} — Conch", session.display_title());
+        win.title = session.display_title().to_string();
+        ctx.send_viewport_cmd(ViewportCommand::Title(title));
+    }
+
+    // 28. Toast notifications.
+    shared.notifications.lock().show(ctx);
+
+    // 29. Request repaint after 500ms for cursor blink.
+    ctx.request_repaint_after(Duration::from_millis(500));
+}
+
+// ── handle_menu_action ──
+
+/// Handle a menu bar action, mutating per-window state as needed.
+///
+/// Free function replacing `menu_bar::handle_action` and
+/// `ExtraWindow::handle_menu_action_deferred`.
+pub(crate) fn handle_menu_action(
+    action: MenuAction,
+    ctx: &egui::Context,
+    win: &mut WindowState,
+    cfg: &SharedConfig,
+    shared: &SharedAppState,
+) {
+    use egui::ViewportCommand;
+
+    match action {
+        MenuAction::NewTab => {
+            win.open_local_tab(&cfg.user_config);
+        }
+        MenuAction::NewWindow => {
+            win.pending_actions.push(WindowAction::SpawnNewWindow);
+        }
+        MenuAction::CloseTab => {
+            if let Some(id) = win.active_tab {
+                win.remove_session(id);
+            }
+        }
+        MenuAction::Quit => {
+            win.pending_actions.push(WindowAction::Quit);
+        }
+        MenuAction::Copy => {
+            if let Some((start, end)) = win.selection.normalized() {
+                if let Some(session) = win.active_session() {
+                    let text = widget::get_selected_text(session.term(), start, end);
+                    if !text.is_empty() {
+                        ctx.copy_text(text);
+                    }
+                }
+            }
+        }
+        MenuAction::Paste => {
+            ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+        }
+        MenuAction::ZenMode => {
+            win.toggle_zen_mode();
+        }
+        MenuAction::ZoomIn => {
+            let current = ctx.pixels_per_point();
+            ctx.set_pixels_per_point(current + 0.5);
+        }
+        MenuAction::ZoomOut => {
+            let current = ctx.pixels_per_point();
+            ctx.set_pixels_per_point((current - 0.5).max(0.5));
+        }
+        MenuAction::ZoomReset => {
+            ctx.set_pixels_per_point(1.0);
+        }
+        MenuAction::PluginManager => {
+            win.show_plugin_manager = !win.show_plugin_manager;
+        }
+        MenuAction::PluginAction { plugin_name, action } => {
+            crate::host::bridge::set_event_viewport(&plugin_name, win.viewport_id);
+            let event = conch_plugin_sdk::PluginEvent::MenuAction { action: action.clone() };
+            if let Ok(json) = serde_json::to_string(&event) {
+                if let Some(sender) = shared.plugin_bus.sender_for(&plugin_name) {
+                    log::info!("Dispatching menu action '{action}' to plugin '{plugin_name}'");
+                    let _ = sender.try_send(conch_plugin::bus::PluginMail::WidgetEvent { json });
+                } else {
+                    log::warn!("No bus sender found for plugin '{plugin_name}' (menu action '{action}')");
+                }
+            }
+        }
+        MenuAction::SelectAll => {
+            // TODO: implement select-all for terminal content
+        }
+    }
+}
+
+// ── handle_keyboard ──
+
+/// Process keyboard events: app shortcuts, plugin keybindings, and PTY forwarding.
+///
+/// Free function replacing `ConchApp::handle_keyboard` and
+/// `ExtraWindow::handle_keyboard_deferred`.
+pub(crate) fn handle_keyboard(
+    ctx: &egui::Context,
+    win: &mut WindowState,
+    shortcuts: &ResolvedShortcuts,
+    plugin_keybindings: &[ResolvedPluginKeybind],
+    shared: &SharedAppState,
+) {
+    use alacritty_terminal::term::TermMode;
+
+    let app_cursor = win.active_session().map_or(false, |s| {
+        s.term()
+            .try_lock_unfair()
+            .map_or(false, |term| term.mode().contains(TermMode::APP_CURSOR))
+    });
+
+    let events: Vec<egui::Event> = ctx.input(|i| i.events.clone());
+
+    for event in &events {
+        match event {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
+                // Cmd+1-9 -> switch tab.
+                if modifiers.command && !modifiers.alt && !modifiers.shift {
+                    let tab_num = match key {
+                        egui::Key::Num1 => Some(0usize),
+                        egui::Key::Num2 => Some(1),
+                        egui::Key::Num3 => Some(2),
+                        egui::Key::Num4 => Some(3),
+                        egui::Key::Num5 => Some(4),
+                        egui::Key::Num6 => Some(5),
+                        egui::Key::Num7 => Some(6),
+                        egui::Key::Num8 => Some(7),
+                        egui::Key::Num9 => Some(8),
+                        _ => None,
+                    };
+                    if let Some(idx) = tab_num {
+                        if let Some(&id) = win.tab_order.get(idx) {
+                            win.active_tab = Some(id);
+                            continue;
+                        }
+                    }
+                }
+
+                // App-level configurable shortcuts.
+                if let Some(ref kb) = shortcuts.new_window {
+                    if kb.matches(key, modifiers) {
+                        win.pending_actions.push(WindowAction::SpawnNewWindow);
+                        continue;
+                    }
+                }
+                if let Some(ref kb) = shortcuts.new_tab {
+                    if kb.matches(key, modifiers) {
+                        let user_config = shared.config.lock().user_config.clone();
+                        win.open_local_tab(&user_config);
+                        continue;
+                    }
+                }
+                if let Some(ref kb) = shortcuts.close_tab {
+                    if kb.matches(key, modifiers) {
+                        if let Some(id) = win.active_tab {
+                            win.remove_session(id);
+                        }
+                        continue;
+                    }
+                }
+                if let Some(ref kb) = shortcuts.quit {
+                    if kb.matches(key, modifiers) {
+                        win.pending_actions.push(WindowAction::Quit);
+                        continue;
+                    }
+                }
+                if let Some(ref kb) = shortcuts.toggle_left_panel {
+                    if kb.matches(key, modifiers) {
+                        win.left_panel_visible = !win.left_panel_visible;
+                        continue;
+                    }
+                }
+                if let Some(ref kb) = shortcuts.toggle_right_panel {
+                    if kb.matches(key, modifiers) {
+                        win.right_panel_visible = !win.right_panel_visible;
+                        continue;
+                    }
+                }
+                if let Some(ref kb) = shortcuts.toggle_bottom_panel {
+                    if kb.matches(key, modifiers) {
+                        win.bottom_panel_visible = !win.bottom_panel_visible;
+                        continue;
+                    }
+                }
+                if let Some(ref kb) = shortcuts.zen_mode {
+                    if kb.matches(key, modifiers) {
+                        win.toggle_zen_mode();
+                        continue;
+                    }
+                }
+
+                // Plugin-registered global keybindings.
+                let mut plugin_handled = false;
+                for pkb in plugin_keybindings {
+                    if pkb.binding.matches(key, modifiers) {
+                        crate::host::bridge::set_event_viewport(
+                            &pkb.plugin_name,
+                            win.viewport_id,
+                        );
+                        let event = conch_plugin_sdk::PluginEvent::MenuAction {
+                            action: pkb.action.clone(),
+                        };
+                        if let Ok(json) = serde_json::to_string(&event) {
+                            if let Some(sender) = shared.plugin_bus.sender_for(&pkb.plugin_name) {
+                                let _ = sender.try_send(conch_plugin::bus::PluginMail::WidgetEvent { json });
+                            }
+                        }
+                        plugin_handled = true;
+                        break;
+                    }
+                }
+                if plugin_handled {
+                    continue;
+                }
+
+                // Ctrl+Shift+C for copy on non-macOS.
+                #[cfg(not(target_os = "macos"))]
+                if modifiers.ctrl && modifiers.shift && *key == egui::Key::C {
+                    if let Some((start, end)) = win.selection.normalized() {
+                        if let Some(session) = win.active_session() {
+                            let text = widget::get_selected_text(session.term(), start, end);
+                            if !text.is_empty() {
+                                ctx.copy_text(text);
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Forward to active terminal via key_to_bytes.
+                if let Some(bytes) = input::key_to_bytes(key, modifiers, None, shortcuts, app_cursor, plugin_keybindings) {
+                    if let Some(session) = win.active_session() {
+                        if let Some(mut term) = session.term().try_lock_unfair() {
+                            term.scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+                        }
+                        session.write(&bytes);
+                    }
+                }
+            }
+            egui::Event::Text(text) => {
+                if let Some(session) = win.active_session() {
+                    if let Some(mut term) = session.term().try_lock_unfair() {
+                        term.scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+                    }
+                    session.write(text.as_bytes());
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -384,9 +1063,62 @@ mod tests {
             shortcuts,
             plugin_keybindings: Vec::new(),
             plugin_keybindings_version: 0,
+            theme_version: 0,
         };
 
         assert!(cfg.theme_dirty);
         assert!(cfg.plugin_keybindings.is_empty());
+        assert_eq!(cfg.theme_version, 0);
+    }
+
+    #[test]
+    fn theme_version_tracking() {
+        let mut ws = make_test_state();
+        assert_eq!(ws.last_theme_version, 0, "new window starts at version 0");
+
+        // Simulate the window "applying" theme version 1.
+        ws.last_theme_version = 1;
+        assert_eq!(ws.last_theme_version, 1);
+
+        // A SharedConfig with version 2 would cause re-apply.
+        let needs_apply = ws.last_theme_version != 2;
+        assert!(needs_apply, "should need re-apply when versions differ");
+
+        // After applying, versions match.
+        ws.last_theme_version = 2;
+        let needs_apply = ws.last_theme_version != 2;
+        assert!(!needs_apply, "should not need re-apply when versions match");
+    }
+
+    #[test]
+    fn theme_version_in_shared_config() {
+        let user_config = config::UserConfig::default();
+        let persistent = config::PersistentState::default();
+        let scheme = conch_core::color_scheme::resolve_theme(&user_config.colors.theme);
+        let colors = ResolvedColors::from_scheme(&scheme);
+        let theme = UiTheme::from_colors(&colors, user_config.colors.appearance_mode);
+        let shortcuts = ResolvedShortcuts::from_config(&user_config.conch.keyboard);
+
+        let mut cfg = SharedConfig {
+            user_config,
+            persistent,
+            colors,
+            theme,
+            theme_dirty: false,
+            shortcuts,
+            plugin_keybindings: Vec::new(),
+            plugin_keybindings_version: 0,
+            theme_version: 1,
+        };
+
+        assert_eq!(cfg.theme_version, 1);
+
+        // Simulate a theme reload bumping the version.
+        cfg.theme_version += 1;
+        assert_eq!(cfg.theme_version, 2);
+
+        // A window at version 1 would detect the mismatch.
+        let ws = make_test_state();
+        assert_ne!(ws.last_theme_version, cfg.theme_version);
     }
 }
