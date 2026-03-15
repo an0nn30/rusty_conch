@@ -78,51 +78,61 @@ impl ConchApp {
                 continue;
             }
 
+            let plugins_cfg = self.shared.config.lock().user_config.conch.plugins.clone();
+
             // Discover native plugins (.dylib/.so/.dll).
-            if let Ok(paths) = conch_plugin::native::library::discover_library_paths(dir) {
-                for path in paths {
-                    match unsafe { conch_plugin::native::PluginLibrary::load(&path) } {
-                        Ok(lib) => {
-                            let meta = unsafe { lib.read_info() };
-                            entries.push(PluginEntry {
-                                name: meta.name,
-                                description: meta.description,
-                                version: meta.version,
-                                plugin_type: meta.plugin_type,
-                                panel_location: meta.panel_location,
-                                source: PluginSource::Native,
-                                path,
-                            });
+            if plugins_cfg.native {
+                if let Ok(paths) = conch_plugin::native::library::discover_library_paths(dir) {
+                    for path in paths {
+                        match unsafe { conch_plugin::native::PluginLibrary::load(&path) } {
+                            Ok(lib) => {
+                                let meta = unsafe { lib.read_info() };
+                                entries.push(PluginEntry {
+                                    name: meta.name,
+                                    description: meta.description,
+                                    version: meta.version,
+                                    plugin_type: meta.plugin_type,
+                                    panel_location: meta.panel_location,
+                                    source: PluginSource::Native,
+                                    path,
+                                });
+                            }
+                            Err(_) => {}
                         }
-                        Err(_) => {} // Not a valid Conch plugin.
                     }
                 }
             }
 
             // Discover Java plugins (.jar).
-            for (path, meta) in self.java_plugin_mgr.discover(dir) {
-                entries.push(PluginEntry {
-                    name: meta.name,
-                    description: meta.description,
-                    version: meta.version,
-                    plugin_type: meta.plugin_type,
-                    panel_location: meta.panel_location,
-                    source: PluginSource::Java,
-                    path,
-                });
+            if plugins_cfg.java {
+                if let Some(mgr) = &mut self.java_plugin_mgr {
+                    for (path, meta) in mgr.discover(dir) {
+                        entries.push(PluginEntry {
+                            name: meta.name,
+                            description: meta.description,
+                            version: meta.version,
+                            plugin_type: meta.plugin_type,
+                            panel_location: meta.panel_location,
+                            source: PluginSource::Java,
+                            path,
+                        });
+                    }
+                }
             }
 
             // Discover Lua plugins (.lua).
-            for plugin in conch_plugin::lua::runner::discover(dir) {
-                entries.push(PluginEntry {
-                    name: plugin.meta.name,
-                    description: plugin.meta.description,
-                    version: plugin.meta.version,
-                    plugin_type: plugin.meta.plugin_type,
-                    panel_location: plugin.meta.panel_location,
-                    source: PluginSource::Lua,
-                    path: plugin.path,
-                });
+            if plugins_cfg.lua {
+                for plugin in conch_plugin::lua::runner::discover(dir) {
+                    entries.push(PluginEntry {
+                        name: plugin.meta.name,
+                        description: plugin.meta.description,
+                        version: plugin.meta.version,
+                        plugin_type: plugin.meta.plugin_type,
+                        panel_location: plugin.meta.panel_location,
+                        source: PluginSource::Lua,
+                        path: plugin.path,
+                    });
+                }
             }
         }
 
@@ -147,24 +157,24 @@ impl ConchApp {
             if let Some((source, path)) = entry_info {
                 match source {
                     PluginSource::Native => {
-                        match self.native_plugin_mgr.load_plugin(&path) {
-                            Ok(meta) => {
-                                log::info!("Auto-loaded native plugin '{}' v{}", meta.name, meta.version);
-                                self.shared.plugin_manager.lock().set_loaded(name, true);
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to auto-load plugin '{name}': {e}");
+                        if let Some(mgr) = &mut self.native_plugin_mgr {
+                            match mgr.load_plugin(&path) {
+                                Ok(meta) => {
+                                    log::info!("Auto-loaded native plugin '{}' v{}", meta.name, meta.version);
+                                    self.shared.plugin_manager.lock().set_loaded(name, true);
+                                }
+                                Err(e) => log::warn!("Failed to auto-load plugin '{name}': {e}"),
                             }
                         }
                     }
                     PluginSource::Java => {
-                        match self.java_plugin_mgr.load_plugin(&path) {
-                            Ok(meta) => {
-                                log::info!("Auto-loaded Java plugin '{}' v{}", meta.name, meta.version);
-                                self.shared.plugin_manager.lock().set_loaded(name, true);
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to auto-load Java plugin '{name}': {e}");
+                        if let Some(mgr) = &mut self.java_plugin_mgr {
+                            match mgr.load_plugin(&path) {
+                                Ok(meta) => {
+                                    log::info!("Auto-loaded Java plugin '{}' v{}", meta.name, meta.version);
+                                    self.shared.plugin_manager.lock().set_loaded(name, true);
+                                }
+                                Err(e) => log::warn!("Failed to auto-load Java plugin '{name}': {e}"),
                             }
                         }
                     }
@@ -174,9 +184,7 @@ impl ConchApp {
                                 log::info!("Auto-loaded Lua plugin '{name}'");
                                 self.shared.plugin_manager.lock().set_loaded(name, true);
                             }
-                            Err(e) => {
-                                log::warn!("Failed to auto-load Lua plugin '{name}': {e}");
-                            }
+                            Err(e) => log::warn!("Failed to auto-load Lua plugin '{name}': {e}"),
                         }
                     }
                 }
@@ -188,19 +196,12 @@ impl ConchApp {
 
     /// Persist the current set of loaded plugin names to state.toml.
     pub(crate) fn save_loaded_plugins(&mut self) {
-        let mut loaded: Vec<String> = self
-            .native_plugin_mgr
-            .loaded_plugins()
-            .iter()
-            .map(|m| m.name.clone())
-            .collect();
-        // Include Java plugins.
-        loaded.extend(
-            self.java_plugin_mgr
-                .loaded_plugins()
-                .iter()
-                .map(|m| m.name.clone()),
-        );
+        let mut loaded: Vec<String> = self.native_plugin_mgr.as_ref()
+            .map(|m| m.loaded_plugins().iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default();
+        if let Some(mgr) = &self.java_plugin_mgr {
+            loaded.extend(mgr.loaded_plugins().iter().map(|p| p.name.clone()));
+        }
         // Include Lua plugins.
         for name in self.lua_plugins.keys() {
             loaded.push(name.clone());
@@ -226,27 +227,31 @@ impl ConchApp {
                 if let Some((source, path)) = entry_info {
                     match source {
                         PluginSource::Native => {
-                            match self.native_plugin_mgr.load_plugin(&path) {
-                                Ok(meta) => {
-                                    log::info!("Loaded plugin '{}' v{}", meta.name, meta.version);
-                                    self.shared.plugin_manager.lock().set_loaded(&name, true);
-                                    self.save_loaded_plugins();
+                            if let Some(mgr) = &mut self.native_plugin_mgr {
+                                match mgr.load_plugin(&path) {
+                                    Ok(meta) => {
+                                        log::info!("Loaded plugin '{}' v{}", meta.name, meta.version);
+                                        self.shared.plugin_manager.lock().set_loaded(&name, true);
+                                        self.save_loaded_plugins();
+                                    }
+                                    Err(e) => log::error!("Failed to load plugin '{name}': {e}"),
                                 }
-                                Err(e) => {
-                                    log::error!("Failed to load plugin '{name}': {e}");
-                                }
+                            } else {
+                                log::warn!("Cannot load native plugin '{name}': native plugins disabled");
                             }
                         }
                         PluginSource::Java => {
-                            match self.java_plugin_mgr.load_plugin(&path) {
-                                Ok(meta) => {
-                                    log::info!("Loaded Java plugin '{}' v{}", meta.name, meta.version);
-                                    self.shared.plugin_manager.lock().set_loaded(&name, true);
-                                    self.save_loaded_plugins();
+                            if let Some(mgr) = &mut self.java_plugin_mgr {
+                                match mgr.load_plugin(&path) {
+                                    Ok(meta) => {
+                                        log::info!("Loaded Java plugin '{}' v{}", meta.name, meta.version);
+                                        self.shared.plugin_manager.lock().set_loaded(&name, true);
+                                        self.save_loaded_plugins();
+                                    }
+                                    Err(e) => log::error!("Failed to load Java plugin '{name}': {e}"),
                                 }
-                                Err(e) => {
-                                    log::error!("Failed to load Java plugin '{name}': {e}");
-                                }
+                            } else {
+                                log::warn!("Cannot load Java plugin '{name}': Java plugins disabled");
                             }
                         }
                         PluginSource::Lua => {
@@ -271,11 +276,14 @@ impl ConchApp {
                     self.shared.plugin_manager.lock().set_loaded(&name, false);
                     self.save_loaded_plugins();
                 } else {
-                    let result = if self.java_plugin_mgr.is_loaded(&name) {
-                        self.java_plugin_mgr.unload_plugin(&name)
-                    } else {
-                        self.native_plugin_mgr.unload_plugin(&name)
-                    };
+                    let result: Result<(), String> =
+                        if self.java_plugin_mgr.as_ref().map_or(false, |m| m.is_loaded(&name)) {
+                            self.java_plugin_mgr.as_mut().unwrap().unload_plugin(&name).map_err(|e| e.to_string())
+                        } else if let Some(mgr) = &mut self.native_plugin_mgr {
+                            mgr.unload_plugin(&name).map_err(|e| e.to_string())
+                        } else {
+                            Err(format!("No plugin manager available for '{name}'"))
+                        };
                     match result {
                         Ok(()) => {
                             log::info!("Unloaded plugin '{name}'");
@@ -285,9 +293,7 @@ impl ConchApp {
                             self.shared.plugin_manager.lock().set_loaded(&name, false);
                             self.save_loaded_plugins();
                         }
-                        Err(e) => {
-                            log::error!("Failed to unload plugin '{name}': {e}");
-                        }
+                        Err(e) => log::error!("Failed to unload plugin '{name}': {e}"),
                     }
                 }
             }
@@ -312,7 +318,10 @@ impl ConchApp {
         // Register on the bus and get the mailbox.
         let mailbox_rx = self.shared.plugin_bus.register_plugin(name);
         let mailbox_tx = self.shared.plugin_bus.sender_for(name).unwrap();
-        let host_api = self.native_plugin_mgr.host_api_ptr();
+        let host_api: *const conch_plugin_sdk::HostApi = self.lua_host_api.as_ref()
+            .map(|b| &**b as *const _)
+            .or_else(|| self.native_plugin_mgr.as_ref().map(|m| m.host_api_ptr()))
+            .ok_or_else(|| "No HostApi available for Lua plugins".to_string())?;
 
         let running = conch_plugin::lua::runner::spawn_lua_plugin(
             &discovered,

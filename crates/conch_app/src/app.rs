@@ -35,10 +35,12 @@ pub struct ConchApp {
     pub(crate) windows: Vec<Arc<Mutex<WindowState>>>,
     pub(crate) next_viewport_num: u32,
 
-    // Plugin managers.
-    pub(crate) native_plugin_mgr: NativePluginManager,
+    // Plugin managers (Option — None when that type is disabled by config).
+    pub(crate) native_plugin_mgr: Option<NativePluginManager>,
     pub(crate) lua_plugins: HashMap<String, RunningLuaPlugin>,
-    pub(crate) java_plugin_mgr: JavaPluginManager,
+    /// Boxed HostApi for Lua plugins (kept alive so the pointer stays valid).
+    pub(crate) lua_host_api: Option<Box<conch_plugin_sdk::HostApi>>,
+    pub(crate) java_plugin_mgr: Option<JavaPluginManager>,
     pub(crate) render_pending: HashMap<String, oneshot::Receiver<String>>,
     pub(crate) render_last_request: HashMap<String, Instant>,
 
@@ -79,6 +81,12 @@ impl ConchApp {
         let ipc_listener = IpcListener::start();
         let file_watcher = FileWatcher::start();
 
+        // Plugin infrastructure.
+        // The bus, registry, and bridge are always created (lightweight),
+        // but per-type managers are only created when enabled in config.
+        let plugins_cfg = &user_config.conch.plugins;
+        let plugins_enabled = plugins_cfg.any_enabled();
+
         let plugin_bus = Arc::new(PluginBus::new());
         let panel_registry = Arc::new(Mutex::new(PanelRegistry::new()));
         let (dialog_tx, dialog_state) = dialogs::dialog_channel();
@@ -91,10 +99,33 @@ impl ConchApp {
             dialog_tx,
             Arc::clone(&session_registry),
         );
-        let host_api = bridge::build_host_api();
-        let java_host_api = bridge::build_host_api();
-        let native_plugin_mgr = NativePluginManager::new(Arc::clone(&plugin_bus), host_api);
-        let java_plugin_mgr = JavaPluginManager::new(Arc::clone(&plugin_bus), java_host_api);
+
+        // Only build HostApi vtables and managers for enabled plugin types.
+        // This avoids allocating resources (and starting a JVM) for types
+        // the user has explicitly disabled.
+        let native_plugin_mgr = if plugins_enabled && plugins_cfg.native {
+            let host_api = bridge::build_host_api();
+            Some(NativePluginManager::new(Arc::clone(&plugin_bus), host_api))
+        } else {
+            if !plugins_cfg.native { log::info!("Native plugins disabled by config"); }
+            None
+        };
+        let java_plugin_mgr = if plugins_enabled && plugins_cfg.java {
+            let host_api = bridge::build_host_api();
+            Some(JavaPluginManager::new(Arc::clone(&plugin_bus), host_api))
+        } else {
+            if !plugins_cfg.java { log::info!("Java plugins disabled by config"); }
+            None
+        };
+        let lua_host_api = if plugins_enabled && plugins_cfg.lua {
+            Some(Box::new(bridge::build_host_api()))
+        } else {
+            if plugins_enabled && !plugins_cfg.lua { log::info!("Lua plugins disabled by config"); }
+            None
+        };
+        if !plugins_cfg.enabled {
+            log::info!("Plugin system disabled by config");
+        }
 
         let shared_config = SharedConfig {
             user_config,
@@ -128,6 +159,7 @@ impl ConchApp {
             next_viewport_num: 1,
             native_plugin_mgr,
             lua_plugins: HashMap::new(),
+            lua_host_api,
             java_plugin_mgr,
             render_pending: HashMap::new(),
             render_last_request: HashMap::new(),
@@ -140,8 +172,10 @@ impl ConchApp {
             initial_window_size,
         };
 
-        app.discover_plugins();
-        app.auto_load_plugins();
+        if plugins_enabled {
+            app.discover_plugins();
+            app.auto_load_plugins();
+        }
         app
     }
 
@@ -525,8 +559,8 @@ impl eframe::App for ConchApp {
                 self.shared.plugin_bus.unregister_plugin(&name);
             }
         }
-        self.native_plugin_mgr.shutdown_all();
-        self.java_plugin_mgr.shutdown_all();
+        if let Some(mgr) = &mut self.native_plugin_mgr { mgr.shutdown_all(); }
+        if let Some(mgr) = &mut self.java_plugin_mgr { mgr.shutdown_all(); }
         let cfg = self.shared.config.lock();
         let _ = config::save_persistent_state(&cfg.persistent);
     }
