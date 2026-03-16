@@ -709,6 +709,151 @@ end
 
 ---
 
+## Form Dialogs
+
+All plugin tiers (Java, Lua, Native) share the same form JSON format. A form descriptor has a `title` and an array of `fields`. The dialog blocks until the user submits or cancels.
+
+### Form Field Types
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `text` | `id`, `label`, `value?`, `hint?` | Single-line text input |
+| `password` | `id`, `label`, `value?` | Masked password input |
+| `number` | `id`, `label`, `value?` | Numeric input |
+| `combo` | `id`, `label`, `options[]`, `value?` | Dropdown select |
+| `checkbox` | `id`, `label`, `value?` | Boolean toggle |
+| `host_port` | `host_id`, `port_id`, `label`, `host_value?`, `port_value?` | Host + port on one row |
+| `file_picker` | `id`, `label`, `value?`, `start_dir?` | Text input with Browse button |
+| `collapsible` | `label`, `expanded?`, `fields[]` | Collapsible section with nested fields |
+| `separator` | — | Horizontal rule |
+| `label` | `text` | Read-only text |
+
+### Example: Encrypt/Decrypt Form
+
+This JSON works identically across Java, Lua, and Native plugins:
+
+```json
+{
+    "title": "Encrypt / Decrypt",
+    "fields": [
+        {
+            "type": "combo",
+            "id": "mode",
+            "label": "Operation",
+            "options": ["Encrypt", "Decrypt"],
+            "value": "Encrypt"
+        },
+        {
+            "type": "password",
+            "id": "key",
+            "label": "Secret Key"
+        },
+        {
+            "type": "text",
+            "id": "input_text",
+            "label": "Input Text",
+            "hint": "Text to encrypt or decrypt..."
+        }
+    ]
+}
+```
+
+> **Tip:** Use `"type": "password"` for any field that should be masked (keys, tokens, secrets).
+
+**Java usage:**
+
+```java
+String formJson = """
+    {
+        "title": "Encrypt / Decrypt",
+        "fields": [
+            {"type": "combo", "id": "mode", "label": "Operation",
+             "options": ["Encrypt", "Decrypt"], "value": "Encrypt"},
+            {"type": "password", "id": "key", "label": "Secret Key"},
+            {"type": "text", "id": "input_text", "label": "Input Text",
+             "hint": "Text to encrypt or decrypt..."}
+        ]
+    }
+    """;
+
+String result = HostApi.showForm(formJson);
+if (result != null) {
+    // result = {"mode":"Encrypt", "key":"my-secret", "input_text":"hello world"}
+    JsonObject obj = JsonParser.parseString(result).getAsJsonObject();
+    String mode = obj.get("mode").getAsString();
+    String key = obj.get("key").getAsString();
+    String text = obj.get("input_text").getAsString();
+}
+```
+
+**Lua usage:**
+
+```lua
+local result = ui.form("Encrypt / Decrypt", {
+    { type = "combo", id = "mode", label = "Operation",
+      options = {"Encrypt", "Decrypt"}, value = "Encrypt" },
+    { type = "password", id = "key", label = "Secret Key" },
+    { type = "text", id = "input_text", label = "Input Text",
+      hint = "Text to encrypt or decrypt..." },
+})
+
+if result then
+    local mode = result.mode       -- "Encrypt" or "Decrypt"
+    local key = result.key         -- the secret key (was masked)
+    local text = result.input_text -- the input text
+end
+```
+
+**Native (Rust) usage:**
+
+```rust
+let form_json = serde_json::json!({
+    "title": "Encrypt / Decrypt",
+    "fields": [
+        {"type": "combo", "id": "mode", "label": "Operation",
+         "options": ["Encrypt", "Decrypt"], "value": "Encrypt"},
+        {"type": "password", "id": "key", "label": "Secret Key"},
+        {"type": "text", "id": "input_text", "label": "Input Text",
+         "hint": "Text to encrypt or decrypt..."}
+    ]
+});
+let json_str = form_json.to_string();
+let c_json = CString::new(json_str.clone()).unwrap();
+let result_ptr = (api.show_form)(c_json.as_ptr(), json_str.len());
+// Parse result JSON or handle null (cancelled).
+```
+
+### Example: Connection Settings with Collapsible Advanced Options
+
+```json
+{
+    "title": "Connection Settings",
+    "fields": [
+        {"type": "text", "id": "host", "label": "Hostname", "hint": "server.example.com"},
+        {"type": "number", "id": "port", "label": "Port", "value": 22},
+        {"type": "text", "id": "username", "label": "Username"},
+        {"type": "combo", "id": "auth", "label": "Authentication",
+         "options": ["Password", "SSH Key", "Agent"], "value": "Password"},
+        {"type": "password", "id": "password", "label": "Password"},
+        {"type": "separator"},
+        {
+            "type": "collapsible",
+            "label": "Advanced Options",
+            "expanded": false,
+            "fields": [
+                {"type": "file_picker", "id": "key_file", "label": "SSH Key File",
+                 "start_dir": "~/.ssh"},
+                {"type": "checkbox", "id": "compression", "label": "Enable compression",
+                 "value": false},
+                {"type": "number", "id": "timeout", "label": "Timeout (seconds)", "value": 30}
+            ]
+        }
+    ]
+}
+```
+
+---
+
 ## Inter-Plugin Communication
 
 ### Pub/Sub Events
