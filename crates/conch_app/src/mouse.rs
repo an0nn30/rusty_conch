@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
-use conch_session::EventProxy;
+use conch_pty::EventProxy;
 use std::sync::Arc;
 
 use crate::terminal::size_info::SizeInfo;
@@ -138,9 +138,10 @@ pub fn handle_terminal_mouse(
     // and then moves the pointer over the terminal while momentum is still active.
     let scroll_delta = ctx.input(|i| i.smooth_scroll_delta);
     let raw_scroll = ctx.input(|i| i.raw_scroll_delta);
-    let pointer_over_terminal = ctx
-        .input(|i| i.pointer.hover_pos())
-        .is_some_and(|pos| response.rect.contains(pos));
+    // Use response.contains_pointer() instead of raw hover_pos — this respects
+    // egui's layer ordering, so dialogs/popups on top of the terminal will
+    // prevent scroll events from bleeding through to the terminal.
+    let pointer_over_terminal = response.contains_pointer();
 
     // raw_scroll_delta is non-zero only on actual physical scroll input (wheel
     // ticks, trackpad touch), not during momentum. Use it to decide whether
@@ -312,5 +313,184 @@ pub fn handle_terminal_mouse(
         if response.clicked() && selection.click_count <= 1 {
             selection.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- encode_mouse --
+
+    #[test]
+    fn encode_mouse_sgr_press_left() {
+        // Left button press at (5, 10) in SGR mode.
+        let bytes = encode_mouse(0, 5, 10, true, true);
+        assert_eq!(bytes, b"\x1b[<0;6;11M"); // col+1, row+1
+    }
+
+    #[test]
+    fn encode_mouse_sgr_release_left() {
+        let bytes = encode_mouse(0, 5, 10, true, false);
+        assert_eq!(bytes, b"\x1b[<0;6;11m"); // lowercase 'm' for release
+    }
+
+    #[test]
+    fn encode_mouse_sgr_right_button() {
+        let bytes = encode_mouse(2, 0, 0, true, true);
+        assert_eq!(bytes, b"\x1b[<2;1;1M");
+    }
+
+    #[test]
+    fn encode_mouse_sgr_scroll_up() {
+        let bytes = encode_mouse(64, 3, 7, true, true);
+        assert_eq!(bytes, b"\x1b[<64;4;8M");
+    }
+
+    #[test]
+    fn encode_mouse_sgr_motion_with_left() {
+        let bytes = encode_mouse(32, 10, 20, true, true);
+        assert_eq!(bytes, b"\x1b[<32;11;21M");
+    }
+
+    #[test]
+    fn encode_mouse_legacy_press_left() {
+        let bytes = encode_mouse(0, 5, 10, false, true);
+        // Legacy: \x1b[M (button+32) (col+33) (row+33)
+        assert_eq!(bytes, vec![0x1b, b'[', b'M', 32, 38, 43]);
+    }
+
+    #[test]
+    fn encode_mouse_legacy_release() {
+        let bytes = encode_mouse(0, 5, 10, false, false);
+        // Release in legacy = button 3 + 32 = 35.
+        assert_eq!(bytes, vec![0x1b, b'[', b'M', 35, 38, 43]);
+    }
+
+    #[test]
+    fn encode_mouse_legacy_clamps_large_coords() {
+        // Large coordinates should be clamped to 255.
+        let bytes = encode_mouse(0, 250, 250, false, true);
+        assert_eq!(bytes[4], 255); // 250 + 33 > 255, clamped.
+        assert_eq!(bytes[5], 255);
+    }
+
+    #[test]
+    fn encode_mouse_legacy_origin() {
+        let bytes = encode_mouse(0, 0, 0, false, true);
+        assert_eq!(bytes, vec![0x1b, b'[', b'M', 32, 33, 33]);
+    }
+
+    // -- Selection::normalized --
+
+    #[test]
+    fn selection_normalized_none_when_empty() {
+        let sel = Selection::default();
+        assert!(sel.normalized().is_none());
+    }
+
+    #[test]
+    fn selection_normalized_none_for_single_click() {
+        let mut sel = Selection::default();
+        sel.start = Some((5, 3));
+        sel.end = Some((5, 3));
+        sel.click_count = 1;
+        assert!(sel.normalized().is_none());
+    }
+
+    #[test]
+    fn selection_normalized_some_for_double_click_same_cell() {
+        let mut sel = Selection::default();
+        sel.start = Some((5, 3));
+        sel.end = Some((5, 3));
+        sel.click_count = 2; // Double-click selects a word.
+        assert!(sel.normalized().is_some());
+    }
+
+    #[test]
+    fn selection_normalized_orders_start_before_end() {
+        let mut sel = Selection::default();
+        sel.start = Some((10, 5)); // col=10, row=5
+        sel.end = Some((3, 2));    // col=3, row=2 — earlier in row-major
+        sel.click_count = 1;
+        let (s, e) = sel.normalized().unwrap();
+        // Row 2 comes before row 5.
+        assert_eq!(s, (3, 2));
+        assert_eq!(e, (10, 5));
+    }
+
+    #[test]
+    fn selection_normalized_same_row_orders_by_col() {
+        let mut sel = Selection::default();
+        sel.start = Some((10, 3));
+        sel.end = Some((2, 3)); // Same row, earlier column.
+        sel.click_count = 1;
+        let (s, e) = sel.normalized().unwrap();
+        assert_eq!(s, (2, 3));
+        assert_eq!(e, (10, 3));
+    }
+
+    #[test]
+    fn selection_normalized_already_ordered() {
+        let mut sel = Selection::default();
+        sel.start = Some((2, 1));
+        sel.end = Some((10, 5));
+        sel.click_count = 1;
+        let (s, e) = sel.normalized().unwrap();
+        assert_eq!(s, (2, 1));
+        assert_eq!(e, (10, 5));
+    }
+
+    // -- Selection::clear --
+
+    #[test]
+    fn selection_clear_resets_state() {
+        let mut sel = Selection::default();
+        sel.start = Some((1, 2));
+        sel.end = Some((3, 4));
+        sel.active = true;
+        sel.click_count = 2;
+        sel.clear();
+        assert!(sel.start.is_none());
+        assert!(sel.end.is_none());
+        assert!(!sel.active);
+        assert_eq!(sel.click_count, 0);
+    }
+
+    // -- Selection::register_click --
+
+    #[test]
+    fn register_click_first_click_returns_1() {
+        let mut sel = Selection::default();
+        assert_eq!(sel.register_click((5, 3)), 1);
+    }
+
+    #[test]
+    fn register_click_fast_same_cell_increments() {
+        let mut sel = Selection::default();
+        sel.register_click((5, 3));
+        // Second immediate click on same cell.
+        assert_eq!(sel.register_click((5, 3)), 2);
+        // Third.
+        assert_eq!(sel.register_click((5, 3)), 3);
+    }
+
+    #[test]
+    fn register_click_wraps_after_triple() {
+        let mut sel = Selection::default();
+        sel.register_click((5, 3));
+        sel.register_click((5, 3));
+        sel.register_click((5, 3)); // 3
+        // Fourth click wraps back to 1.
+        assert_eq!(sel.register_click((5, 3)), 1);
+    }
+
+    #[test]
+    fn register_click_different_cell_resets() {
+        let mut sel = Selection::default();
+        sel.register_click((5, 3));
+        sel.register_click((5, 3)); // 2
+        // Different cell resets to 1.
+        assert_eq!(sel.register_click((10, 7)), 1);
     }
 }

@@ -1,6 +1,0 @@
-//! Floating dialog windows (SSH connection, plugin forms, etc.).
-
-pub mod new_connection;
-pub mod notification_history;
-pub mod plugin_dialog;
-pub mod tunnels;

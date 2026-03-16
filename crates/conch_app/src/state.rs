@@ -1,69 +1,53 @@
 //! Application state: sessions, tabs, and UI state.
 
-use std::collections::HashMap;
+use std::ffi::c_void;
+use std::sync::Arc;
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
-use conch_core::color_scheme;
-use conch_core::config::{PersistentState, SessionsConfig, UserConfig};
-use conch_core::models::ServerEntry;
-use conch_session::{EventProxy, LocalSession, SshSession};
-use std::sync::Arc;
+use conch_plugin_sdk::{SessionBackendVtable, SessionStatus};
+use conch_pty::EventProxy;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::terminal::color::ResolvedColors;
-use crate::ui::dialogs::new_connection::NewConnectionForm;
-use crate::ui::file_browser::FileBrowserState;
-use crate::ui::sidebar::SidebarTab;
+use crate::host::session_bridge::PluginSessionBridge;
 
-/// Backend type for a session -- either local PTY or SSH.
+/// An inline prompt displayed in the session's connecting screen.
+pub struct SessionPrompt {
+    /// 0 = confirm (Accept/Reject), 1 = password input.
+    pub prompt_type: u8,
+    /// Main message text.
+    pub message: String,
+    /// Secondary detail text (e.g., fingerprint).
+    pub detail: String,
+    /// Password input buffer (for prompt_type == 1).
+    pub password_buf: String,
+    /// Whether to auto-focus the password field on next frame.
+    pub focus_password: bool,
+    /// Whether to reveal the password text.
+    pub show_password: bool,
+    /// Channel to send the user's response back to the plugin thread.
+    pub reply: Option<tokio::sync::oneshot::Sender<Option<String>>>,
+}
+
+/// The underlying backend for a terminal session.
 pub enum SessionBackend {
-    Local(LocalSession),
-    Ssh(SshSession),
+    /// A local PTY process (shell).
+    Local(conch_pty::LocalSession),
+    /// A plugin-provided session (e.g. SSH).
+    Plugin {
+        bridge: PluginSessionBridge,
+        vtable: SessionBackendVtable,
+        backend_handle: *mut c_void,
+    },
 }
 
-impl SessionBackend {
-    pub fn write(&self, data: &[u8]) {
-        match self {
-            Self::Local(s) => s.write(data),
-            Self::Ssh(s) => s.write(data),
-        }
-    }
+// SAFETY: The backend_handle raw pointer is only used through the vtable
+// callbacks which are thread-safe by contract with the plugin.
+unsafe impl Send for SessionBackend {}
 
-    pub fn resize(&self, cols: u16, rows: u16, cell_width: u16, cell_height: u16) {
-        match self {
-            Self::Local(s) => s.resize(cols, rows, cell_width, cell_height),
-            Self::Ssh(s) => s.resize(cols, rows, cell_width, cell_height),
-        }
-    }
-
-    pub fn shutdown(&self) {
-        match self {
-            Self::Local(s) => s.shutdown(),
-            Self::Ssh(s) => s.shutdown(),
-        }
-    }
-
-    pub fn term(&self) -> &Arc<FairMutex<Term<EventProxy>>> {
-        match self {
-            Self::Local(s) => &s.term,
-            Self::Ssh(s) => &s.term,
-        }
-    }
-
-    /// Get the child process PID (only meaningful for local sessions).
-    pub fn child_pid(&self) -> Option<u32> {
-        match self {
-            Self::Local(s) => Some(s.child_pid()),
-            Self::Ssh(_) => None,
-        }
-    }
-
-}
-
-/// A single terminal session (local or SSH).
+/// A single terminal session.
 pub struct Session {
     pub id: Uuid,
     pub title: String,
@@ -71,64 +55,82 @@ pub struct Session {
     pub custom_title: Option<String>,
     pub backend: SessionBackend,
     pub event_rx: mpsc::UnboundedReceiver<TermEvent>,
+    /// Connection status for plugin sessions. Local sessions are always Connected.
+    pub status: SessionStatus,
+    /// Detail/error message for Connecting/Error states.
+    pub status_detail: Option<String>,
+    /// When the session started connecting (for progress animation).
+    pub connect_started: Option<std::time::Instant>,
+    /// Inline prompt (fingerprint accept, password) shown in the connecting screen.
+    pub prompt: Option<SessionPrompt>,
 }
 
-/// The full application state.
-pub struct AppState {
-    pub user_config: UserConfig,
-    pub persistent: PersistentState,
-    pub sessions_config: SessionsConfig,
-    pub colors: ResolvedColors,
-    pub sessions: HashMap<Uuid, Session>,
-    pub active_tab: Option<Uuid>,
-    pub tab_order: Vec<Uuid>,
-    pub ssh_config_hosts: Vec<ServerEntry>,
-    pub sidebar_tab: SidebarTab,
-    pub new_connection_form: Option<NewConnectionForm>,
-    /// When editing an existing server, stores its address for in-place update.
-    pub editing_server_addr: Option<crate::ui::session_panel::ServerAddress>,
-    pub file_browser: FileBrowserState,
-    pub show_left_sidebar: bool,
-    pub show_right_sidebar: bool,
-}
-
-impl AppState {
-    pub fn new(user_config: UserConfig, persistent: PersistentState, sessions_config: SessionsConfig) -> Self {
-        let show_left_sidebar = !persistent.layout.left_panel_collapsed;
-        let show_right_sidebar = !persistent.layout.right_panel_collapsed;
-
-        let scheme = color_scheme::resolve_theme(&user_config.colors.theme);
-        let colors = ResolvedColors::from_scheme(&scheme);
-
-        let file_browser = {
-            let mut fb = FileBrowserState::default();
-            let cols = &persistent.layout.file_browser_columns;
-            fb.columns.ext = cols.ext;
-            fb.columns.size = cols.size;
-            fb.columns.modified = cols.modified;
-            fb
-        };
-
-        Self {
-            user_config,
-            persistent,
-            sessions_config,
-            colors,
-            sessions: HashMap::new(),
-            active_tab: None,
-            tab_order: Vec::new(),
-            ssh_config_hosts: Vec::new(),
-            sidebar_tab: SidebarTab::default(),
-            new_connection_form: None,
-            editing_server_addr: None,
-            file_browser,
-            show_left_sidebar,
-            show_right_sidebar,
+impl Session {
+    /// Get the terminal state.
+    pub fn term(&self) -> &Arc<FairMutex<Term<EventProxy>>> {
+        match &self.backend {
+            SessionBackend::Local(local) => &local.term,
+            SessionBackend::Plugin { bridge, .. } => &bridge.term,
         }
     }
 
-    /// Get the currently active session, if any.
-    pub fn active_session(&self) -> Option<&Session> {
-        self.active_tab.and_then(|id| self.sessions.get(&id))
+    /// Send raw bytes to the session.
+    pub fn write(&self, data: &[u8]) {
+        match &self.backend {
+            SessionBackend::Local(local) => local.write(data),
+            SessionBackend::Plugin { vtable, backend_handle, .. } => {
+                (vtable.write)(*backend_handle, data.as_ptr(), data.len());
+            }
+        }
+    }
+
+    /// Resize the session.
+    pub fn resize(&self, cols: u16, rows: u16, cell_width: u16, cell_height: u16) {
+        match &self.backend {
+            SessionBackend::Local(local) => local.resize(cols, rows, cell_width, cell_height),
+            SessionBackend::Plugin { bridge, vtable, backend_handle } => {
+                // Resize the terminal emulator grid so rendered output matches.
+                if let Some(mut term) = bridge.term.try_lock_unfair() {
+                    term.resize(crate::host::session_bridge::TermSize::new(cols, rows));
+                }
+                // Resize the remote PTY (e.g. SSH channel window-change).
+                (vtable.resize)(*backend_handle, cols, rows);
+            }
+        }
+    }
+
+    /// Shut down the session backend.
+    pub fn shutdown(&self) {
+        match &self.backend {
+            SessionBackend::Local(local) => local.shutdown(),
+            SessionBackend::Plugin { vtable, backend_handle, .. } => {
+                (vtable.shutdown)(*backend_handle);
+            }
+        }
+    }
+
+    /// Get the child PID if this is a local session.
+    pub fn child_pid(&self) -> Option<u32> {
+        match &self.backend {
+            SessionBackend::Local(local) => Some(local.child_pid()),
+            SessionBackend::Plugin { .. } => None,
+        }
+    }
+
+    /// Display title (custom overrides auto-detected).
+    pub fn display_title(&self) -> String {
+        let base = self.custom_title.as_deref().unwrap_or(&self.title);
+        match self.status {
+            SessionStatus::Connecting => format!("{base}\u{2026}"),
+            SessionStatus::Error => format!("{base} (failed)"),
+            SessionStatus::Connected => base.to_string(),
+        }
     }
 }
+
+// NOTE: No Drop impl — the plugin owns the backend state (via its own
+// HashMap<SessionHandle, Box<SshBackendState>>). The host only borrows
+// the backend_handle pointer. Calling vtable.drop here would double-free.
+
+// NOTE: AppState has been replaced by WindowState (per-window state) and
+// SharedConfig (global config/theme). See window_state.rs.

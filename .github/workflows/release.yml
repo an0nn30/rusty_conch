@@ -63,14 +63,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Build Java SDK JAR (embedded in binary)
+        run: make -C java-sdk build
+
       - name: Test
         run: cargo test --release --target=x86_64-apple-darwin
 
       - name: Build ARM64
-        run: cargo build --release --target=aarch64-apple-darwin -p conch_app
+        run: cargo build --release --target=aarch64-apple-darwin
 
       - name: Build x86_64
-        run: cargo build --release --target=x86_64-apple-darwin -p conch_app
+        run: cargo build --release --target=x86_64-apple-darwin
 
       - name: Extract version
         id: version
@@ -78,16 +81,24 @@ jobs:
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Create universal .app bundle & DMG
+      - name: Create universal .app bundle
         run: |
           APP="Conch.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Plugins"
 
           # Create universal binary
           lipo -create \
             target/aarch64-apple-darwin/release/conch \
             target/x86_64-apple-darwin/release/conch \
             -output "$APP/Contents/MacOS/conch"
+
+          # Create universal plugin libraries
+          for plugin in libconch_ssh.dylib libconch_files.dylib; do
+            lipo -create \
+              "target/aarch64-apple-darwin/release/$plugin" \
+              "target/x86_64-apple-darwin/release/$plugin" \
+              -output "$APP/Contents/Plugins/$plugin"
+          done
 
           cp packaging/macos/Info.plist "$APP/Contents/"
           cp crates/conch_app/icons/conch.icns "$APP/Contents/Resources/"
@@ -96,9 +107,29 @@ jobs:
           codesign --remove-signature "$APP" 2>/dev/null || true
           codesign --force --deep --sign - "$APP"
 
-          hdiutil create -volname "Conch" -srcfolder "$APP" \
-            -fs HFS+ -ov -format UDZO \
-            "Conch-v${{ steps.version.outputs.version }}.dmg"
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG
+        run: |
+          # create-dmg copies contents of source_folder into the DMG,
+          # so stage the .app inside a temporary directory.
+          mkdir -p dmg-staging
+          mv Conch.app dmg-staging/
+          create-dmg \
+            --volname "Conch" \
+            --volicon "crates/conch_app/icons/conch.icns" \
+            --background "packaging/macos/dmg-background.png" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 80 \
+            --icon "Conch.app" 150 200 \
+            --hide-extension "Conch.app" \
+            --app-drop-link 450 200 \
+            --no-internet-enable \
+            "Conch-v${{ steps.version.outputs.version }}.dmg" \
+            "dmg-staging/" || true
+          rm -rf dmg-staging
 
       - name: Upload DMG
         run: |
@@ -124,11 +155,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - name: Build Java SDK JAR (embedded in binary)
+        run: |
+          mkdir -p java-sdk/build/classes
+          javac -d java-sdk/build/classes java-sdk/src/conch/plugin/*.java
+          jar cf java-sdk/build/conch-plugin-sdk.jar -C java-sdk/build/classes .
+
       - name: Test
         run: cargo test --release
 
       - name: Build
-        run: cargo build --release -p conch_app
+        run: cargo build --release
 
       - name: Extract version
         id: version
@@ -138,9 +175,14 @@ jobs:
 
       - name: Upload portable executable
         run: |
-          cp ./target/release/conch.exe ./Conch-v${{ steps.version.outputs.version }}-portable.exe
+          mkdir -p portable
+          cp ./target/release/conch.exe portable/
+          cp ./target/release/conch_ssh.dll portable/ 2>/dev/null || true
+          cp ./target/release/conch_files.dll portable/ 2>/dev/null || true
+          # Zip the portable directory (exe + plugin DLLs)
+          cd portable && 7z a -tzip "../Conch-v${{ steps.version.outputs.version }}-portable.zip" . && cd ..
           ./.github/workflows/upload_asset.sh \
-            ./Conch-v${{ steps.version.outputs.version }}-portable.exe $GITHUB_TOKEN
+            ./Conch-v${{ steps.version.outputs.version }}-portable.zip $GITHUB_TOKEN
 
       - name: Install WiX
         run: dotnet tool install --global wix --version 4.0.5
@@ -180,11 +222,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - name: Build Java SDK JAR (embedded in binary)
+        run: make -C java-sdk build
+
       - name: Test
         run: cargo test --release
 
       - name: Build
-        run: cargo build --release -p conch_app
+        run: cargo build --release
 
       - name: Extract version
         id: version
@@ -221,7 +266,7 @@ jobs:
         run: cargo clean
 
       - name: Build ARM64 with cross
-        run: cross build --release -p conch_app --target aarch64-unknown-linux-gnu
+        run: cross build --release --target aarch64-unknown-linux-gnu
 
       - name: Build ARM64 .deb
         run: |
@@ -244,7 +289,7 @@ jobs:
             ./conch-v${{ steps.version.outputs.version }}-1.aarch64.rpm $GITHUB_TOKEN
 
   # ---------------------------------------------------------------------------
-  # Extras — VS Code extension, example config & plugins
+  # Extras — VS Code extension, Java SDK, example config & plugins
   # ---------------------------------------------------------------------------
   extras:
     needs: changelog
@@ -260,11 +305,34 @@ jobs:
         with:
           node-version: 20
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
       - name: Extract version
         id: version
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build Java Plugin SDK
+        run: make -C java-sdk build
+
+      - name: Upload Java Plugin SDK
+        run: |
+          cp java-sdk/build/conch-plugin-sdk.jar \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}.jar
+          cp java-sdk/build/conch-plugin-sdk-sources.jar \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}-sources.jar
+          cp java-sdk/build/conch-plugin-sdk-javadoc.jar \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}-javadoc.jar
+          ./.github/workflows/upload_asset.sh \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}.jar $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}-sources.jar $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh \
+            ./conch-plugin-sdk-v${{ steps.version.outputs.version }}-javadoc.jar $GITHUB_TOKEN
 
       - name: Build VS Code extension
         working-directory: editors/vscode

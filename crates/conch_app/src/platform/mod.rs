@@ -1,4 +1,4 @@
-//! Platform-specific environment initialisation.
+//! Platform-specific environment initialisation and capability detection.
 //!
 //! When launched from a desktop environment (macOS Finder, Linux desktop entry,
 //! Windows Start Menu) the process inherits a minimal environment that may lack
@@ -7,6 +7,9 @@
 //! Each platform module detects and repairs these gaps so the rest of the app
 //! can assume a sane environment.
 
+mod capabilities;
+pub use capabilities::PlatformCapabilities;
+
 #[cfg(target_os = "macos")]
 mod macos;
 
@@ -14,7 +17,7 @@ mod macos;
 mod linux;
 
 #[cfg(target_os = "windows")]
-mod windows;
+pub(crate) mod windows;
 
 /// Perform platform-specific environment setup.
 ///

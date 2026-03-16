@@ -3,7 +3,7 @@ name = "conch_app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Cross-platform terminal emulator with SSH session management"
+description = "Cross-platform terminal emulator"
 
 [[bin]]
 name = "conch"
@@ -11,19 +11,17 @@ path = "src/main.rs"
 
 [dependencies]
 conch_core = { workspace = true }
-conch_session = { workspace = true }
+conch_pty = { workspace = true }
+conch_plugin_sdk = { workspace = true }
 conch_plugin = { workspace = true }
 tokio = { workspace = true }
-thiserror = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
 dirs = { workspace = true }
-rfd = { workspace = true }
 
-chrono = "0.4"
 serde = { workspace = true }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
@@ -31,51 +29,55 @@ clap = { version = "4", features = ["derive"] }
 # UI
 eframe = "0.31"
 egui = "0.31"
-egui_extras = "0.31"
 
 # Image decoding (icons)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "ico", "webp"] }
 
-# System font discovery
-font-kit = "0.14"
-
-# Shell program lookup
-which = "7"
+# Clipboard access (for plugin bridge)
+arboard = "3"
 
 # File watching for live-reload
 notify = "7"
 
+# System font loading
+font-kit = "0.14"
+
 # Terminal emulation (for types)
 alacritty_terminal = "0.25"
-
-[target.'cfg(target_os = "windows")'.build-dependencies]
-winres = "0.1"
+rfd = "0.17.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winres = "0.1"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSMenu", "NSMenuItem", "NSApplication", "NSRunningApplication", "NSWindow", "NSResponder"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSLocale"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSWindow", "NSResponder"] }
 
 [package.metadata.deb]
 maintainer = "an0nn30"
 section = "utils"
 depends = "$auto"
+maintainer-scripts = "../../packaging/linux"
 assets = [
-    ["target/release/conch", "usr/bin/", "755"],
+    ["target/release/conch", "opt/conch/bin/", "755"],
+    ["target/release/libconch_ssh.so", "opt/conch/lib/", "755"],
+    ["target/release/libconch_files.so", "opt/conch/lib/", "755"],
     ["../../packaging/linux/conch.desktop", "usr/share/applications/", "644"],
     ["icons/app-icon.png", "usr/share/icons/hicolor/256x256/apps/conch.png", "644"],
     ["icons/app-icon-512.png", "usr/share/icons/hicolor/512x512/apps/conch.png", "644"],
 ]
 
-[package.metadata.deb.variants.cross]
-depends = "libc6,libgcc-s1,libxcb-render0,libxcb-shape0,libxcb-xfixes0,libxkbcommon0,libwayland-client0,libgtk-3-0,libssl3,libfontconfig1"
-
 [package.metadata.generate-rpm]
+post_install_script = "ln -sf /opt/conch/bin/conch /usr/bin/conch"
+pre_uninstall_script = "rm -f /usr/bin/conch"
 assets = [
-    { source = "target/release/conch", dest = "/usr/bin/conch", mode = "755" },
+    { source = "target/release/conch", dest = "/opt/conch/bin/conch", mode = "755" },
+    { source = "target/release/libconch_ssh.so", dest = "/opt/conch/lib/libconch_ssh.so", mode = "755" },
+    { source = "target/release/libconch_files.so", dest = "/opt/conch/lib/libconch_files.so", mode = "755" },
     { source = "../../packaging/linux/conch.desktop", dest = "/usr/share/applications/conch.desktop", mode = "644" },
     { source = "icons/app-icon.png", dest = "/usr/share/icons/hicolor/256x256/apps/conch.png", mode = "644" },
     { source = "icons/app-icon-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/conch.png", mode = "644" },

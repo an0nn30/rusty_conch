@@ -1,25 +1,22 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod dialogs;
-mod extra_window;
+mod context_menu;
+mod host;
 mod icons;
 mod input;
 mod ipc;
-mod plugins;
-mod sessions;
-mod shortcuts;
-mod sidebar_handler;
-mod ssh;
-mod platform;
-#[cfg(target_os = "macos")]
-mod macos_menu;
+mod menu_bar;
 mod mouse;
 mod notifications;
+mod platform;
+mod sessions;
 mod state;
+mod tab_bar;
 mod terminal;
-mod ui;
+mod ui_theme;
 mod watcher;
+mod window_state;
 
 use std::sync::Arc;
 
@@ -27,24 +24,157 @@ use app::ConchApp;
 use clap::{Parser, Subcommand};
 use conch_core::config;
 
+/// Load system UI font and the user-configured terminal monospace font.
+fn setup_fonts(ctx: &egui::Context, terminal_font_family: &str) {
+    let mut fonts = egui::FontDefinitions::default();
+
+    // ── System UI font (proportional) ──
+    #[cfg(target_os = "macos")]
+    let ui_font_data = load_macos_system_font();
+
+    #[cfg(target_os = "windows")]
+    let ui_font_data = load_system_font_by_name(&["Segoe UI Variable", "Segoe UI"]);
+
+    #[cfg(target_os = "linux")]
+    let ui_font_data: Option<(String, Vec<u8>)> = None;
+
+    if let Some((name, data)) = ui_font_data {
+        log::info!("UI font loaded: {} bytes from '{name}'", data.len());
+        fonts.font_data.insert(
+            "system-ui".to_owned(),
+            egui::FontData::from_owned(data).into(),
+        );
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .insert(0, "system-ui".to_owned());
+    }
+
+    // ── Terminal monospace font ──
+    if !terminal_font_family.is_empty() {
+        match load_system_font_by_name(&[terminal_font_family]) {
+            Some((name, data)) => {
+                log::info!("Terminal font loaded: {} bytes from '{name}'", data.len());
+                fonts.font_data.insert(
+                    "terminal-mono".to_owned(),
+                    egui::FontData::from_owned(data).into(),
+                );
+                // Prepend so it takes priority over the built-in monospace font.
+                fonts
+                    .families
+                    .entry(egui::FontFamily::Monospace)
+                    .or_default()
+                    .insert(0, "terminal-mono".to_owned());
+                log::info!("Terminal font set to '{name}'");
+            }
+            None => {
+                log::warn!(
+                    "Could not load terminal font '{terminal_font_family}', using built-in monospace"
+                );
+            }
+        }
+    }
+
+    ctx.set_fonts(fonts);
+}
+
+/// On macOS, load SF Pro (San Francisco) by scanning the system font directory.
+#[cfg(target_os = "macos")]
+fn load_macos_system_font() -> Option<(String, Vec<u8>)> {
+    // SF Pro is stored in /System/Library/Fonts/ but isn't queryable by
+    // normal family name via Core Text. Read the font file directly.
+    let sf_paths = [
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/SFNSText.ttf",
+        "/System/Library/Fonts/SF-Pro.ttf",
+        "/System/Library/Fonts/SF-Pro-Text-Regular.otf",
+        "/Library/Fonts/SF-Pro.ttf",
+        "/Library/Fonts/SF-Pro-Text-Regular.otf",
+    ];
+
+    for path in &sf_paths {
+        log::info!("Trying SF font path: {path}");
+        if let Ok(data) = std::fs::read(path) {
+            log::info!("Loaded system font from {path} ({} bytes)", data.len());
+            return Some(("San Francisco".to_string(), data));
+        }
+    }
+
+    // Fallback: use font-kit to find SF Pro or Helvetica Neue
+    log::info!("SF font files not found at known paths, trying font-kit fallback");
+    load_system_font_by_name(&["SF Pro", "SF Pro Text", "Helvetica Neue"])
+}
+
+/// Use font-kit to load a font by trying a list of family names in order.
+fn load_system_font_by_name(names: &[&str]) -> Option<(String, Vec<u8>)> {
+    use font_kit::family_name::FamilyName;
+    use font_kit::properties::Properties;
+    use font_kit::source::SystemSource;
+
+    let source = SystemSource::new();
+    for name in names {
+        log::info!("Trying system font: '{name}'");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            source.select_best_match(
+                &[FamilyName::Title(name.to_string())],
+                &Properties::new(),
+            )
+        }));
+        let handle = match result {
+            Ok(Ok(h)) => h,
+            Ok(Err(e)) => {
+                log::info!("Font '{name}' not found: {e}");
+                continue;
+            }
+            Err(_) => {
+                log::warn!("Font '{name}' caused a panic in font-kit, skipping");
+                continue;
+            }
+        };
+
+        let load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle.load()));
+        match load_result {
+            Ok(Ok(font)) => {
+                let full_name = font.full_name();
+                log::info!("Matched font: full_name='{full_name}' (from query '{name}')");
+                if let Some(data) = font.copy_font_data() {
+                    return Some((full_name, (*data).to_vec()));
+                }
+                log::warn!("Could not copy font data for '{full_name}'");
+            }
+            Ok(Err(e)) => log::warn!("Could not load font '{name}': {e}"),
+            Err(_) => log::warn!("Font '{name}' load panicked in font-kit, skipping"),
+        }
+    }
+    None
+}
+
+/// Apply the configured appearance mode to egui and the native window chrome.
+///
+/// Sets egui's theme preference to Dark so the title bar stays dark on all
+/// platforms. This must be called BEFORE `UiTheme::apply()` so our custom
+/// visuals overwrite egui's defaults.
+pub(crate) fn apply_appearance_mode(ctx: &egui::Context, _mode: config::AppearanceMode) {
+    // Force dark theme preference — our UiTheme::apply() will overwrite
+    // the visuals immediately after, but egui needs dark_mode=true as a
+    // base so built-in widgets that check visuals.dark_mode behave correctly.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
+
+    // On Windows, eframe's SetTheme viewport command does not reliably set the
+    // dark title bar.  Call the DWM API directly.
+    #[cfg(target_os = "windows")]
+    {
+        platform::windows::set_dark_title_bar(true);
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "conch", about = "Conch terminal emulator")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-
-    /// Benchmark: log per-frame timing and resource usage to stderr.
-    #[arg(long)]
-    bench: bool,
-
-    /// Benchmark with extra window (both visible).
-    #[arg(long)]
-    bench_extra: bool,
-
-    /// Benchmark hidden-window mode: launch main + extra window, hide main,
-    /// and log per-frame timing / resource usage to stderr.
-    #[arg(long)]
-    bench_hidden: bool,
 }
 
 #[derive(Subcommand)]
@@ -54,25 +184,17 @@ enum Command {
         #[command(subcommand)]
         action: MsgAction,
     },
-    /// Check Lua plugin files for syntax errors and API misuse.
-    Check {
-        /// Plugin files to check.
-        #[arg(required = true)]
-        files: Vec<std::path::PathBuf>,
-    },
 }
 
 #[derive(Subcommand)]
 enum MsgAction {
     /// Create a new window.
     NewWindow {
-        /// Working directory for the new window.
         #[arg(long, short = 'd')]
         working_directory: Option<String>,
     },
     /// Create a new tab in the focused window.
     NewTab {
-        /// Working directory for the new tab.
         #[arg(long, short = 'd')]
         working_directory: Option<String>,
     },
@@ -91,17 +213,12 @@ fn load_app_icon() -> egui::IconData {
 }
 
 /// Convert character-cell dimensions to pixel size for the initial window.
-///
-/// Uses rough estimates for cell size and UI chrome (tab bar, title bar padding).
-/// The terminal will resize itself to fit once actual font metrics are measured.
 fn window_size_from_config(cfg: &config::WindowDimensions) -> [f32; 2] {
     let cols = if cfg.columns == 0 { 150 } else { cfg.columns };
     let lines = if cfg.lines == 0 { 50 } else { cfg.lines };
 
-    // Approximate cell size before font metrics are measured.
     let cell_w: f32 = 8.0;
     let cell_h: f32 = 16.0;
-    // Extra chrome: tab bar (~30px), sidebar padding, window margins.
     let chrome_w: f32 = 40.0;
     let chrome_h: f32 = 50.0;
 
@@ -109,6 +226,45 @@ fn window_size_from_config(cfg: &config::WindowDimensions) -> [f32; 2] {
         (cols as f32 * cell_w + chrome_w).max(600.0),
         (lines as f32 * cell_h + chrome_h).max(400.0),
     ]
+}
+
+/// Apply window decoration settings to a viewport builder using platform capabilities.
+pub(crate) fn build_viewport(
+    mut builder: egui::ViewportBuilder,
+    decorations: config::WindowDecorations,
+    platform: &platform::PlatformCapabilities,
+) -> egui::ViewportBuilder {
+    use config::WindowDecorations;
+    match decorations {
+        WindowDecorations::Full => {
+            if platform.fullsize_content_view {
+                builder = builder
+                    .with_fullsize_content_view(true)
+                    .with_titlebar_shown(true)
+                    .with_title_shown(false);
+            } else {
+                builder = builder
+                    .with_title_shown(true)
+                    .with_titlebar_shown(true);
+            }
+        }
+        WindowDecorations::Transparent => {
+            builder = builder
+                .with_fullsize_content_view(true)
+                .with_titlebar_shown(true)
+                .with_title_shown(false)
+                .with_transparent(true);
+        }
+        WindowDecorations::Buttonless => {
+            builder = builder
+                .with_decorations(false)
+                .with_transparent(true);
+        }
+        WindowDecorations::None => {
+            builder = builder.with_decorations(false);
+        }
+    }
+    builder
 }
 
 /// Send an IPC message to a running Conch instance.
@@ -135,31 +291,9 @@ fn send_ipc_message(_msg: &str) -> Result<(), String> {
 }
 
 fn main() -> eframe::Result<()> {
-    // Perform platform-specific environment setup (locale, SSH_AUTH_SOCK, etc.)
-    // before anything else.
     platform::init();
 
     let cli = Cli::parse();
-
-    // Handle `conch check ...` — validate plugin files without launching the GUI.
-    if let Some(Command::Check { files }) = &cli.command {
-        let mut any_error = false;
-        for path in files {
-            let result = conch_plugin::check_plugin(path);
-            let display_path = path.display();
-            if result.diagnostics.is_empty() {
-                println!("{display_path}: ok");
-            } else {
-                for diag in &result.diagnostics {
-                    eprintln!("{display_path}:{diag}");
-                }
-            }
-            if result.has_errors() {
-                any_error = true;
-            }
-        }
-        std::process::exit(if any_error { 1 } else { 0 });
-    }
 
     // Handle `conch msg ...` subcommands — these don't launch the GUI.
     if let Some(Command::Msg { action }) = cli.command {
@@ -185,15 +319,13 @@ fn main() -> eframe::Result<()> {
 
     env_logger::init();
 
-    // Load config early so we can size the window before creating the app.
-    config::migrate_if_needed();
     let user_config = config::load_user_config().unwrap_or_else(|e| {
         log::error!("Failed to load config.toml, using defaults: {e:#}");
         config::UserConfig::default()
     });
     let persistent = config::load_persistent_state().unwrap_or_default();
 
-    // Use persisted window size if available, otherwise fall back to config-based sizing.
+    // Use persisted window size if available.
     let window_size = if persistent.layout.window_width > 0.0 && persistent.layout.window_height > 0.0 {
         [persistent.layout.window_width, persistent.layout.window_height]
     } else {
@@ -207,73 +339,33 @@ fn main() -> eframe::Result<()> {
             .expect("Failed to create tokio runtime"),
     );
 
-    let native_menu = cfg!(target_os = "macos") && user_config.conch.ui.native_menu_bar;
+    // The root viewport IS the first user window.  Extra windows use
+    // show_viewport_immediate and the same render_window() function —
+    // no hidden daemon, no deferred viewport coordination overhead.
+    let icon = Arc::new(load_app_icon());
+    let platform = platform::PlatformCapabilities::current();
+    let decorations = platform.effective_decorations(user_config.window.decorations);
 
-    let mut viewport = egui::ViewportBuilder::default()
+    let base_viewport = egui::ViewportBuilder::default()
         .with_inner_size(window_size)
-        .with_icon(Arc::new(load_app_icon()));
-
-    // Apply window decoration style from config.
-    use config::WindowDecorations;
-    match user_config.window.decorations {
-        WindowDecorations::Full => {
-            if cfg!(target_os = "macos") && !native_menu {
-                // Transparent title bar: content extends behind it, we draw our own menu.
-                viewport = viewport
-                    .with_fullsize_content_view(true)
-                    .with_titlebar_shown(true)
-                    .with_title_shown(false);
-            } else {
-                viewport = viewport
-                    .with_title_shown(true)
-                    .with_titlebar_shown(true);
-            }
-        }
-        WindowDecorations::Transparent => {
-            viewport = viewport
-                .with_fullsize_content_view(true)
-                .with_titlebar_shown(true)
-                .with_title_shown(false)
-                .with_transparent(true);
-        }
-        WindowDecorations::Buttonless => {
-            // No title bar at all — just the terminal content edge-to-edge.
-            viewport = viewport
-                .with_decorations(false)
-                .with_transparent(true);
-        }
-        WindowDecorations::None => {
-            viewport = viewport.with_decorations(false);
-        }
-    }
+        .with_icon(Arc::clone(&icon));
+    let viewport = build_viewport(base_viewport, decorations, &platform);
 
     let options = eframe::NativeOptions {
         viewport,
         ..Default::default()
     };
 
-    let bench = cli.bench;
-    let bench_extra = cli.bench_extra;
-    let bench_hidden = cli.bench_hidden;
+    let appearance_mode = user_config.colors.appearance_mode;
+    let terminal_font_family = user_config.font.normal.family.clone();
 
     eframe::run_native(
         "Conch",
         options,
-        Box::new(move |_cc| {
-            let mut app = ConchApp::new(rt);
-            if bench || bench_extra || bench_hidden {
-                app.bench_hidden_mode = bench_hidden;
-                app.bench_start = Some(std::time::Instant::now());
-                app.bench_last_report = Some(std::time::Instant::now());
-                if bench_extra {
-                    // Spawn extra window but keep main visible.
-                    app.bench_extra_mode = true;
-                    eprintln!("[bench] Extra-window mode (both visible). Reporting every 2s.");
-                } else if bench {
-                    eprintln!("[bench] Normal mode. Reporting every 2s.");
-                }
-            }
-            Ok(Box::new(app))
+        Box::new(move |cc| {
+            setup_fonts(&cc.egui_ctx, &terminal_font_family);
+            apply_appearance_mode(&cc.egui_ctx, appearance_mode);
+            Ok(Box::new(ConchApp::new(rt, window_size, icon)))
         }),
     )
 }

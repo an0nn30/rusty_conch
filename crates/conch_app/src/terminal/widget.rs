@@ -2,14 +2,17 @@
 //!
 //! The core rendering loop iterates over `Term::renderable_content().display_iter`,
 //! painting cell backgrounds and characters with `rect_filled` and `galley`.
-//! This replaces the wgpu shader pipeline from the old `conch_terminal` crate.
+//!
+//! **Paint cache:** When terminal content hasn't changed between frames (idle
+//! terminal, mouse-only repaints), the expensive font-layout calls are skipped
+//! and pre-built egui Shapes are replayed directly.
 
 use std::sync::Arc;
 
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::Term;
-use conch_session::EventProxy;
+use conch_pty::EventProxy;
 use egui::{Color32, FontFamily, FontId, Painter, Pos2, Rect, Sense, Vec2};
 
 use super::color::{convert_color, ResolvedColors};
@@ -27,9 +30,6 @@ fn rgba_to_color32(c: [f32; 4]) -> Color32 {
 }
 
 /// Measure the monospace font's cell dimensions from egui's layout engine.
-///
-/// Uses differential measurement -- `width(10 chars) - width(1 char)` divided by 9 --
-/// to eliminate any fixed side-bearing overhead in galley sizes.
 pub fn measure_cell_size(ctx: &egui::Context, font_size: f32) -> (f32, f32) {
     let font_id = FontId::new(font_size, FontFamily::Monospace);
     ctx.fonts(|fonts| {
@@ -80,7 +80,7 @@ enum UnderlineStyle {
 }
 
 /// Copied cell data for rendering after releasing the terminal lock.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct CellInfo {
     c: char,
     col: usize,
@@ -95,12 +95,18 @@ struct CellInfo {
     wide: bool,
 }
 
-/// Cached frame data from the last successful terminal lock.
-/// Re-used when the lock is contended to avoid flashing a blank frame.
-#[derive(Clone)]
+/// Cached frame data and pre-built paint shapes.
+///
+/// When the terminal content (cells + cursor) hasn't changed since the last
+/// frame, the cached `Vec<Shape>` is replayed directly, skipping all
+/// per-character `layout_no_wrap` calls.
 pub struct TerminalFrameCache {
     cells: Vec<CellInfo>,
     cursor_pos: Option<(usize, usize, alacritty_terminal::vte::ansi::CursorShape)>,
+    /// Pre-built shapes from the last full paint.
+    paint_shapes: Vec<egui::Shape>,
+    /// The rect these shapes were painted into (invalidate on resize).
+    paint_rect: Option<Rect>,
 }
 
 impl Default for TerminalFrameCache {
@@ -108,6 +114,8 @@ impl Default for TerminalFrameCache {
         Self {
             cells: Vec::new(),
             cursor_pos: None,
+            paint_shapes: Vec::new(),
+            paint_rect: None,
         }
     }
 }
@@ -136,17 +144,12 @@ pub fn show_terminal(
     painter.rect_filled(rect, 0.0, rgba_to_color32(colors.background));
 
     // ── Collect cell data under lock, then release ──────────────────────
-    // This minimises FairMutex hold time so the EventLoop can keep
-    // processing VTE data while we do the (expensive) font-layout paint.
-    // Use try_lock_unfair to avoid blocking the main thread if the
-    // event loop is holding the FairMutex lease during PTY reads.
     let (cells, cursor_pos) = {
         let Some(term) = term.try_lock_unfair() else {
-            // Lock contended — re-use the last frame's cached data to avoid
-            // flashing a blank terminal background.
-            let cells = &frame_cache.cells;
-            let cursor_pos = frame_cache.cursor_pos;
-            paint_cells(&painter, cells, cursor_pos, &size_info, colors, font_size, cell_width, cell_height, rect);
+            // Lock contended — replay cached shapes.
+            for shape in &frame_cache.paint_shapes {
+                painter.add(shape.clone());
+            }
             return (response, size_info);
         };
         let content = term.renderable_content();
@@ -196,15 +199,12 @@ pub fn show_terminal(
                 }
             }
 
-            // Hidden text: replace character with space.
             let c = if flags.contains(CellFlags::HIDDEN) { ' ' } else { cell.c };
 
-            // Dim: reduce foreground brightness to 2/3.
             if flags.contains(CellFlags::DIM) {
                 fg = [fg[0] * 0.67, fg[1] * 0.67, fg[2] * 0.67, fg[3]];
             }
 
-            // Determine underline style.
             let underline = if flags.contains(CellFlags::UNDERCURL) {
                 UnderlineStyle::Undercurl
             } else if flags.contains(CellFlags::DOUBLE_UNDERLINE) {
@@ -219,182 +219,58 @@ pub fn show_terminal(
                 UnderlineStyle::None
             };
 
-            // Underline color from cell extras (e.g. LSP diagnostic colors).
             let underline_color = cell.underline_color().map(|uc| convert_color(uc, colors));
 
             cells.push(CellInfo {
-                c,
-                col,
-                row,
-                fg,
-                bg,
+                c, col, row, fg, bg,
                 bold: flags.contains(CellFlags::BOLD),
                 italic: flags.contains(CellFlags::ITALIC),
-                underline,
-                underline_color,
+                underline, underline_color,
                 strikeout: flags.contains(CellFlags::STRIKEOUT),
                 wide,
             });
         }
 
         (cells, cursor_pos)
-    }; // ── lock released here ──────────────────────────────────────────────
+    }; // ── lock released ──
 
-    // Cache this frame's data for re-use when the lock is contended.
-    frame_cache.cells = cells.clone();
+    // ── Check if we can replay cached shapes ────────────────────────────
+    let same_content = cells == frame_cache.cells
+        && cursor_pos == frame_cache.cursor_pos
+        && frame_cache.paint_rect == Some(rect);
+
+    if same_content && !frame_cache.paint_shapes.is_empty() {
+        // Content unchanged — replay pre-built shapes (no font layout).
+        for shape in &frame_cache.paint_shapes {
+            painter.add(shape.clone());
+        }
+        return (response, size_info);
+    }
+
+    // ── Content changed — full repaint + capture shapes ─────────────────
+    frame_cache.cells = cells;
     frame_cache.cursor_pos = cursor_pos;
+    frame_cache.paint_rect = Some(rect);
+    frame_cache.paint_shapes.clear();
 
-    // Paint cells (no lock held — EventLoop can process data concurrently).
-    paint_cells(&painter, &cells, cursor_pos, &size_info, colors, font_size, cell_width, cell_height, rect);
+    paint_cells_cached(
+        &painter,
+        &frame_cache.cells,
+        cursor_pos,
+        &size_info,
+        colors,
+        font_size,
+        cell_width,
+        cell_height,
+        rect,
+        &mut frame_cache.paint_shapes,
+    );
 
     (response, size_info)
 }
 
-/// Find word boundaries around the given cell position.
-///
-/// Returns `((start_col, row), (end_col, row))` for the word at `(col, row)`.
-pub fn word_selection_at(
-    term: &Arc<FairMutex<Term<EventProxy>>>,
-    col: usize,
-    row: usize,
-) -> ((usize, usize), (usize, usize)) {
-    let Some(term) = term.try_lock_unfair() else {
-        return ((col, row), (col, row));
-    };
-    let content = term.renderable_content();
-
-    // Collect all characters in the target row.
-    let mut row_chars: Vec<(usize, char)> = Vec::new();
-    for indexed in content.display_iter {
-        let r = indexed.point.line.0 as usize;
-        if r < row {
-            continue;
-        }
-        if r > row {
-            break;
-        }
-        row_chars.push((indexed.point.column.0, indexed.cell.c));
-    }
-
-    if row_chars.is_empty() {
-        return ((col, row), (col, row));
-    }
-
-    // Find the character at col.
-    let is_word_char = |c: char| c.is_alphanumeric() || c == '_' || c == '-' || c == '.';
-    let target_char = row_chars.iter().find(|&&(c, _)| c == col).map(|&(_, ch)| ch).unwrap_or(' ');
-    let target_is_word = is_word_char(target_char);
-    let target_is_space = target_char == ' ';
-
-    // Expand left.
-    let mut start_col = col;
-    for &(c, ch) in row_chars.iter().rev() {
-        if c > col {
-            continue;
-        }
-        if target_is_space {
-            if ch != ' ' { break; }
-        } else if target_is_word {
-            if !is_word_char(ch) { break; }
-        } else {
-            // Punctuation: select contiguous same-type.
-            if is_word_char(ch) || ch == ' ' { break; }
-        }
-        start_col = c;
-    }
-
-    // Expand right.
-    let mut end_col = col;
-    for &(c, ch) in &row_chars {
-        if c < col {
-            continue;
-        }
-        if target_is_space {
-            if ch != ' ' { break; }
-        } else if target_is_word {
-            if !is_word_char(ch) { break; }
-        } else {
-            if is_word_char(ch) || ch == ' ' { break; }
-        }
-        end_col = c;
-    }
-
-    ((start_col, row), (end_col, row))
-}
-
-/// Select the entire line at the given row.
-///
-/// Returns `((0, row), (last_col, row))`.
-pub fn line_selection_at(
-    term: &Arc<FairMutex<Term<EventProxy>>>,
-    row: usize,
-) -> ((usize, usize), (usize, usize)) {
-    let Some(term) = term.try_lock_unfair() else {
-        return ((0, row), (0, row));
-    };
-    let content = term.renderable_content();
-
-    let mut max_col = 0usize;
-    for indexed in content.display_iter {
-        let r = indexed.point.line.0 as usize;
-        if r < row {
-            continue;
-        }
-        if r > row {
-            break;
-        }
-        max_col = indexed.point.column.0;
-    }
-
-    ((0, row), (max_col, row))
-}
-
-/// Extract the text within a normalized selection range from the terminal buffer.
-pub fn get_selected_text(
-    term: &Arc<FairMutex<Term<EventProxy>>>,
-    sel_start: (usize, usize),
-    sel_end: (usize, usize),
-) -> String {
-    let Some(term) = term.try_lock_unfair() else {
-        return String::new();
-    };
-    let content = term.renderable_content();
-
-    let mut lines: Vec<String> = Vec::new();
-    let mut current_row: Option<usize> = None;
-    let mut current_line = String::new();
-
-    for indexed in content.display_iter {
-        let col = indexed.point.column.0;
-        let row = indexed.point.line.0 as usize;
-
-        if row > sel_end.1 {
-            break;
-        }
-        if !is_in_selection(col, row, sel_start, sel_end) {
-            continue;
-        }
-
-        if current_row != Some(row) {
-            if current_row.is_some() {
-                lines.push(current_line.trim_end().to_string());
-                current_line = String::new();
-            }
-            current_row = Some(row);
-        }
-
-        current_line.push(indexed.cell.c);
-    }
-
-    if !current_line.is_empty() {
-        lines.push(current_line.trim_end().to_string());
-    }
-
-    lines.join("\n")
-}
-
-/// Paint collected cell data and cursor onto the terminal area.
-fn paint_cells(
+/// Paint all cells and collect the resulting shapes into `out_shapes`.
+fn paint_cells_cached(
     painter: &Painter,
     cells: &[CellInfo],
     cursor_pos: Option<(usize, usize, alacritty_terminal::vte::ansi::CursorShape)>,
@@ -404,12 +280,12 @@ fn paint_cells(
     cell_width: f32,
     cell_height: f32,
     rect: Rect,
+    out_shapes: &mut Vec<egui::Shape>,
 ) {
     let font_regular = FontId::new(font_size, FontFamily::Monospace);
 
     for ci in cells {
         let (x, y) = size_info.cell_position(ci.col, ci.row);
-
         let char_cell_width = if ci.wide { cell_width * 2.0 } else { cell_width };
 
         if ci.bg != colors.background {
@@ -417,91 +293,82 @@ fn paint_cells(
                 Pos2::new(rect.min.x + x, rect.min.y + y),
                 Vec2::new(char_cell_width, cell_height),
             );
-            painter.rect_filled(cell_rect, 0.0, rgba_to_color32(ci.bg));
+            let shape = egui::Shape::rect_filled(cell_rect, 0.0, rgba_to_color32(ci.bg));
+            painter.add(shape.clone());
+            out_shapes.push(shape);
         }
 
         let fg_color = rgba_to_color32(ci.fg);
 
         if ci.c != ' ' && ci.c != '\0' {
-            paint_char(
-                painter,
-                ci.c,
+            paint_char_cached(
+                painter, ci.c,
                 Pos2::new(rect.min.x + x, rect.min.y + y),
-                &font_regular,
-                fg_color,
-                ci.bold,
-                ci.italic,
-                char_cell_width,
-                cell_height,
+                &font_regular, fg_color, ci.bold, ci.italic,
+                char_cell_width, cell_height, out_shapes,
             );
         }
 
-        // Draw underline (various styles).
         if ci.underline != UnderlineStyle::None {
             let ul_color = ci.underline_color.map(rgba_to_color32).unwrap_or(fg_color);
             let y_base = rect.min.y + y + cell_height - 1.0;
             let x_start = rect.min.x + x;
             let x_end = x_start + char_cell_width;
-            draw_underline(painter, ci.underline, x_start, x_end, y_base, char_cell_width, ul_color);
+            draw_underline_cached(painter, ci.underline, x_start, x_end, y_base, char_cell_width, ul_color, out_shapes);
         }
 
-        // Draw strikeout.
         if ci.strikeout {
             let y_mid = rect.min.y + y + cell_height * 0.5;
-            painter.line_segment(
+            let shape = egui::Shape::line_segment(
                 [Pos2::new(rect.min.x + x, y_mid), Pos2::new(rect.min.x + x + char_cell_width, y_mid)],
                 egui::Stroke::new(1.0, fg_color),
             );
+            painter.add(shape.clone());
+            out_shapes.push(shape);
         }
     }
 
-    // Draw cursor (Block, Underline, or Beam).
+    // Cursor.
     if let Some((col, row, shape)) = cursor_pos {
         let (cx, cy) = size_info.cell_position(col, row);
         let cursor_c = colors.cursor_color.unwrap_or(colors.foreground);
         let color = rgba_to_color32(cursor_c);
-        match shape {
+        let cursor_shape = match shape {
             alacritty_terminal::vte::ansi::CursorShape::Block => {
-                let cursor_rect = Rect::from_min_size(
-                    Pos2::new(rect.min.x + cx, rect.min.y + cy),
-                    Vec2::new(cell_width, cell_height),
-                );
-                painter.rect_filled(cursor_rect, 0.0, color);
+                egui::Shape::rect_filled(
+                    Rect::from_min_size(Pos2::new(rect.min.x + cx, rect.min.y + cy), Vec2::new(cell_width, cell_height)),
+                    0.0, color,
+                )
             }
             alacritty_terminal::vte::ansi::CursorShape::Underline => {
                 let thickness = (cell_height * 0.1).max(1.0);
-                let cursor_rect = Rect::from_min_size(
-                    Pos2::new(rect.min.x + cx, rect.min.y + cy + cell_height - thickness),
-                    Vec2::new(cell_width, thickness),
-                );
-                painter.rect_filled(cursor_rect, 0.0, color);
+                egui::Shape::rect_filled(
+                    Rect::from_min_size(Pos2::new(rect.min.x + cx, rect.min.y + cy + cell_height - thickness), Vec2::new(cell_width, thickness)),
+                    0.0, color,
+                )
             }
             alacritty_terminal::vte::ansi::CursorShape::Beam => {
                 let thickness = (cell_width * 0.12).max(1.0);
-                let cursor_rect = Rect::from_min_size(
-                    Pos2::new(rect.min.x + cx, rect.min.y + cy),
-                    Vec2::new(thickness, cell_height),
-                );
-                painter.rect_filled(cursor_rect, 0.0, color);
+                egui::Shape::rect_filled(
+                    Rect::from_min_size(Pos2::new(rect.min.x + cx, rect.min.y + cy), Vec2::new(thickness, cell_height)),
+                    0.0, color,
+                )
             }
             alacritty_terminal::vte::ansi::CursorShape::HollowBlock => {
-                let cursor_rect = Rect::from_min_size(
-                    Pos2::new(rect.min.x + cx, rect.min.y + cy),
-                    Vec2::new(cell_width, cell_height),
-                );
-                painter.rect_stroke(cursor_rect, 0.0, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+                egui::Shape::rect_stroke(
+                    Rect::from_min_size(Pos2::new(rect.min.x + cx, rect.min.y + cy), Vec2::new(cell_width, cell_height)),
+                    0.0, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside,
+                )
             }
-            alacritty_terminal::vte::ansi::CursorShape::Hidden => {}
-        }
+            alacritty_terminal::vte::ansi::CursorShape::Hidden => egui::Shape::Noop,
+        };
+        painter.add(cursor_shape.clone());
+        out_shapes.push(cursor_shape);
     }
 }
 
-/// Render a single character in its cell, with synthetic bold/italic.
-///
-/// Characters are left-aligned within the cell to maintain consistent grid
-/// positioning. This is critical for box-drawing, braille art, and other
-/// characters that must align precisely across cells.
-fn paint_char(
+/// Render a character and capture the shape.
+fn paint_char_cached(
     painter: &Painter,
     c: char,
     pos: Pos2,
@@ -511,86 +378,180 @@ fn paint_char(
     italic: bool,
     _cell_width: f32,
     cell_height: f32,
+    out_shapes: &mut Vec<egui::Shape>,
 ) {
     let galley = painter.layout_no_wrap(c.to_string(), font_id.clone(), color);
 
     let mut offset_x = 0.0;
-
-    // Synthetic italic: shift top of glyph right by ~12% of cell height.
     if italic {
         offset_x += cell_height * 0.06;
     }
 
     let text_pos = Pos2::new(pos.x + offset_x, pos.y);
-    painter.galley(text_pos, galley, color);
+    let shape = egui::Shape::galley(text_pos, galley, color);
+    painter.add(shape.clone());
+    out_shapes.push(shape);
 
-    // Synthetic bold: draw the glyph a second time offset by 1px.
     if bold {
         let galley2 = painter.layout_no_wrap(c.to_string(), font_id.clone(), color);
-        painter.galley(Pos2::new(text_pos.x + 1.0, text_pos.y), galley2, color);
+        let shape2 = egui::Shape::galley(Pos2::new(text_pos.x + 1.0, text_pos.y), galley2, color);
+        painter.add(shape2.clone());
+        out_shapes.push(shape2);
     }
 }
 
-/// Draw an underline with the given style.
-fn draw_underline(
+/// Draw underline and capture shapes.
+fn draw_underline_cached(
     painter: &Painter,
     style: UnderlineStyle,
     x_start: f32,
     x_end: f32,
-    y: f32,
+    y_base: f32,
     cell_width: f32,
     color: Color32,
+    out_shapes: &mut Vec<egui::Shape>,
 ) {
     let stroke = egui::Stroke::new(1.0, color);
     match style {
-        UnderlineStyle::None => {}
         UnderlineStyle::Single => {
-            painter.line_segment([Pos2::new(x_start, y), Pos2::new(x_end, y)], stroke);
+            let s = egui::Shape::line_segment([Pos2::new(x_start, y_base), Pos2::new(x_end, y_base)], stroke);
+            painter.add(s.clone()); out_shapes.push(s);
         }
         UnderlineStyle::Double => {
-            painter.line_segment([Pos2::new(x_start, y), Pos2::new(x_end, y)], stroke);
-            painter.line_segment([Pos2::new(x_start, y - 2.0), Pos2::new(x_end, y - 2.0)], stroke);
+            let s1 = egui::Shape::line_segment([Pos2::new(x_start, y_base), Pos2::new(x_end, y_base)], stroke);
+            let s2 = egui::Shape::line_segment([Pos2::new(x_start, y_base - 2.0), Pos2::new(x_end, y_base - 2.0)], stroke);
+            painter.add(s1.clone()); out_shapes.push(s1);
+            painter.add(s2.clone()); out_shapes.push(s2);
         }
         UnderlineStyle::Dotted => {
+            let dot_spacing = 3.0;
             let mut x = x_start;
             while x < x_end {
-                let end = (x + 1.0).min(x_end);
-                painter.line_segment([Pos2::new(x, y), Pos2::new(end, y)], stroke);
-                x += 3.0;
+                let s = egui::Shape::circle_filled(Pos2::new(x, y_base), 0.5, color);
+                painter.add(s.clone()); out_shapes.push(s);
+                x += dot_spacing;
             }
         }
         UnderlineStyle::Dashed => {
-            let dash = cell_width * 0.4;
-            let gap = cell_width * 0.2;
+            let dash_len = cell_width * 0.3;
+            let gap_len = cell_width * 0.15;
             let mut x = x_start;
             while x < x_end {
-                let end = (x + dash).min(x_end);
-                painter.line_segment([Pos2::new(x, y), Pos2::new(end, y)], stroke);
-                x += dash + gap;
+                let dash_end = (x + dash_len).min(x_end);
+                let s = egui::Shape::line_segment([Pos2::new(x, y_base), Pos2::new(dash_end, y_base)], stroke);
+                painter.add(s.clone()); out_shapes.push(s);
+                x += dash_len + gap_len;
             }
         }
         UnderlineStyle::Undercurl => {
-            // Wavy underline: approximate with short line segments.
             let amplitude = 1.5;
-            let wavelength = cell_width;
-            let steps = 8;
-            let step_w = wavelength / steps as f32;
+            let half_period = cell_width * 0.25;
+            let mut points = Vec::new();
             let mut x = x_start;
-            while x < x_end {
-                for i in 0..steps {
-                    let x0 = x + i as f32 * step_w;
-                    let x1 = (x0 + step_w).min(x_end);
-                    if x0 >= x_end {
-                        break;
-                    }
-                    let t0 = i as f32 / steps as f32;
-                    let t1 = (i + 1) as f32 / steps as f32;
-                    let y0 = y + (t0 * std::f32::consts::TAU).sin() * amplitude;
-                    let y1 = y + (t1 * std::f32::consts::TAU).sin() * amplitude;
-                    painter.line_segment([Pos2::new(x0, y0), Pos2::new(x1, y1)], stroke);
+            while x <= x_end {
+                let t = (x - x_start) / half_period;
+                let dy = amplitude * (t * std::f32::consts::PI).sin();
+                points.push(Pos2::new(x, y_base + dy));
+                x += 1.0;
+            }
+            if points.len() >= 2 {
+                for pair in points.windows(2) {
+                    let s = egui::Shape::line_segment([pair[0], pair[1]], stroke);
+                    painter.add(s.clone()); out_shapes.push(s);
                 }
-                x += wavelength;
+            }
+        }
+        UnderlineStyle::None => {}
+    }
+}
+
+// ── Selection / word helpers (used by mouse.rs) ──
+
+/// Find word boundaries around the given cell position.
+pub fn word_selection_at(
+    term: &Arc<FairMutex<Term<EventProxy>>>,
+    col: usize,
+    row: usize,
+) -> ((usize, usize), (usize, usize)) {
+    let Some(term) = term.try_lock_unfair() else {
+        return ((col, row), (col, row));
+    };
+
+    let content = term.renderable_content();
+    let mut start = col;
+    for ci in content.display_iter {
+        if ci.point.line.0 as usize == row && ci.point.column.0 < col {
+            let c = ci.cell.c;
+            if c == ' ' || c == '\0' {
+                start = ci.point.column.0 + 1;
             }
         }
     }
+
+    let content2 = term.renderable_content();
+    let mut end = col;
+    for ci in content2.display_iter {
+        if ci.point.line.0 as usize == row && ci.point.column.0 >= col {
+            let c = ci.cell.c;
+            if c == ' ' || c == '\0' {
+                break;
+            }
+            end = ci.point.column.0;
+        }
+    }
+
+    ((start, row), (end, row))
+}
+
+/// Select an entire line.
+pub fn line_selection_at(
+    term: &Arc<FairMutex<Term<EventProxy>>>,
+    row: usize,
+) -> ((usize, usize), (usize, usize)) {
+    let Some(term) = term.try_lock_unfair() else {
+        return ((0, row), (0, row));
+    };
+    let content = term.renderable_content();
+    let mut max_col = 0;
+    for ci in content.display_iter {
+        if ci.point.line.0 as usize == row {
+            max_col = ci.point.column.0;
+        }
+    }
+    ((0, row), (max_col, row))
+}
+
+/// Extract the selected text from the terminal grid.
+pub fn get_selected_text(
+    term: &Arc<FairMutex<Term<EventProxy>>>,
+    start: (usize, usize),
+    end: (usize, usize),
+) -> String {
+    let Some(term) = term.try_lock_unfair() else {
+        return String::new();
+    };
+
+    let content = term.renderable_content();
+    let mut result = String::new();
+    let mut last_row: Option<usize> = None;
+
+    for indexed in content.display_iter {
+        let col = indexed.point.column.0;
+        let row = indexed.point.line.0 as usize;
+
+        if is_in_selection(col, row, start, end) {
+            if let Some(prev_row) = last_row {
+                if row > prev_row {
+                    result.push('\n');
+                }
+            }
+            let c = indexed.cell.c;
+            if c != '\0' {
+                result.push(c);
+            }
+            last_row = Some(row);
+        }
+    }
+
+    result
 }

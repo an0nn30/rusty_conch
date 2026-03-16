@@ -153,21 +153,50 @@ pub fn list_themes() -> HashMap<String, PathBuf> {
     themes
 }
 
-/// Resolve a theme by name: load from disk or fall back to built-in Dracula.
-pub fn resolve_theme(name: &str) -> ColorScheme {
-    let themes = list_themes();
-    if let Some(path) = themes.get(name) {
-        match load_theme(path) {
+/// Resolve a theme by name or path: load from disk or fall back to built-in Dracula.
+///
+/// If `value` is a file path (contains `/`, `\`, or ends with `.toml`), it is
+/// loaded directly. A leading `~` is expanded to the home directory.
+/// Otherwise `value` is treated as a theme name and looked up in the themes
+/// directory (`~/.config/conch/themes/{name}.toml`).
+pub fn resolve_theme(value: &str) -> ColorScheme {
+    let is_path = value.contains('/') || value.contains('\\') || value.ends_with(".toml");
+
+    if is_path {
+        let expanded = if value.starts_with("~/") {
+            dirs::home_dir()
+                .map(|h| h.join(&value[2..]))
+                .unwrap_or_else(|| PathBuf::from(value))
+        } else {
+            PathBuf::from(value)
+        };
+        match load_theme(&expanded) {
             Ok(scheme) => {
-                log::info!("Loaded theme '{}' from {}", name, path.display());
+                log::info!("Loaded theme from {}", expanded.display());
                 return scheme;
             }
             Err(e) => {
-                log::warn!("Failed to load theme '{}': {e}, using built-in Dracula", name);
+                log::warn!(
+                    "Failed to load theme from '{}': {e}, using built-in Dracula",
+                    expanded.display()
+                );
             }
         }
-    } else if !name.eq_ignore_ascii_case("dracula") {
-        log::info!("Theme '{}' not found in themes dir, using built-in Dracula", name);
+    } else {
+        let themes = list_themes();
+        if let Some(path) = themes.get(value) {
+            match load_theme(path) {
+                Ok(scheme) => {
+                    log::info!("Loaded theme '{}' from {}", value, path.display());
+                    return scheme;
+                }
+                Err(e) => {
+                    log::warn!("Failed to load theme '{}': {e}, using built-in Dracula", value);
+                }
+            }
+        } else if !value.eq_ignore_ascii_case("dracula") {
+            log::info!("Theme '{}' not found in themes dir, using built-in Dracula", value);
+        }
     }
     ColorScheme::default()
 }

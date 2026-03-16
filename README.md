@@ -5,7 +5,7 @@
 <h1 align="center">Conch</h1>
 
 <p align="center">
-  A fast, cross-platform terminal emulator and SSH manager with a Lua plugin system.<br/>
+  A fast, cross-platform terminal emulator with an extensible native plugin system.<br/>
   Built in Rust. Runs on macOS, Windows, and Linux.
 </p>
 
@@ -27,7 +27,7 @@
 
 ## Why Conch?
 
-Most terminal emulators do one thing well. SSH clients do another. File transfer tools are a third app entirely. Conch puts them all in one window — terminal, SSH sessions, SFTP file browser, and a plugin system that lets you build your own tools on top.
+Most terminal emulators do one thing well. SSH clients do another. File transfer tools are a third app entirely. Conch puts them all in one window — terminal, SSH sessions, SFTP file browser — and a native plugin system that lets you build your own tools on top.
 
 Think MobaXterm, but open source, cross-platform, and extensible.
 
@@ -35,69 +35,82 @@ Think MobaXterm, but open source, cross-platform, and extensible.
 
 **Terminal** — Full terminal emulation powered by [alacritty_terminal](https://github.com/alacritty/alacritty). 256-color, truecolor, mouse reporting, bracketed paste, tabs, multi-window.
 
-**SSH Sessions** — Save connections with proxy jump support, organized in folders. Password and key authentication. Quick-connect from the sidebar.
+**SSH Sessions** (plugin) — Save connections with proxy jump support, organized in folders. Password and key authentication. Quick-connect from the sidebar. Parses `~/.ssh/config` automatically.
 
-**File Browser** — Side-by-side local and remote file browsing with progress tracking. Transfers use **rsync** when available on both sides (with zstd or zlib compression), falling back to **SFTP** with 2 MB buffered I/O automatically.
+**File Explorer** (plugin) — Dual-pane local and remote file browsing. Upload and download with real-time progress tracking. Direct SFTP transfers via a zero-overhead C ABI vtable — no JSON serialization or base64 encoding for file data.
 
-**SSH Tunnels** — Persistent local port forwarding you can activate and deactivate without closing your session.
+**Lightweight** — No Electron. Native GPU-accelerated rendering via OpenGL. Near-zero idle CPU usage.
 
-**Lightweight** — ~80 MB memory, ~2% idle CPU. No Electron. Native GPU-accelerated rendering via OpenGL.
+**Zen Mode** — `Cmd+Shift+Z` hides all panels and the status bar for a distraction-free terminal.
 
-## Plugins
+## Plugin System
 
-Conch has a **Lua 5.4 plugin system** that lets you extend the terminal with your own tools. Plugins run in a sandboxed environment and have access to a rich API.
+Conch has a **native plugin system** built on a stable C ABI. Plugins are compiled shared libraries (`.dylib` on macOS, `.so` on Linux, `.dll` on Windows) that communicate with the host through a vtable of function pointers.
+
+This means plugins can be written in any language that can produce a C-compatible shared library, though the SDK provides first-class Rust support via the `conch_plugin_sdk` crate.
 
 ### What can plugins do?
 
-- Run commands on local or SSH sessions (silently, without touching your terminal)
-- Show interactive form dialogs (text inputs, dropdowns, checkboxes)
-- Display toast notifications with action buttons
-- Build live-updating sidebar dashboards
-- Encrypt and decrypt data, scan ports, resolve DNS
-- Bind to custom keyboard shortcuts
-- Set custom icons
+- **Register sidebar panels** with live-updating declarative widgets
+- **Provide session backends** — the SSH plugin adds SSH terminal sessions to Conch
+- **Communicate with other plugins** via pub/sub events and RPC queries
+- **Show dialogs** — forms, confirmations, prompts, alerts
+- **Access the clipboard**, set status bar text, show notifications
+- **Register SFTP vtables** for zero-overhead cross-plugin file transfer
+- **Persist configuration** via a per-plugin key-value config store
 
-### Three plugin types
+### Shipped plugins
 
-| Type | Description | Example |
-|------|-------------|---------|
-| **Action** | Run-once scripts triggered from the menu or a keybinding | Encrypt/Decrypt tool |
-| **Panel** | Persistent sidebar tabs with live-updating widgets | System monitor, Port scanner |
-| **Bottom Panel** | Tabbed panels below the terminal for logs, monitoring, etc. | Service dashboard |
+| Plugin | Location | What it does |
+|--------|----------|--------------|
+| **[conch-ssh](plugins/conch-ssh/)** | Right panel | SSH session manager with server tree, quick connect, SFTP, host key verification |
+| **[conch-files](plugins/conch-files/)** | Left panel | Dual-pane file explorer with local/remote browsing and direct SFTP transfer |
 
-### Getting started with plugins
+### Java plugins
 
-Drop a `.lua` file in `~/.config/conch/plugins/` and it appears in the Plugins tab. That's it.
+Conch supports **Java plugins** via an embedded JVM. Any JVM language works (Java, Kotlin, Scala, Groovy). The SDK JAR is embedded in the binary — no external files needed. Java plugins have full access to logging, menu items, notifications, status bar, clipboard, dialogs (prompt, confirm, alert, forms), config persistence, inter-plugin communication, and terminal/tab control.
+
+See the [Java Plugin SDK section](docs/plugin-sdk.md#java-plugins) in the SDK reference.
+
+### Lua plugins
+
+Conch also supports lightweight **Lua 5.4 plugins** for quick scripting. Drop a `.lua` file in `~/.config/conch/plugins/` and it appears in the Plugins tab.
 
 ```lua
--- name: Hello World
--- description: A simple action plugin
--- author: You
+-- plugin-name: Hello World
+-- plugin-description: A simple action plugin
+-- plugin-type: action
+-- plugin-version: 1.0.0
 
 function setup()
-    app.notify("Hello from a plugin!")
+    app.log("info", "Hello from a plugin!")
+    app.register_menu_item("Tools", "Say Hello", "say_hello")
+end
+
+function on_event(event)
+    if type(event) == "table" and event.action == "say_hello" then
+        app.notify("Hello", "Hello from a plugin!", "success")
+    end
 end
 ```
 
-Conch ships with example plugins to get you started:
+Example Lua plugins are included in [`examples/plugins/`](examples/plugins/):
 
 | Plugin | Type | What it does |
 |--------|------|--------------|
 | **System Info** | Panel | Live hostname, memory, disk, CPU load, top processes |
 | **Port Scanner** | Panel | TCP port scanning with service identification |
 | **Encrypt/Decrypt** | Action | AES encryption (CBC, GCM, ECB) with PBKDF2 key derivation |
+| **Tmux Sessions** | Panel | List, attach, rename, kill tmux sessions from a sidebar |
 | **Demo Bottom Panel** | Bottom Panel | Service dashboard with tables, stats, progress bars, live logs |
 
-```bash
-# Symlink the examples into your plugins directory
-ln -s /path/to/rusty_conch/examples/plugins/*.lua ~/.config/conch/plugins/
-```
+### Plugin development
+
+See the **[Native Plugin SDK Reference](docs/plugin-sdk.md)** for the full API, widget system, session backends, and inter-plugin communication.
 
 ### VS Code extension
 
-The [Conch Plugin Support](editors/vscode/) extension provides Lua API completions, hover docs, and `conch check` diagnostics for plugin development.
-
-See the full **[Plugin Documentation](docs/plugins.md)** for the complete API reference.
+The [Conch Plugin Support](editors/vscode/) extension provides Lua API completions, hover docs, and `conch check` diagnostics for Lua plugin development.
 
 ## Installation
 
@@ -122,6 +135,8 @@ cd rusty_conch
 cargo build --release -p conch_app
 ```
 
+Plugins are built automatically as workspace members. The compiled `.dylib`/`.so`/`.dll` files are placed in `target/release/` and discovered by the app at runtime.
+
 <details>
 <summary>Linux dependencies</summary>
 
@@ -143,22 +158,17 @@ sudo apt-get install -y \
 | `Cmd+W` | Close tab |
 | `Cmd+1`–`9` | Switch to tab N |
 | `Cmd+Shift+N` | New window |
-| `Cmd+N` | New SSH connection |
-| `Cmd+/` | Quick connect (toggle) |
-| `Cmd+Shift+B` | Toggle file browser sidebar |
-| `Cmd+Shift+E` | Toggle sessions sidebar |
-| `Cmd+J` | Toggle bottom panel |
-| `Cmd+Shift+F` | Focus file browser |
-| `Cmd+Shift+P` | Plugin search |
-| `Cmd+Shift+T` | SSH tunnels manager |
-| `Cmd+Shift+Z` | Zen mode (hide all sidebars) |
+| `Cmd+Shift+E` | Toggle left panel |
+| `Cmd+Shift+R` | Toggle right panel |
+| `Cmd+Shift+J` | Toggle bottom panel |
+| `Cmd+Shift+Z` | Zen mode (hide all panels + status bar) |
 | `Cmd+Q` | Quit |
 
-All shortcuts are configurable — see [Configuration](#configuration) below.
+All shortcuts are configurable — see [Configuration](#configuration) below. Plugins can also register their own keybindings.
 
 ## Configuration
 
-Conch uses an Alacritty-compatible TOML config at `~/.config/conch/config.toml` (Linux/macOS) or `%APPDATA%\conch\config.toml` (Windows).
+Conch uses a TOML config at `~/.config/conch/config.toml` (Linux/macOS) or `%APPDATA%\conch\config.toml` (Windows).
 
 Standard [Alacritty config](https://alacritty.org/config-alacritty.html) sections (`[window]`, `[font]`, `[colors]`, `[terminal]`) work as-is. Conch adds its own sections:
 
@@ -167,40 +177,51 @@ Standard [Alacritty config](https://alacritty.org/config-alacritty.html) section
 new_tab = "cmd+t"
 close_tab = "cmd+w"
 new_window = "cmd+shift+n"
-new_connection = "cmd+n"
-toggle_left_sidebar = "cmd+shift+b"
-toggle_right_sidebar = "cmd+shift+e"
-toggle_bottom_panel = "cmd+j"
-
-# Bind plugins to keyboard shortcuts
-[conch.keyboard.plugins]
-"system-info.open_panel" = "cmd+shift+i"
-"encrypt-decrypt.run" = "cmd+shift+y"
+quit = "cmd+q"
+zen_mode = "cmd+shift+z"
+toggle_left_panel = "cmd+shift+e"
+toggle_right_panel = "cmd+shift+r"
+toggle_bottom_panel = "cmd+shift+j"
 
 [conch.ui]
-native_menu_bar = false
+native_menu_bar = true     # Use native macOS menu bar (macOS only, default: true)
+font_family = ""           # UI font family (empty = system default)
 font_size = 13.0
+
+[conch.plugins]
+enabled = true                     # Master switch — false disables all plugins
+native = true                      # Native (.dylib/.so/.dll) plugins
+lua = true                         # Lua (.lua) plugins
+java = true                        # Java (.jar) plugins (disabling skips JVM startup)
+search_paths = ["/extra/plugins"]  # Additional plugin discovery directories
 ```
 
-An example config is included in releases as `config.example.toml`.
+> **Plugin keybindings** are registered by plugins themselves via `register_menu_item` (with an optional keybind argument), not in the config file.
 
 ## Project Structure
 
 ```
 crates/
-  conch_core/      Core data models, config, color schemes
-  conch_session/   SSH/local session management, PTY, SFTP, rsync, tunnels
-  conch_plugin/    Lua plugin runtime and API bindings
-  conch_app/       GUI application (eframe/egui)
+  conch_app/          GUI application (eframe/egui) — the main binary
+  conch_core/         Config loading, color schemes, shared types
+  conch_pty/          PTY abstraction and connector
+  conch_plugin/       Plugin host — Lua runner, JVM runtime, native manager, plugin bus
+  conch_plugin_sdk/   SDK for native plugins — HostApi vtable, widgets, FFI types
+plugins/
+  conch-ssh/          SSH session manager (native plugin)
+  conch-files/        Dual-pane file explorer (native plugin)
+java-sdk/             Java Plugin SDK (JAR + sources + javadoc)
 editors/
-  vscode/          VS Code extension for plugin development
+  vscode/             VS Code extension for Lua plugin development
 examples/
-  plugins/         Example plugins (system-info, port-scanner, encrypt-decrypt, demo-bottom-panel)
+  plugins/            Example Lua plugins (tmux-sessions, system-info, etc.)
+docs/
+  plugin-sdk.md       Plugin SDK reference (Native, Java, Lua)
 ```
 
 ## Contributing
 
-Conch is early-stage and actively developed. Bug reports, feature requests, and pull requests are welcome.
+Conch is actively developed. Bug reports, feature requests, and pull requests are welcome.
 
 ## License
 

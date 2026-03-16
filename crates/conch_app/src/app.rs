@@ -1,2747 +1,742 @@
-//! Main application logic for the Conch terminal emulator.
-//!
-//! Implements `eframe::App` and orchestrates terminal sessions, input handling,
-//! SSH connections, and UI panel layout.
+//! Root coordinator — manages window lifecycle, plugin infrastructure, and
+//! background tasks.  The root eframe viewport is invisible; all visible
+//! windows are deferred viewports rendered by `render_window()`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use alacritty_terminal::event::Event as TermEvent;
-use conch_core::{config, ssh_config};
-use conch_session::{SftpCmd, SftpEvent, SshSession, TunnelManager, run_sftp_worker};
-use tokio::runtime::Runtime;
-use uuid::Uuid;
+use conch_core::config;
+use conch_plugin::bus::PluginBus;
+use conch_plugin::jvm::runtime::JavaPluginManager;
+use conch_plugin::lua::runner::RunningLuaPlugin;
+use conch_plugin::native::manager::NativePluginManager;
+use egui::ViewportCommand;
+use parking_lot::Mutex;
+use tokio::sync::oneshot;
 
-use crate::extra_window::ExtraWindow;
-use crate::icons::{Icon, IconCache};
-use crate::input::ResolvedShortcuts;
-use crate::mouse::{Selection, handle_terminal_mouse};
-use crate::plugins::scan_plugin_dirs;
-use crate::sessions::{create_local_session, load_local_entries, open_local_terminal};
-use crate::ssh::{self, show_connecting_screen};
-use crate::state::{AppState, Session, SessionBackend};
-use crate::terminal::widget::{get_selected_text, measure_cell_size, show_terminal, TerminalFrameCache};
-use conch_plugin::{PluginCommand, PluginMeta, PluginResponse};
-use crate::ui::dialogs::new_connection::{self, DialogAction, NewConnectionForm};
-use crate::ui::dialogs::plugin_dialog::{self, ActivePluginDialog};
-use crate::ui::dialogs::tunnels::{self, TunnelManagerAction, TunnelManagerState};
-use crate::ui::session_panel::{self, SessionPanelAction, SessionPanelState};
-use crate::ui::sidebar::{self, SidebarAction};
+use crate::host::bridge::{self, PanelRegistry, SessionRegistry};
+use crate::host::dialogs;
+use crate::host::plugin_manager_ui::PluginManagerState;
+use crate::input::{KeyBinding, ResolvedPluginKeybind, ResolvedShortcuts};
+use crate::ipc::{IpcListener, IpcMessage};
+use crate::menu_bar::MenuBarState;
+use crate::notifications::NotificationManager;
+use crate::platform::PlatformCapabilities;
+use crate::sessions::create_local_session;
+use crate::terminal::color::ResolvedColors;
+use crate::watcher::{FileChangeKind, FileWatcher};
+use crate::window_state::{render_window, SharedAppState, SharedConfig, WindowAction, WindowState};
 
-/// Initial PTY dimensions before the first font-based resize.
-pub(crate) const DEFAULT_COLS: u16 = 80;
-pub(crate) const DEFAULT_ROWS: u16 = 24;
-
-/// Get current process RSS in MB.
-fn get_rss_mb() -> f64 {
-    let pid = std::process::id();
-    // `ps -o rss=` returns RSS in KB on both macOS and Linux.
-    std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "rss="])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.trim().parse::<f64>().ok())
-        .map(|kb| kb / 1024.0)
-        .unwrap_or(0.0)
-}
-
-use crate::ui::widgets::cmd_shortcut;
-
-/// Cursor blink interval in milliseconds.
-pub(crate) const CURSOR_BLINK_MS: u128 = 500;
-
-/// Result from an async SSH connection attempt.
-pub(crate) enum SshConnectOutcome {
-    Connected(SshSession),
-    NeedsPassword(conch_session::SshConnectResult),
-    WrongPassword(conch_session::SshConnectResult),
-    Failed(String),
-}
-
-/// Receives the result of an async SSH connection attempt.
-pub(crate) struct PendingSsh {
-    pub(crate) id: Uuid,
-    pub(crate) rx: std::sync::mpsc::Receiver<SshConnectOutcome>,
-}
-
-/// Display info for a pending SSH connection (shown in the connecting tab).
-pub(crate) struct PendingSshInfo {
-    /// Short name for the tab title and heading, e.g. "dustin-vm"
-    pub(crate) label: String,
-    /// Detail line, e.g. "dustin@lab.nexxuscraft.com:22"
-    pub(crate) detail: String,
-    /// When the connection was initiated (for the bouncing progress bar).
-    pub(crate) started: Instant,
-    /// If the connection failed, the error message to display.
-    pub(crate) error: Option<String>,
-    /// True when waiting for user to enter password.
-    pub(crate) needs_password: bool,
-    /// Password entry buffer for the password prompt.
-    pub(crate) password_buf: String,
-    /// Focus the password field on next frame.
-    pub(crate) password_focus: bool,
-    /// Pending auth state held while waiting for password input.
-    pub(crate) pending_auth: Option<conch_session::SshConnectResult>,
-    /// Receiver for host key verification prompts from the SSH handshake.
-    pub(crate) host_key_rx: Option<tokio::sync::mpsc::UnboundedReceiver<conch_session::HostKeyPrompt>>,
-    /// Active host key prompt waiting for user decision.
-    pub(crate) host_key_prompt: Option<conch_session::HostKeyPrompt>,
-}
-
-/// A resolved plugin keybinding ready for matching.
-pub(crate) struct ResolvedPluginKeybind {
-    /// The parsed key binding.
-    pub(crate) binding: crate::input::KeyBinding,
-    /// Index into `discovered_plugins`.
-    pub(crate) plugin_idx: usize,
-    /// Action name (e.g. "open_panel", "run", or a custom name).
-    pub(crate) action: String,
-}
-
-/// A plugin currently executing on a tokio task.
-pub(crate) struct RunningPlugin {
-    pub(crate) meta: PluginMeta,
-    /// For panel plugins, the index into `discovered_plugins`.
-    pub(crate) discovered_idx: Option<usize>,
-    pub(crate) commands_rx: tokio::sync::mpsc::UnboundedReceiver<(PluginCommand, tokio::sync::mpsc::UnboundedSender<PluginResponse>)>,
-    /// Queued dialog requests waiting to be shown (FIFO).
-    pub(crate) pending_dialogs: Vec<(PluginCommand, tokio::sync::mpsc::UnboundedSender<PluginResponse>)>,
-}
-
-/// The top-level eframe application.
 pub struct ConchApp {
-    pub(crate) state: AppState,
-    pub(crate) rt: Arc<Runtime>,
-    pub(crate) shortcuts: ResolvedShortcuts,
+    pub(crate) shared: Arc<SharedAppState>,
 
-    // Terminal rendering
-    pub(crate) cell_width: f32,
-    pub(crate) cell_height: f32,
-    pub(crate) cell_size_measured: bool,
-    pub(crate) last_pixels_per_point: f32,
-
-    // Cursor blink
-    pub(crate) cursor_visible: bool,
-    pub(crate) last_blink: Instant,
-
-    // Resize tracking (only send resize when dimensions actually change)
-    pub(crate) last_cols: u16,
-    pub(crate) last_rows: u16,
-
-    // Mouse selection
-    pub(crate) selection: Selection,
-
-    // Async SSH connection results
-    pub(crate) pending_ssh_connections: Vec<PendingSsh>,
-    pub(crate) pending_ssh_info: HashMap<Uuid, PendingSshInfo>,
-
-    // SFTP worker state (auto-spawned on SSH connect, drives sidebar remote pane)
-    pub(crate) sftp_cmd_tx: Option<tokio::sync::mpsc::UnboundedSender<SftpCmd>>,
-    pub(crate) sftp_result_rx: Option<std::sync::mpsc::Receiver<SftpEvent>>,
-    pub(crate) sftp_session_id: Option<Uuid>,
-    pub(crate) remote_home: Option<PathBuf>,
-    pub(crate) last_active_tab: Option<Uuid>,
-    pub(crate) transfers: Vec<sidebar::TransferStatus>,
-    /// Whether the current SFTP worker is using rsync for transfers.
-    pub(crate) use_rsync: bool,
-
-    // Icons
-    pub(crate) icon_cache: Option<IconCache>,
-
-    // Session panel UI state (inline rename, new-folder input)
-    pub(crate) session_panel_state: SessionPanelState,
-
-    // Terminal frame cache (re-render last frame when lock is contended)
-    pub(crate) terminal_frame_cache: TerminalFrameCache,
-
-    // Window title dedup (avoid send_viewport_cmd every frame)
-    pub(crate) last_window_title: String,
-
-    // Transient UI state
-    pub(crate) use_native_menu: bool,
-    /// The right sidebar was opened temporarily for quick connect (Cmd+/).
-    pub(crate) quick_connect_opened_sidebar: bool,
-    /// The left sidebar was opened temporarily for plugin search (Cmd+Shift+P).
-    pub(crate) plugin_search_opened_sidebar: bool,
-    pub(crate) plugin_search_query: String,
-    pub(crate) plugin_search_focus: bool,
-    pub(crate) show_about: bool,
-    pub(crate) quit_requested: bool,
-    pub(crate) style_applied: bool,
-
-    // Tunnel management
-    pub(crate) tunnel_manager: TunnelManager,
-    pub(crate) tunnel_dialog: Option<TunnelManagerState>,
-    pub(crate) notification_history_dialog: Option<crate::ui::dialogs::notification_history::NotificationHistoryState>,
-    /// IDs of currently active tunnels (refreshed each frame from TunnelManager).
-    pub(crate) tunnel_active_ids: Vec<Uuid>,
-    /// Receives results from async tunnel activation attempts.
-    pub(crate) pending_tunnel_results: Vec<(Uuid, std::sync::mpsc::Receiver<Result<(), String>>)>,
-
-    // Tab rename dialog
-    pub(crate) rename_tab_id: Option<Uuid>,
-    pub(crate) rename_tab_buf: String,
-    pub(crate) rename_tab_focus: bool,
-
-    // Window focus tracking (for FOCUS_IN_OUT terminal mode)
-    pub(crate) window_focused: bool,
-
-    // Extra windows (multi-window via egui viewports)
-    pub(crate) extra_windows: Vec<ExtraWindow>,
+    /// ALL user-visible windows.  There is no privileged "main" window.
+    pub(crate) windows: Vec<Arc<Mutex<WindowState>>>,
     pub(crate) next_viewport_num: u32,
-    /// Index of the focused extra window, or `None` if the main window is focused.
-    pub(crate) focused_extra_window: Option<usize>,
-    /// The main window is hidden (acting as invisible coordinator while extra
-    /// windows are still open). All main-window UI rendering is skipped.
-    pub(crate) main_window_hidden: bool,
-    /// Benchmark hidden-window mode: spawn extra window, hide main, log stats.
-    pub(crate) bench_hidden_mode: bool,
-    /// Benchmark with extra window (both visible).
-    pub(crate) bench_extra_mode: bool,
-    pub(crate) bench_frame_count: u64,
-    pub(crate) bench_start: Option<Instant>,
-    pub(crate) bench_last_report: Option<Instant>,
 
-    // Plugin engine
-    pub(crate) discovered_plugins: Vec<PluginMeta>,
-    pub(crate) running_plugins: Vec<RunningPlugin>,
-    pub(crate) plugin_output_lines: Vec<String>,
-    pub(crate) active_plugin_dialog: Option<ActivePluginDialog>,
-    pub(crate) plugin_progress: Option<String>,
-    pub(crate) pending_clipboard: Option<String>,
-    pub(crate) selected_plugin: Option<usize>,
+    // Plugin managers (Option — None when that type is disabled by config).
+    pub(crate) native_plugin_mgr: Option<NativePluginManager>,
+    pub(crate) lua_plugins: HashMap<String, RunningLuaPlugin>,
+    /// Boxed HostApi for Lua plugins (kept alive so the pointer stays valid).
+    pub(crate) lua_host_api: Option<Box<conch_plugin_sdk::HostApi>>,
+    pub(crate) java_plugin_mgr: Option<JavaPluginManager>,
+    pub(crate) render_pending: HashMap<String, oneshot::Receiver<String>>,
+    pub(crate) render_last_request: HashMap<String, Instant>,
 
-    // Bottom panel plugins
-    /// Indices of active bottom-panel plugins (tab order).
-    pub(crate) bottom_panel_tabs: Vec<usize>,
-    /// Which bottom panel tab is currently selected.
-    pub(crate) active_bottom_panel: Option<usize>,
-    /// Whether the bottom panel strip is visible.
-    pub(crate) show_bottom_panel: bool,
-    /// Height of the bottom panel strip in logical pixels.
-    pub(crate) bottom_panel_height: f32,
+    /// Per-window tab-change tracking for plugin bus events.
+    prev_active_tabs: HashMap<egui::ViewportId, Option<uuid::Uuid>>,
 
-    // Panel plugins (shared state for both sidebar and bottom panels)
-    /// Widget lists for active panel plugins, keyed by discovered_plugins index.
-    pub(crate) panel_widgets: std::collections::HashMap<usize, Vec<conch_plugin::PanelWidget>>,
-    /// Panel plugin names, keyed by discovered_plugins index.
-    pub(crate) panel_names: std::collections::HashMap<usize, String>,
-    /// Pending button click events for panel plugins, keyed by plugin index.
-    pub(crate) panel_button_events: std::collections::HashMap<usize, Vec<String>>,
-    /// Pending keybind events for panel plugins, keyed by plugin index.
-    pub(crate) panel_keybind_events: std::collections::HashMap<usize, Vec<String>>,
-    /// Response senders waiting for panel events, keyed by plugin index.
-    pub(crate) panel_event_waiters: std::collections::HashMap<usize, tokio::sync::mpsc::UnboundedSender<conch_plugin::PluginResponse>>,
-    /// Checkbox states in the plugin list (mirrors loaded state, user toggles before applying).
-    pub(crate) pending_plugin_loads: Vec<bool>,
-    /// Resolved plugin keybindings (checked after app shortcuts).
-    pub(crate) plugin_keybinds: Vec<ResolvedPluginKeybind>,
-    /// Loaded plugin icon textures, keyed by discovered_plugins index.
-    pub(crate) plugin_icons: HashMap<usize, egui::TextureHandle>,
-    /// Pending icon loads from plugins (path validated but texture not yet created — needs egui Context).
-    pub(crate) pending_plugin_icons: Vec<(usize, Vec<u8>)>,
+    // System.
+    pub(crate) ipc_listener: Option<IpcListener>,
+    pub(crate) file_watcher: Option<FileWatcher>,
+    pub(crate) quit_requested: bool,
+    pub(crate) rt: Arc<tokio::runtime::Runtime>,
 
-    // Notifications
-    pub(crate) notifications: crate::notifications::NotificationManager,
-
-    // IPC socket listener
-    pub(crate) ipc_listener: Option<crate::ipc::IpcListener>,
-
-    // Live-reload file watcher
-    pub(crate) file_watcher: Option<crate::watcher::FileWatcher>,
+    /// Icon + initial window size passed from main().
+    initial_window_icon: Option<Arc<egui::IconData>>,
+    initial_window_size: [f32; 2],
 }
 
 impl ConchApp {
-    pub fn new(rt: Arc<Runtime>) -> Self {
-        let mut startup_warnings: Vec<String> = Vec::new();
-
-        // Migration already ran in main(); load_user_config is idempotent.
-        let mut user_config = config::load_user_config().unwrap_or_else(|e| {
-            startup_warnings.push(format!(
-                "Failed to parse config.toml, using defaults: {e:#}"
-            ));
+    pub fn new(
+        rt: Arc<tokio::runtime::Runtime>,
+        initial_window_size: [f32; 2],
+        icon: Arc<egui::IconData>,
+    ) -> Self {
+        let user_config = config::load_user_config().unwrap_or_else(|e| {
+            log::error!("Failed to load config: {e:#}");
             config::UserConfig::default()
         });
-
-        // Check for unknown config sections.
-        startup_warnings.extend(config::validate_user_config_raw());
-
-        // Validate shell: if a custom program is set, check it exists.
-        if !user_config.terminal.shell.program.is_empty() {
-            let prog = &user_config.terminal.shell.program;
-            let exists = std::path::Path::new(prog).exists()
-                || which::which(prog).is_ok();
-            if !exists {
-                startup_warnings.push(format!(
-                    "Shell program '{}' not found — falling back to default login shell",
-                    prog,
-                ));
-                user_config.terminal.shell.program = String::new();
-                user_config.terminal.shell.args = Vec::new();
-            }
-        }
-
         let persistent = config::load_persistent_state().unwrap_or_default();
-        let sessions_config = config::load_sessions().unwrap_or_default();
+
         let shortcuts = ResolvedShortcuts::from_config(&user_config.conch.keyboard);
+        let platform = PlatformCapabilities::current();
+        let menu_bar_state = MenuBarState::new(user_config.conch.ui.native_menu_bar, &platform);
 
-        let mut state = AppState::new(user_config, persistent, sessions_config);
+        let scheme = conch_core::color_scheme::resolve_theme(&user_config.colors.theme);
+        let colors = ResolvedColors::from_scheme(&scheme);
+        let theme = crate::ui_theme::UiTheme::from_colors(&colors, user_config.colors.appearance_mode);
 
-        // Check if the configured theme was actually loaded (resolve_theme logs
-        // and falls back to Dracula, but we want a toast too).
-        if !state.user_config.colors.theme.eq_ignore_ascii_case("dracula") {
-            let themes = conch_core::color_scheme::list_themes();
-            if !themes.contains_key(&state.user_config.colors.theme) {
-                startup_warnings.push(format!(
-                    "Theme '{}' not found — using built-in Dracula",
-                    state.user_config.colors.theme,
-                ));
-            }
+        let ipc_listener = IpcListener::start();
+        let file_watcher = FileWatcher::start();
+
+        // Plugin infrastructure.
+        // The bus, registry, and bridge are always created (lightweight),
+        // but per-type managers are only created when enabled in config.
+        let plugins_cfg = &user_config.conch.plugins;
+        let plugins_enabled = plugins_cfg.any_enabled();
+
+        let plugin_bus = Arc::new(PluginBus::new());
+        let panel_registry = Arc::new(Mutex::new(PanelRegistry::new()));
+        let (dialog_tx, dialog_state) = dialogs::dialog_channel();
+        let session_registry = Arc::new(Mutex::new(SessionRegistry::new()));
+        let notification_rx = crate::notifications::init_channel();
+        let notifications = NotificationManager::new(notification_rx);
+        bridge::init_bridge(
+            Arc::clone(&plugin_bus),
+            Arc::clone(&panel_registry),
+            dialog_tx,
+            Arc::clone(&session_registry),
+        );
+
+        // Only build HostApi vtables and managers for enabled plugin types.
+        // This avoids allocating resources (and starting a JVM) for types
+        // the user has explicitly disabled.
+        let native_plugin_mgr = if plugins_enabled && plugins_cfg.native {
+            let host_api = bridge::build_host_api();
+            Some(NativePluginManager::new(Arc::clone(&plugin_bus), host_api))
+        } else {
+            if !plugins_cfg.native { log::info!("Native plugins disabled by config"); }
+            None
+        };
+        let java_plugin_mgr = if plugins_enabled && plugins_cfg.java {
+            let host_api = bridge::build_host_api();
+            Some(JavaPluginManager::new(Arc::clone(&plugin_bus), host_api))
+        } else {
+            if !plugins_cfg.java { log::info!("Java plugins disabled by config"); }
+            None
+        };
+        let lua_host_api = if plugins_enabled && plugins_cfg.lua {
+            Some(Box::new(bridge::build_host_api()))
+        } else {
+            if plugins_enabled && !plugins_cfg.lua { log::info!("Lua plugins disabled by config"); }
+            None
+        };
+        if !plugins_cfg.enabled {
+            log::info!("Plugin system disabled by config");
         }
 
-        state.ssh_config_hosts = ssh_config::parse_ssh_config().unwrap_or_default();
-
-        let initial_path = state.file_browser.local_path.clone();
-        state.file_browser.local_entries = load_local_entries(&initial_path);
-        let initial_path2 = state.file_browser.local2_path.clone();
-        state.file_browser.local2_entries = load_local_entries(&initial_path2);
-
-        log::info!(
-            "Opening initial terminal: shell.program={:?}, shell.args={:?}",
-            state.user_config.terminal.shell.program,
-            state.user_config.terminal.shell.args,
-        );
-        let _ = open_local_terminal(&mut state, DEFAULT_COLS, DEFAULT_ROWS, 8.0, 16.0);
-
-        // Discover plugins — check both native config dir and legacy ~/.config/conch/
-        let plugins_enabled = state.user_config.conch.plugins_enabled;
-        let discovered_plugins = if plugins_enabled {
-            scan_plugin_dirs()
-        } else {
-            Vec::new()
+        let shared_config = SharedConfig {
+            user_config,
+            persistent,
+            colors,
+            theme,
+            theme_dirty: true,
+            theme_version: 1,
+            shortcuts,
+            plugin_keybindings: Vec::new(),
+            plugin_keybindings_version: 0,
         };
 
-        // Set up native macOS menu bar (if enabled in config).
-        let use_native_menu = cfg!(target_os = "macos")
-            && state.user_config.conch.ui.native_menu_bar;
-        #[cfg(target_os = "macos")]
-        if use_native_menu {
-            let loaded = &state.persistent.loaded_plugins;
-            let plugins: Vec<(usize, String)> = discovered_plugins
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| {
-                    p.plugin_type == conch_plugin::PluginType::Action && {
-                        let filename = p.path.file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned();
-                        loaded.contains(&filename)
-                    }
-                })
-                .map(|(i, p)| (i, p.name.clone()))
-                .collect();
-            crate::macos_menu::setup_menu_bar(&plugins);
-        }
-
-        let bottom_panel_collapsed = state.persistent.layout.bottom_panel_collapsed;
-        let bottom_panel_height = state.persistent.layout.bottom_panel_height;
+        let shared = Arc::new(SharedAppState {
+            config: Mutex::new(shared_config),
+            plugin_bus,
+            panel_registry,
+            session_registry,
+            render_cache: Mutex::new(HashMap::new()),
+            dialog_state: Mutex::new(dialog_state),
+            notifications: Mutex::new(notifications),
+            icon_cache: Mutex::new(None),
+            menu_bar_state: Mutex::new(menu_bar_state),
+            plugin_manager: Mutex::new(PluginManagerState::default()),
+            platform,
+            force_render: Mutex::new(Vec::new()),
+        });
 
         let mut app = Self {
-            state,
-            rt,
-            shortcuts,
-            cell_width: 8.0,
-            cell_height: 16.0,
-            cell_size_measured: false,
-            last_pixels_per_point: 0.0,
-            cursor_visible: true,
-            last_blink: Instant::now(),
-            last_cols: DEFAULT_COLS,
-            last_rows: DEFAULT_ROWS,
-            selection: Selection::default(),
-            pending_ssh_connections: Vec::new(),
-            pending_ssh_info: HashMap::new(),
-            sftp_cmd_tx: None,
-            sftp_result_rx: None,
-            sftp_session_id: None,
-            remote_home: None,
-            last_active_tab: None,
-            transfers: Vec::new(),
-            use_rsync: false,
-            icon_cache: None,
-            session_panel_state: SessionPanelState::default(),
-            terminal_frame_cache: TerminalFrameCache::default(),
-            last_window_title: String::new(),
-            use_native_menu,
-            quick_connect_opened_sidebar: false,
-            plugin_search_opened_sidebar: false,
-            plugin_search_query: String::new(),
-            plugin_search_focus: false,
-            show_about: false,
-            quit_requested: false,
-            style_applied: false,
-            tunnel_manager: TunnelManager::new(),
-            tunnel_dialog: None,
-            notification_history_dialog: None,
-            tunnel_active_ids: Vec::new(),
-            pending_tunnel_results: Vec::new(),
-            rename_tab_id: None,
-            rename_tab_buf: String::new(),
-            rename_tab_focus: false,
-            window_focused: true,
-            extra_windows: Vec::new(),
+            shared,
+            windows: Vec::new(),
             next_viewport_num: 1,
-            focused_extra_window: None,
-            main_window_hidden: false,
-            bench_hidden_mode: false,
-            bench_extra_mode: false,
-            bench_frame_count: 0,
-            bench_start: None,
-            bench_last_report: None,
-            discovered_plugins,
-            running_plugins: Vec::new(),
-            plugin_output_lines: Vec::new(),
-            active_plugin_dialog: None,
-            plugin_progress: None,
-            pending_clipboard: None,
-            selected_plugin: None,
-            bottom_panel_tabs: Vec::new(),
-            active_bottom_panel: None,
-            show_bottom_panel: !bottom_panel_collapsed,
-            bottom_panel_height,
-            panel_widgets: std::collections::HashMap::new(),
-            panel_names: std::collections::HashMap::new(),
-            panel_button_events: std::collections::HashMap::new(),
-            panel_keybind_events: std::collections::HashMap::new(),
-            panel_event_waiters: std::collections::HashMap::new(),
-            pending_plugin_loads: Vec::new(),
-            plugin_keybinds: Vec::new(),
-            plugin_icons: HashMap::new(),
-            pending_plugin_icons: Vec::new(),
-            notifications: crate::notifications::NotificationManager::new(),
-            ipc_listener: crate::ipc::IpcListener::start(),
-            file_watcher: crate::watcher::FileWatcher::start(),
+            native_plugin_mgr,
+            lua_plugins: HashMap::new(),
+            lua_host_api,
+            java_plugin_mgr,
+            render_pending: HashMap::new(),
+            render_last_request: HashMap::new(),
+            prev_active_tabs: HashMap::new(),
+            ipc_listener,
+            file_watcher,
+            quit_requested: false,
+            rt,
+            initial_window_icon: Some(icon),
+            initial_window_size,
         };
 
         if plugins_enabled {
-            // Activate panel plugins that were loaded in the previous session.
-            app.activate_loaded_panel_plugins();
-
-            // Resolve plugin keybindings.
-            app.resolve_plugin_keybinds();
+            app.discover_plugins();
+            app.auto_load_plugins();
         }
-
-        // Queue startup warnings as toast notifications.
-        for msg in startup_warnings {
-            log::warn!("{msg}");
-            app.notifications.push(crate::notifications::Notification::simple(
-                msg,
-                Some("Configuration Warning".into()),
-                conch_plugin::NotificationLevel::Warning,
-                Some(10.0),
-                None,
-            ));
-        }
-
         app
     }
 
-    /// Drain async event channels for all sessions and pending SSH connections.
-    fn poll_events(&mut self, ctx: &egui::Context) {
-        // Collect terminal events.
-        let mut exited = Vec::new();
-        for session in self.state.sessions.values_mut() {
-            while let Ok(event) = session.event_rx.try_recv() {
-                match event {
-                    TermEvent::Wakeup => ctx.request_repaint(),
-                    TermEvent::Title(title) => session.title = title,
-                    TermEvent::Exit => exited.push(session.id),
-                    _ => {}
-                }
-            }
-        }
-        for id in exited {
-            self.remove_session(id);
-        }
-
-        // When all main-window sessions exit, either hide (if extra windows
-        // are still open) or quit the app.
-        if self.state.sessions.is_empty()
-            && self.pending_ssh_connections.is_empty()
-            && self.pending_ssh_info.is_empty()
-            && !self.main_window_hidden
-        {
-            if self.extra_windows.iter().any(|w| !w.should_close) {
-                self.main_window_hidden = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            } else {
-                self.quit_requested = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-        }
-
-        // Poll host key verification prompts.
-        for info in self.pending_ssh_info.values_mut() {
-            if info.host_key_prompt.is_none() {
-                if let Some(rx) = &mut info.host_key_rx {
-                    if let Ok(prompt) = rx.try_recv() {
-                        info.host_key_prompt = Some(prompt);
-                        ctx.request_repaint();
-                    }
-                }
-            }
-        }
-
-        // Poll pending SSH connections.
-        let mut completed: Vec<(usize, Uuid, SshConnectOutcome)> = Vec::new();
-        for (i, pending) in self.pending_ssh_connections.iter().enumerate() {
-            match pending.rx.try_recv() {
-                Ok(outcome) => completed.push((i, pending.id, outcome)),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    log::error!("SSH connection channel dropped");
-                    completed.push((i, pending.id, SshConnectOutcome::Failed("Connection channel dropped".into())));
-                }
-            }
-        }
-        // Remove in reverse order to keep indices valid.
-        for (i, id, outcome) in completed.into_iter().rev() {
-            self.pending_ssh_connections.remove(i);
-            match outcome {
-                SshConnectOutcome::Connected(mut ssh_session) => {
-                self.pending_ssh_info.remove(&id);
-                let event_rx = ssh_session.take_event_rx();
-
-                // Spawn SFTP worker for the new SSH session.
-                let handle = Arc::clone(ssh_session.ssh_handle());
-                let info = ssh_session.connect_info().clone();
-                let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-                let (result_tx, result_rx) = std::sync::mpsc::channel();
-                self.rt.spawn(run_sftp_worker(handle, cmd_rx, result_tx, Some(info)));
-
-                // Request initial listing of the remote home directory.
-                let _ = cmd_tx.send(SftpCmd::List(PathBuf::from(".")));
-
-                // Tear down any previous SFTP worker.
-                if let Some(old_tx) = self.sftp_cmd_tx.take() {
-                    let _ = old_tx.send(SftpCmd::Shutdown);
-                }
-                self.sftp_cmd_tx = Some(cmd_tx);
-                self.sftp_result_rx = Some(result_rx);
-                self.sftp_session_id = Some(id);
-                self.remote_home = None;
-                self.use_rsync = false;
-
-                let session = Session {
-                    id,
-                    title: "SSH".into(),
-                    custom_title: None,
-                    backend: SessionBackend::Ssh(ssh_session),
-                    event_rx,
-                };
-                self.state.sessions.insert(id, session);
-                // Tab already exists in tab_order from start_ssh_connect.
-                }
-                SshConnectOutcome::NeedsPassword(pending_result) => {
-                    // Server is reachable but needs a password — show password prompt.
-                    if let Some(info) = self.pending_ssh_info.get_mut(&id) {
-                        info.needs_password = true;
-                        info.password_focus = true;
-                        info.pending_auth = Some(pending_result);
-                    }
-                }
-                SshConnectOutcome::WrongPassword(pending_result) => {
-                    // Wrong password — prompt again.
-                    if let Some(info) = self.pending_ssh_info.get_mut(&id) {
-                        info.needs_password = true;
-                        info.password_focus = true;
-                        info.password_buf.clear();
-                        info.error = Some("Incorrect password.".into());
-                        info.pending_auth = Some(pending_result);
-                    }
-                }
-                SshConnectOutcome::Failed(err) => {
-                    log::error!("SSH connection failed: {err}");
-                    // Connection failed — keep the tab but show the error.
-                    if let Some(info) = self.pending_ssh_info.get_mut(&id) {
-                        info.error = Some(err);
-                    }
-                }
-            }
-        }
-
-        // Manage SFTP worker on tab switch.
-        if self.state.active_tab != self.last_active_tab {
-            self.last_active_tab = self.state.active_tab;
-            if let Some(id) = self.state.active_tab {
-                if let Some(session) = self.state.sessions.get(&id) {
-                    match &session.backend {
-                        SessionBackend::Ssh(ssh) => {
-                            if self.sftp_session_id != Some(id) {
-                                // Different SSH tab — tear down old worker, spawn new.
-                                if let Some(old_tx) = self.sftp_cmd_tx.take() {
-                                    let _ = old_tx.send(SftpCmd::Shutdown);
-                                }
-                                let handle = Arc::clone(ssh.ssh_handle());
-                                let info = ssh.connect_info().clone();
-                                let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-                                let (result_tx, result_rx) = std::sync::mpsc::channel();
-                                self.rt.spawn(run_sftp_worker(handle, cmd_rx, result_tx, Some(info)));
-                                let _ = cmd_tx.send(SftpCmd::List(PathBuf::from(".")));
-                                self.sftp_cmd_tx = Some(cmd_tx);
-                                self.sftp_result_rx = Some(result_rx);
-                                self.sftp_session_id = Some(id);
-                                self.remote_home = None;
-                                self.use_rsync = false;
-                                self.state.file_browser.remote_entries.clear();
-                                self.state.file_browser.remote_path = None;
-                                self.transfers.clear();
-                            } else if self.state.file_browser.remote_path.is_none() {
-                                // Same SSH tab but remote state was cleared — re-request listing.
-                                if let Some(tx) = &self.sftp_cmd_tx {
-                                    let _ = tx.send(SftpCmd::List(
-                                        self.remote_home.clone().unwrap_or_else(|| PathBuf::from(".")),
-                                    ));
-                                }
-                            }
-                        }
-                        SessionBackend::Local(_) => {
-                            // Local tab — hide remote pane but keep SFTP worker alive.
-                            self.state.file_browser.remote_path = None;
-                            self.state.file_browser.remote_entries.clear();
-                        }
-                    }
-                }
-            }
-        }
-
-        // Poll SFTP results into the sidebar file browser.
-        if let Some(rx) = &self.sftp_result_rx {
-            while let Ok(event) = rx.try_recv() {
-                match event {
-                    SftpEvent::Listing(listing) => {
-                        self.state.file_browser.remote_path_edit =
-                            listing.path.to_string_lossy().into_owned();
-                        self.state.file_browser.remote_path = Some(listing.path);
-                        self.state.file_browser.remote_entries =
-                            listing.entries.into_iter().map(Into::into).collect();
-                        self.state.file_browser.remote_selected = None;
-                        if self.remote_home.is_none() {
-                            self.remote_home = Some(listing.home);
-                        }
-                    }
-                    SftpEvent::TransferProgress {
-                        filename,
-                        bytes_transferred,
-                        total_bytes,
-                    } => {
-                        if let Some(ts) = self
-                            .transfers
-                            .iter_mut()
-                            .find(|t| t.filename == filename && !t.done)
-                        {
-                            ts.bytes_transferred = bytes_transferred;
-                            ts.total_bytes = total_bytes;
-                        }
-                    }
-                    SftpEvent::TransferComplete {
-                        filename,
-                        success,
-                        error,
-                    } => {
-                        // Update matching in-progress transfer, or add a new entry.
-                        let is_upload = self
-                            .transfers
-                            .iter()
-                            .find(|t| t.filename == filename && !t.done)
-                            .map(|t| t.upload)
-                            .unwrap_or(true);
-                        if let Some(ts) = self
-                            .transfers
-                            .iter_mut()
-                            .find(|t| t.filename == filename && !t.done)
-                        {
-                            ts.done = true;
-                            ts.error = if success { None } else { error.clone() };
-                            if success {
-                                ts.bytes_transferred = ts.total_bytes;
-                            }
-                        } else {
-                            self.transfers.push(sidebar::TransferStatus {
-                                filename: filename.clone(),
-                                upload: true,
-                                done: true,
-                                error: if success { None } else { error.clone() },
-                                bytes_transferred: 0,
-                                total_bytes: 0,
-                                cancel: Arc::new(AtomicBool::new(false)),
-                                use_rsync: self.use_rsync,
-                            });
-                        }
-
-                        // Show toast notification for the transfer result.
-                        let direction = if is_upload { "Upload" } else { "Download" };
-                        if success {
-                            self.notifications.push(
-                                crate::notifications::Notification::simple(
-                                    format!("{direction} complete: {filename}"),
-                                    Some(format!("{direction} Successful")),
-                                    conch_plugin::NotificationLevel::Success,
-                                    None,
-                                    None,
-                                ),
-                            );
-                        } else if error.as_deref() == Some("cancelled") {
-                            self.notifications.push(
-                                crate::notifications::Notification::simple(
-                                    format!("{direction} cancelled: {filename}"),
-                                    Some(format!("{direction} Cancelled")),
-                                    conch_plugin::NotificationLevel::Warning,
-                                    None,
-                                    None,
-                                ),
-                            );
-                        } else {
-                            let msg = error.unwrap_or_else(|| "unknown error".into());
-                            self.notifications.push(
-                                crate::notifications::Notification::simple(
-                                    format!("{direction} failed: {filename}\n{msg}"),
-                                    Some(format!("{direction} Failed")),
-                                    conch_plugin::NotificationLevel::Error,
-                                    Some(8.0),
-                                    None,
-                                ),
-                            );
-                        }
-
-                        // Refresh both panes after a transfer completes.
-                        if let Some(tx) = &self.sftp_cmd_tx {
-                            if let Some(rp) = &self.state.file_browser.remote_path {
-                                let _ = tx.send(SftpCmd::List(rp.clone()));
-                            }
-                        }
-                        let local = self.state.file_browser.local_path.clone();
-                        self.state.file_browser.local_entries = load_local_entries(&local);
-                    }
-                    SftpEvent::RsyncAvailable(available) => {
-                        self.use_rsync = available;
-                    }
-                }
-            }
-        }
-
-        // Poll running plugins (skip if plugin engine is disabled).
-        if self.state.user_config.conch.plugins_enabled {
-            self.poll_plugin_events(ctx);
-
-            // Flush any pending plugin icon textures.
-            if !self.pending_plugin_icons.is_empty() {
-                self.flush_pending_icons(ctx);
-            }
-        }
-
-        // Poll file watcher for live-reload.
-        self.poll_file_watcher();
-    }
-
-    /// Handle live-reload events from the file watcher.
-    fn poll_file_watcher(&mut self) {
-        let Some(ref mut watcher) = self.file_watcher else {
-            return;
-        };
-        let changes = watcher.poll();
-        if changes.is_empty() {
-            return;
-        }
-
-        use crate::watcher::FileChangeKind;
-
-        for change in changes {
-            match change.kind {
-                FileChangeKind::Config => self.live_reload_config(),
-                FileChangeKind::Themes => self.live_reload_theme(change.path.as_deref()),
-                FileChangeKind::Plugins => self.live_reload_plugins(),
-                FileChangeKind::SshConfig => self.live_reload_ssh_config(),
-            }
-        }
-    }
-
-    /// Reload config.toml and apply changes (font, theme, shortcuts, etc.).
-    fn live_reload_config(&mut self) {
-        let new_config = match config::load_user_config() {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("Live-reload: failed to parse config.toml: {e:#}");
-                self.notifications.push(crate::notifications::Notification::simple(
-                    format!("Failed to reload config.toml: {e:#}"),
-                    Some("Config Reload Error".into()),
-                    conch_plugin::NotificationLevel::Error,
-                    Some(8.0),
-                    None,
-                ));
-                return;
-            }
-        };
-
-        let mut what_changed = Vec::new();
-
-        // Font change.
-        if new_config.font != self.state.user_config.font {
-            what_changed.push("font");
-            self.cell_size_measured = false;
-            self.style_applied = false;
-        }
-
-        // Theme change.
-        if new_config.colors.theme != self.state.user_config.colors.theme {
-            what_changed.push("theme");
-            let scheme = conch_core::color_scheme::resolve_theme(&new_config.colors.theme);
-            self.state.colors = crate::terminal::color::ResolvedColors::from_scheme(&scheme);
-        }
-
-        // Appearance mode change.
-        if new_config.colors.appearance_mode != self.state.user_config.colors.appearance_mode {
-            what_changed.push("appearance");
-            self.style_applied = false;
-        }
-
-        // Keyboard shortcuts change.
-        if new_config.conch.keyboard != self.state.user_config.conch.keyboard {
-            what_changed.push("keyboard shortcuts");
-            self.shortcuts = ResolvedShortcuts::from_config(&new_config.conch.keyboard);
-            self.resolve_plugin_keybinds();
-        }
-
-        // Detect settings that require a restart to take effect.
-        let mut restart_needed = Vec::new();
-
-        if new_config.terminal.shell != self.state.user_config.terminal.shell {
-            restart_needed.push("shell program");
-        }
-        if new_config.terminal.env != self.state.user_config.terminal.env {
-            restart_needed.push("terminal environment");
-        }
-        if new_config.terminal.cursor != self.state.user_config.terminal.cursor {
-            restart_needed.push("cursor style");
-        }
-        if new_config.window != self.state.user_config.window {
-            restart_needed.push("window settings");
-        }
-        if new_config.conch.ui != self.state.user_config.conch.ui {
-            restart_needed.push("UI settings");
-        }
-
-        self.state.user_config = new_config;
-
-        if !what_changed.is_empty() {
-            let summary = what_changed.join(", ");
-            log::info!("Live-reload: config updated ({summary})");
-            self.notifications.push(crate::notifications::Notification::simple(
-                format!("Configuration reloaded: {summary}"),
-                Some("Config Reloaded".into()),
-                conch_plugin::NotificationLevel::Info,
-                None,
-                None,
-            ));
-        }
-
-        if !restart_needed.is_empty() {
-            let summary = restart_needed.join(", ");
-            log::info!("Live-reload: restart required for {summary}");
-            self.notifications.push(crate::notifications::Notification::simple(
-                format!("Restart required to apply: {summary}"),
-                Some("Restart Required".into()),
-                conch_plugin::NotificationLevel::Warning,
-                Some(10.0),
-                None,
-            ));
-        }
-    }
-
-    /// Reload the active theme (theme file changed on disk).
-    fn live_reload_theme(&mut self, changed_path: Option<&std::path::Path>) {
-        // Only reload if the changed file is the active theme (or path unknown).
-        if let Some(path) = changed_path {
-            let active_theme = &self.state.user_config.colors.theme;
-            let changed_stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
-            if !changed_stem.eq_ignore_ascii_case(active_theme) {
-                log::debug!(
-                    "Live-reload: ignoring theme file change for '{}' (active: '{}')",
-                    changed_stem,
-                    active_theme,
-                );
-                return;
-            }
-        }
-
-        let scheme = conch_core::color_scheme::resolve_theme(
-            &self.state.user_config.colors.theme,
-        );
-        self.state.colors = crate::terminal::color::ResolvedColors::from_scheme(&scheme);
-        log::info!("Live-reload: theme '{}' reloaded", self.state.user_config.colors.theme);
-        self.notifications.push(crate::notifications::Notification::simple(
-            format!("Theme '{}' reloaded", self.state.user_config.colors.theme),
-            Some("Theme Reloaded".into()),
-            conch_plugin::NotificationLevel::Info,
-            None,
-            None,
-        ));
-    }
-
-    /// Rescan plugin directories and detect additions/removals.
-    fn live_reload_plugins(&mut self) {
-        if !self.state.user_config.conch.plugins_enabled {
-            return;
-        }
-        use std::collections::HashSet;
-
-        let old_names: HashSet<String> = self
-            .discovered_plugins
-            .iter()
-            .map(|p| p.name.clone())
-            .collect();
-
-        let new_plugins = scan_plugin_dirs();
-        let new_names: HashSet<String> = new_plugins.iter().map(|p| p.name.clone()).collect();
-
-        let added: Vec<&str> = new_names
-            .iter()
-            .filter(|n| !old_names.contains(n.as_str()))
-            .map(|s| s.as_str())
-            .collect();
-        let removed: Vec<&str> = old_names
-            .iter()
-            .filter(|n| !new_names.contains(n.as_str()))
-            .map(|s| s.as_str())
-            .collect();
-
-        if added.is_empty() && removed.is_empty() {
-            return;
-        }
-
-        // Check if any removed plugin is currently loaded and running.
-        let loaded = &self.state.persistent.loaded_plugins;
-        let removed_active: Vec<&str> = removed
-            .iter()
-            .filter(|name| {
-                // Find the old plugin meta to get its filename.
-                self.discovered_plugins.iter().any(|p| {
-                    &p.name == *name
-                        && loaded.contains(
-                            &p.path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned(),
-                        )
-                })
+    fn refresh_plugin_keybindings(&self) {
+        let version = bridge::plugin_menu_items_version();
+        let mut cfg = self.shared.config.lock();
+        if version == cfg.plugin_keybindings_version { return; }
+        cfg.plugin_keybindings_version = version;
+        cfg.plugin_keybindings = bridge::plugin_menu_items()
+            .into_iter()
+            .filter_map(|item| {
+                let kb_str = item.keybind.as_deref()?;
+                let binding = KeyBinding::parse(kb_str)?;
+                Some(ResolvedPluginKeybind { binding, plugin_name: item.plugin_name, action: item.action })
             })
-            .copied()
             .collect();
+    }
 
-        self.discovered_plugins = new_plugins;
-        self.pending_plugin_loads.clear();
-
-        let mut msgs = Vec::new();
-        if !added.is_empty() {
-            msgs.push(format!("Added: {}", added.join(", ")));
+    fn build_window_viewport(&self, size: [f32; 2]) -> egui::ViewportBuilder {
+        let cfg = self.shared.config.lock();
+        let decorations = self.shared.platform.effective_decorations(cfg.user_config.window.decorations);
+        let mut builder = egui::ViewportBuilder::default().with_inner_size(size);
+        if let Some(icon) = &self.initial_window_icon {
+            builder = builder.with_icon(Arc::clone(icon));
         }
-        if !removed.is_empty() {
-            msgs.push(format!("Removed: {}", removed.join(", ")));
-        }
-        let summary = msgs.join(". ");
+        drop(cfg);
+        crate::build_viewport(builder, decorations, &self.shared.platform)
+    }
 
-        log::info!("Live-reload: plugins changed — {summary}");
-        self.notifications.push(crate::notifications::Notification::simple(
-            summary,
-            Some("Plugins Updated".into()),
-            conch_plugin::NotificationLevel::Info,
-            Some(8.0),
-            None,
-        ));
+    pub(crate) fn spawn_window(&mut self, cwd: Option<std::path::PathBuf>) -> Option<egui::ViewportId> {
+        let cwd = cwd.or_else(|| {
+            self.windows.iter()
+                .find(|w| w.lock().has_focus)
+                .and_then(|w| {
+                    let win = w.lock();
+                    win.active_session().and_then(|s| s.child_pid()).and_then(conch_pty::get_cwd_of_pid)
+                })
+        });
+        let user_config = self.shared.config.lock().user_config.clone();
+        let (_, session) = create_local_session(&user_config, cwd)?;
+        // First window uses ROOT viewport (rendered directly by update()).
+        // Extra windows get their own viewport IDs (rendered via show_viewport_immediate).
+        let viewport_id = if self.windows.is_empty() {
+            egui::ViewportId::ROOT
+        } else {
+            let num = self.next_viewport_num;
+            self.next_viewport_num += 1;
+            egui::ViewportId::from_hash_of(format!("conch_window_{num}"))
+        };
+        let size = if self.windows.is_empty() { self.initial_window_size } else { [800.0, 600.0] };
+        let builder = self.build_window_viewport(size);
+        let layout = self.shared.config.lock().persistent.layout.clone();
+        let win = WindowState::with_session(viewport_id, builder, session, &layout);
+        self.windows.push(Arc::new(Mutex::new(win)));
+        Some(viewport_id)
+    }
 
-        if !removed_active.is_empty() {
-            let names = removed_active.join(", ");
-            self.notifications.push(crate::notifications::Notification::simple(
-                format!("{names} — plugin will remain active until restart"),
-                Some("Active Plugin Removed".into()),
-                conch_plugin::NotificationLevel::Warning,
-                Some(10.0),
-                None,
-            ));
+    fn handle_ipc(&mut self) {
+        let Some(listener) = &self.ipc_listener else { return };
+        for msg in listener.drain() {
+            match msg {
+                IpcMessage::CreateWindow { working_directory } => {
+                    self.spawn_window(working_directory.map(std::path::PathBuf::from));
+                }
+                IpcMessage::CreateTab { working_directory } => {
+                    let cwd = working_directory.map(std::path::PathBuf::from);
+                    let user_config = self.shared.config.lock().user_config.clone();
+                    if let Some((id, session)) = create_local_session(&user_config, cwd) {
+                        let target = self.windows.iter()
+                            .find(|w| w.lock().has_focus)
+                            .or_else(|| self.windows.first());
+                        if let Some(w) = target {
+                            let mut win = w.lock();
+                            win.sessions.insert(id, session);
+                            win.tab_order.push(id);
+                            win.active_tab = Some(id);
+                        }
+                    }
+                }
+            }
         }
     }
 
-    /// Reload SSH config (~/.ssh/config) and update the session panel.
-    fn live_reload_ssh_config(&mut self) {
-        use std::collections::HashSet;
+    fn drain_pending_sessions(&mut self) {
+        let mut registry = self.shared.session_registry.lock();
+        let pending: Vec<_> = registry.pending_open.drain(..).collect();
+        let closing: Vec<_> = registry.pending_close.drain(..).collect();
+        let status_updates: Vec<_> = registry.pending_status.drain(..).collect();
+        drop(registry);
 
-        let old_hosts = self.state.ssh_config_hosts.clone();
-        let old_names: HashSet<String> = old_hosts.iter().map(|h| h.name.clone()).collect();
+        for mut ps in pending {
+            let id = uuid::Uuid::new_v4();
+            let event_rx = ps.bridge.take_event_rx();
+            let session = crate::state::Session {
+                id, title: ps.title, custom_title: None,
+                backend: crate::state::SessionBackend::Plugin { bridge: ps.bridge, vtable: ps.vtable, backend_handle: ps.backend_handle },
+                event_rx, status: conch_plugin_sdk::SessionStatus::Connecting,
+                status_detail: None, connect_started: Some(Instant::now()), prompt: None,
+            };
+            let target = ps.target_viewport
+                .and_then(|vp| self.windows.iter().find(|w| w.lock().viewport_id == vp))
+                .or_else(|| self.windows.first());
+            if let Some(window_arc) = target {
+                let mut win = window_arc.lock();
+                if win.last_cols > 0 && win.last_rows > 0 {
+                    session.resize(win.last_cols, win.last_rows, win.cell_width as u16, win.cell_height as u16);
+                }
+                win.sessions.insert(id, session);
+                win.tab_order.push(id);
+                win.active_tab = Some(id);
+            }
+        }
 
-        match ssh_config::parse_ssh_config() {
-            Ok(hosts) => {
-                let new_names: HashSet<String> = hosts.iter().map(|h| h.name.clone()).collect();
-                let added: Vec<&str> = new_names
-                    .iter()
-                    .filter(|n| !old_names.contains(n.as_str()))
-                    .map(|s| s.as_str())
-                    .collect();
-                let removed: Vec<&str> = old_names
-                    .iter()
-                    .filter(|n| !new_names.contains(n.as_str()))
-                    .map(|s| s.as_str())
-                    .collect();
-
-                // Detect property changes (host, port, user, etc.) when names stay the same.
-                let properties_changed = hosts != old_hosts && added.is_empty() && removed.is_empty();
-
-                self.state.ssh_config_hosts = hosts;
-
-                if !added.is_empty() || !removed.is_empty() {
-                    let mut parts = Vec::new();
-                    if !added.is_empty() {
-                        parts.push(format!("Added: {}", added.join(", ")));
+        for handle in closing {
+            for window_arc in &self.windows {
+                let mut win = window_arc.lock();
+                let found = win.sessions.iter().find_map(|(sid, s)| {
+                    if let crate::state::SessionBackend::Plugin { bridge, .. } = &s.backend {
+                        if bridge.handle == handle { return Some(*sid); }
                     }
-                    if !removed.is_empty() {
-                        parts.push(format!("Removed: {}", removed.join(", ")));
+                    None
+                });
+                if let Some(sid) = found { win.remove_session(sid); break; }
+            }
+        }
+
+        let prompts: Vec<_> = {
+            let mut reg = self.shared.session_registry.lock();
+            reg.pending_prompts.drain(..).collect()
+        };
+        for prompt_req in prompts {
+            let handle = prompt_req.handle;
+            let prompt_state = crate::state::SessionPrompt {
+                prompt_type: prompt_req.prompt_type, message: prompt_req.message,
+                detail: prompt_req.detail, password_buf: String::new(),
+                focus_password: true, show_password: false, reply: Some(prompt_req.reply),
+            };
+            for window_arc in &self.windows {
+                let mut win = window_arc.lock();
+                let found = win.sessions.values_mut().find(|s| {
+                    matches!(&s.backend, crate::state::SessionBackend::Plugin { bridge, .. } if bridge.handle == handle)
+                });
+                if let Some(session) = found { session.prompt = Some(prompt_state); break; }
+            }
+        }
+
+        for update in status_updates {
+            for window_arc in &self.windows {
+                let mut win = window_arc.lock();
+                let found = win.sessions.iter().find_map(|(sid, s)| {
+                    if let crate::state::SessionBackend::Plugin { bridge, .. } = &s.backend {
+                        if bridge.handle == update.handle { return Some(*sid); }
                     }
-                    let summary = parts.join(". ");
-                    log::info!("Live-reload: SSH config updated — {summary}");
-                    self.notifications.push(crate::notifications::Notification::simple(
-                        summary,
-                        Some("SSH Config Reloaded".into()),
-                        conch_plugin::NotificationLevel::Info,
-                        None,
-                        None,
-                    ));
-                } else if properties_changed {
-                    log::info!("Live-reload: SSH host properties updated");
-                    self.notifications.push(crate::notifications::Notification::simple(
-                        "SSH host properties updated".into(),
-                        Some("SSH Config Reloaded".into()),
-                        conch_plugin::NotificationLevel::Info,
-                        None,
-                        None,
-                    ));
+                    None
+                });
+                if let Some(sid) = found {
+                    if let Some(session) = win.sessions.get_mut(&sid) {
+                        session.status = update.status;
+                        session.status_detail = update.detail;
+                    }
+                    break;
                 }
             }
-            Err(e) => {
-                log::warn!("Live-reload: failed to parse SSH config: {e}");
-                self.notifications.push(crate::notifications::Notification::simple(
-                    format!("Failed to reload SSH config: {e}"),
-                    Some("SSH Config Error".into()),
-                    conch_plugin::NotificationLevel::Warning,
-                    Some(8.0),
-                    None,
-                ));
+        }
+    }
+
+    fn drain_new_tabs(&mut self) {
+        let tabs = crate::host::bridge::drain_new_tabs();
+        if tabs.is_empty() {
+            return;
+        }
+        let user_config = self.shared.config.lock().user_config.clone();
+        for pending in tabs {
+            let session_result = if pending.plain {
+                crate::sessions::create_plain_session(&user_config, None)
+            } else {
+                create_local_session(&user_config, None)
+            };
+            if let Some((id, session)) = session_result {
+                let target = self.windows.iter().find(|w| w.lock().has_focus)
+                    .or_else(|| self.windows.first());
+                if let Some(window_arc) = target {
+                    let mut win = window_arc.lock();
+                    if win.last_cols > 0 && win.last_rows > 0 {
+                        session.resize(
+                            win.last_cols, win.last_rows,
+                            win.cell_width as u16, win.cell_height as u16,
+                        );
+                    }
+                    // Write command to the new session after a brief delay
+                    // to let the shell initialize.
+                    if let Some(cmd) = pending.command {
+                        let cmd_bytes = cmd.into_bytes();
+                        // Write directly — the shell should be ready for input
+                        // within the first frame since PTY setup is synchronous.
+                        session.write(&cmd_bytes);
+                    }
+                    win.sessions.insert(id, session);
+                    win.tab_order.push(id);
+                    win.active_tab = Some(id);
+                }
+            }
+        }
+    }
+
+    fn drain_pty_writes(&mut self) {
+        let writes = crate::host::bridge::drain_pty_writes();
+        if writes.is_empty() {
+            return;
+        }
+        // Write to the focused window's active session.
+        let target = self.windows.iter().find(|w| w.lock().has_focus)
+            .or_else(|| self.windows.first());
+        if let Some(window_arc) = target {
+            let win = window_arc.lock();
+            if let Some(session) = win.active_session() {
+                for data in writes {
+                    session.write(&data);
+                }
+            }
+        }
+    }
+
+    fn check_tab_changes(&mut self) {
+        for window_arc in &self.windows {
+            let win = window_arc.lock();
+            let prev = self.prev_active_tabs.get(&win.viewport_id).copied().flatten();
+            if win.active_tab != prev {
+                self.prev_active_tabs.insert(win.viewport_id, win.active_tab);
+                let (is_ssh, session_id) = if let Some(session) = win.active_session() {
+                    match &session.backend {
+                        crate::state::SessionBackend::Plugin { bridge, .. } => (true, Some(bridge.handle.0)),
+                        crate::state::SessionBackend::Local(_) => (false, None),
+                    }
+                } else { (false, None) };
+                let mut data = serde_json::json!({ "is_ssh": is_ssh });
+                if let Some(sid) = session_id { data["session_id"] = serde_json::json!(sid); }
+                self.shared.plugin_bus.publish("app", "app.tab_changed", data);
             }
         }
     }
 }
 
 impl eframe::App for ConchApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // Strip Tab key from the root viewport (windows[0]).  render_window()
+        // also strips via ctx.input_mut(), but raw_input_hook catches it
+        // earlier before egui's focus system ever sees it.
+        if let Some(win_arc) = self.windows.first() {
+            let win = win_arc.lock();
+            if self.shared.dialog_state.lock().is_active_for(win.viewport_id) {
+                return;
+            }
+            let mut tab_bytes: Option<Vec<u8>> = None;
+            raw_input.events.retain(|e| match e {
+                egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } => {
+                    tab_bytes = Some(if modifiers.shift { b"\x1b[Z".to_vec() } else { b"\t".to_vec() });
+                    false
+                }
+                _ => true,
+            });
+            if let Some(bytes) = tab_bytes {
+                if let Some(session) = win.active_session() {
+                    session.write(&bytes);
+                }
+            }
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let frame_start = Instant::now();
-
-        if !self.style_applied {
-            self.apply_initial_style(ctx);
-        }
-
-        // --bench-extra: spawn extra window on first styled frame (both visible).
-        if self.bench_extra_mode && self.extra_windows.is_empty() && self.style_applied {
-            self.spawn_extra_window();
-            self.bench_extra_mode = false; // one-shot
-        }
-
-        // --bench-hidden: on first frame after style is applied, spawn an
-        // extra window and hide the main window.
-        if self.bench_hidden_mode && !self.main_window_hidden && self.style_applied {
-            self.spawn_extra_window();
-            self.main_window_hidden = true;
-            self.bench_start = Some(Instant::now());
-            self.bench_last_report = Some(Instant::now());
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            // Shut down main-window sessions.
-            let ids: Vec<_> = self.state.sessions.keys().copied().collect();
-            for id in ids {
-                self.remove_session(id);
+        // ── Coordinator background work ──
+        self.refresh_plugin_keybindings();
+        if let Some(watcher) = &mut self.file_watcher {
+            for change in watcher.poll() {
+                match change.kind {
+                    FileChangeKind::Config => {
+                        log::info!("Config file changed, reloading...");
+                        match config::load_user_config() {
+                            Ok(new_config) => {
+                                let scheme = conch_core::color_scheme::resolve_theme(&new_config.colors.theme);
+                                let colors = ResolvedColors::from_scheme(&scheme);
+                                let theme = crate::ui_theme::UiTheme::from_colors(&colors, new_config.colors.appearance_mode);
+                                let shortcuts = ResolvedShortcuts::from_config(&new_config.conch.keyboard);
+                                self.shared.menu_bar_state.lock().update_mode(new_config.conch.ui.native_menu_bar, &self.shared.platform);
+                                let mut cfg = self.shared.config.lock();
+                                cfg.shortcuts = shortcuts; cfg.colors = colors; cfg.theme = theme;
+                                cfg.theme_dirty = true; cfg.theme_version += 1; cfg.user_config = new_config;
+                                drop(cfg);
+                                crate::notifications::push(crate::notifications::Notification::new(
+                                    Some("Config Reloaded".into()), "Configuration updated successfully.".into(),
+                                    crate::notifications::NotificationLevel::Success, None));
+                            }
+                            Err(e) => {
+                                crate::notifications::push(crate::notifications::Notification::new(
+                                    Some("Config Error".into()), format!("Failed to reload config: {e}"),
+                                    crate::notifications::NotificationLevel::Error, None));
+                            }
+                        }
+                    }
+                    FileChangeKind::Themes => {
+                        log::info!("Themes changed, reloading...");
+                        let mut cfg = self.shared.config.lock();
+                        let scheme = conch_core::color_scheme::resolve_theme(&cfg.user_config.colors.theme);
+                        cfg.colors = ResolvedColors::from_scheme(&scheme);
+                        cfg.theme = crate::ui_theme::UiTheme::from_colors(&cfg.colors, cfg.user_config.colors.appearance_mode);
+                        cfg.theme_dirty = true; cfg.theme_version += 1;
+                        drop(cfg);
+                        crate::notifications::push(crate::notifications::Notification::new(
+                            Some("Theme Reloaded".into()), "Theme updated successfully.".into(),
+                            crate::notifications::NotificationLevel::Success, None));
+                    }
+                }
             }
-            eprintln!("[bench] Hidden-window mode active. Reporting every 2s.");
+        }
+        self.handle_ipc();
+        self.poll_plugin_renders();
+        self.drain_pending_sessions();
+        self.drain_pty_writes();
+        self.drain_new_tabs();
+        self.check_tab_changes();
+
+        // ── Ensure at least one window exists ──
+        if self.windows.is_empty() {
+            self.spawn_window(None);
         }
 
-        // Measure cell size from the monospace font, and re-measure when
-        // pixels_per_point changes (e.g. app launch on Retina where ppp
-        // starts at 1.0 then jumps to 2.0, or moving between displays).
-        let ppp = ctx.pixels_per_point();
-        if !self.cell_size_measured || self.last_pixels_per_point != ppp {
-            let (cw, ch) = measure_cell_size(ctx, self.state.user_config.font.size);
-            let offset = &self.state.user_config.font.offset;
-            if cw > 0.0 && ch > 0.0 {
-                self.cell_width = (cw + offset.x).max(1.0);
-                self.cell_height = (ch + offset.y).max(1.0);
-                self.cell_size_measured = true;
-                self.last_pixels_per_point = ppp;
-                // Force a resize on the next render pass.
-                self.last_cols = 0;
-                self.last_rows = 0;
-            }
-        }
-
-        // Cursor blink — toggle visibility and schedule the next blink.
-        // Use request_repaint_after instead of request_repaint to avoid
-        // driving the app at 60fps continuously when idle.
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last_blink).as_millis();
-        if elapsed >= CURSOR_BLINK_MS {
-            self.cursor_visible = !self.cursor_visible;
-            self.last_blink = now;
-            ctx.request_repaint_after(std::time::Duration::from_millis(CURSOR_BLINK_MS as u64));
+        // ── Render windows ──
+        // windows[0] maps to the ROOT viewport and is rendered directly.
+        // windows[1..] use show_viewport_immediate.  All call render_window().
+        let root_visible = {
+            let win = self.windows[0].lock();
+            !win.should_close
+        };
+        if root_visible {
+            let mut win = self.windows[0].lock();
+            render_window(ctx, &mut win, &self.shared);
         } else {
-            let remaining = CURSOR_BLINK_MS - elapsed;
-            ctx.request_repaint_after(std::time::Duration::from_millis(remaining as u64));
+            // Root has no sessions — hide it but keep it alive so
+            // show_viewport_immediate windows can still render.
+            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
         }
 
-        self.poll_events(ctx);
+        for i in 1..self.windows.len() {
+            let win = self.windows[i].lock();
+            if win.should_close { continue; }
+            let viewport_id = win.viewport_id;
+            let builder = win.viewport_builder.clone()
+                .unwrap_or_default()
+                .with_title(&win.title);
+            drop(win);
 
-        // Track window focus changes and send FOCUS_IN_OUT events to terminal.
-        {
-            let now_focused = ctx.input(|i| i.focused);
-            if now_focused != self.window_focused {
-                self.window_focused = now_focused;
-                if let Some(session) = self.state.active_session() {
-                    // Use try_lock to avoid blocking the main thread if the
-                    // event loop is holding the FairMutex lease during PTY reads.
-                    let focus_mode = session
-                        .backend
-                        .term()
-                        .try_lock_unfair()
-                        .map_or(false, |term| {
-                            term.mode().contains(alacritty_terminal::term::TermMode::FOCUS_IN_OUT)
-                        });
-                    if focus_mode {
-                        let seq = if now_focused { b"\x1b[I" } else { b"\x1b[O" };
-                        session.backend.write(seq);
-                    }
-                }
-            }
+            let w = Arc::clone(&self.windows[i]);
+            let s = Arc::clone(&self.shared);
+            ctx.show_viewport_immediate(viewport_id, builder, move |vp_ctx, _class| {
+                let mut win = w.lock();
+                render_window(vp_ctx, &mut win, &s);
+            });
         }
 
-        // Handle native macOS menu actions (only when native menu bar is active).
-        // Route per-window actions to the focused window.
-        #[cfg(target_os = "macos")]
-        if self.use_native_menu {
-            for action in crate::macos_menu::drain_actions() {
-                use crate::macos_menu::MenuAction;
-                match &action {
-                    // Per-window actions: route to the focused extra window if any.
-                    MenuAction::NewLocalTerminal
-                    | MenuAction::ToggleLeftSidebar
-                    | MenuAction::ToggleRightSidebar
-                    | MenuAction::ToggleBottomPanel => {
-                        if let Some(idx) = self.focused_extra_window {
-                            if let Some(win) = self.extra_windows.get_mut(idx) {
-                                match action {
-                                    MenuAction::NewLocalTerminal => {
-                                        win.open_local_tab(&self.state.user_config);
-                                    }
-                                    MenuAction::ToggleLeftSidebar => {
-                                        win.toggle_left_sidebar();
-                                    }
-                                    MenuAction::ToggleRightSidebar => {
-                                        win.toggle_right_sidebar();
-                                    }
-                                    MenuAction::ToggleBottomPanel => {
-                                        win.toggle_bottom_panel(&self.bottom_panel_tabs);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        } else {
-                            self.handle_macos_menu_action(action);
+        // ── Drain actions from all windows ──
+        let mut spawn_new = false;
+        let mut pm_actions = Vec::new();
+        for window_arc in &self.windows {
+            let mut win = window_arc.lock();
+            for action in win.pending_actions.drain(..) {
+                match action {
+                    WindowAction::SpawnNewWindow => spawn_new = true,
+                    WindowAction::Quit => self.quit_requested = true,
+                    WindowAction::PluginAction(a) => pm_actions.push(a),
+                    WindowAction::WindowClosed(_) => {}
+                    WindowAction::SaveLayoutState {
+                        window_width, window_height, zoom_factor,
+                        left_panel_width, right_panel_width, bottom_panel_height,
+                        left_panel_visible, right_panel_visible,
+                        bottom_panel_visible, status_bar_visible,
+                    } => {
+                        let mut cfg = self.shared.config.lock();
+                        let layout = &mut cfg.persistent.layout;
+                        if window_width > 100.0 && window_height > 100.0 {
+                            layout.window_width = window_width;
+                            layout.window_height = window_height;
                         }
+                        layout.zoom_factor = zoom_factor;
+                        if let Some(w) = left_panel_width { layout.left_panel_width = w; }
+                        if let Some(w) = right_panel_width { layout.right_panel_width = w; }
+                        if let Some(h) = bottom_panel_height { layout.bottom_panel_height = h; }
+                        layout.left_panel_visible = left_panel_visible;
+                        layout.right_panel_visible = right_panel_visible;
+                        layout.bottom_panel_visible = bottom_panel_visible;
+                        layout.status_bar_visible = status_bar_visible;
                     }
-                    // Global actions always go to the main app.
-                    _ => {
-                        self.handle_macos_menu_action(action);
-                    }
-                }
-            }
-        }
-
-        // Handle IPC messages from external processes.
-        if let Some(ref listener) = self.ipc_listener {
-            for msg in listener.drain() {
-                match msg {
-                    crate::ipc::IpcMessage::CreateWindow { working_directory } => {
-                        let cwd = working_directory.map(std::path::PathBuf::from);
-                        if let Some((_, session)) = create_local_session(&self.state.user_config, cwd) {
-                            let num = self.next_viewport_num;
-                            self.next_viewport_num += 1;
-                            let viewport_id = egui::ViewportId::from_hash_of(format!("conch_window_{num}"));
-                            let builder = self.build_extra_viewport();
-                            self.extra_windows.push(ExtraWindow::new(viewport_id, builder, session));
-                        }
-                    }
-                    crate::ipc::IpcMessage::CreateTab { working_directory } => {
-                        let cwd = working_directory.map(std::path::PathBuf::from);
-                        if let Some((id, session)) = create_local_session(&self.state.user_config, cwd) {
-                            self.state.sessions.insert(id, session);
-                            self.state.tab_order.push(id);
-                            self.state.active_tab = Some(id);
-                        }
+                    WindowAction::PublishTabChanged { is_ssh, session_id } => {
+                        let mut data = serde_json::json!({ "is_ssh": is_ssh });
+                        if let Some(sid) = session_id { data["session_id"] = serde_json::json!(sid); }
+                        self.shared.plugin_bus.publish("app", "app.tab_changed", data);
                     }
                 }
             }
         }
+        for a in pm_actions { self.handle_plugin_manager_action(a); }
 
-        // Apply pending clipboard copy from plugins.
-        if let Some(text) = self.pending_clipboard.take() {
-            ctx.copy_text(text);
+        // ── Window lifecycle ──
+        // Remove closed non-root windows.  The root viewport can't be
+        // destroyed (eframe owns it), so it stays in the list but hidden.
+        if self.windows.len() > 1 {
+            let root_vp = self.windows[0].lock().viewport_id;
+            self.windows.retain(|w| {
+                let win = w.lock();
+                win.viewport_id == root_vp || !win.should_close
+            });
         }
 
-        // Prevent egui's Tab focus-cycling from stealing Tab from the terminal.
-        // Focus::begin_pass() already read RawInput and set focus_direction before
-        // update() runs, so we must also undo the focus change after panels render.
-        let consumed_tab_for_pty;
-        {
-            let no_widget_focused = !ctx.memory(|m| m.focused().is_some()) && !self.any_dialog_open();
-            if no_widget_focused {
-                let mut tab_bytes: Option<Vec<u8>> = None;
-                ctx.input_mut(|i| {
-                    i.events.retain(|e| match e {
-                        egui::Event::Key {
-                            key: egui::Key::Tab,
-                            pressed: true,
-                            modifiers,
-                            ..
-                        } => {
-                            tab_bytes = Some(if modifiers.shift {
-                                b"\x1b[Z".to_vec()
-                            } else {
-                                b"\t".to_vec()
-                            });
-                            false // remove from queue
-                        }
-                        _ => true,
-                    });
-                });
-                consumed_tab_for_pty = tab_bytes.is_some();
-                if let Some(bytes) = tab_bytes {
-                    if let Some(session) = self.state.active_session() {
-                        session.backend.write(&bytes);
-                    }
-                }
-            } else {
-                consumed_tab_for_pty = false;
-            }
-        }
+        if spawn_new { self.spawn_window(None); }
 
-        // Collect copy/paste events before rendering panels.
-        let mut copy_requested = false;
-        let mut paste_text: Option<String> = None;
-        // On Linux/Windows, Ctrl is the "command" modifier in egui, so Ctrl+C
-        // becomes Event::Copy instead of Event::Key. For a terminal emulator
-        // we need Ctrl+C to send SIGINT (0x03) to the PTY. We track it here
-        // and send the control character later when forward_to_pty is known.
-        let mut ctrl_c_for_pty = false;
-        let mut ctrl_x_for_pty = false;
-        ctx.input(|i| {
-            for event in &i.events {
-                match event {
-                    egui::Event::Copy | egui::Event::Cut => {
-                        if cfg!(target_os = "macos") {
-                            // On macOS, Cmd+C/X is copy/cut (Ctrl+C goes via Event::Key)
-                            copy_requested = true;
-                        } else {
-                            // On Linux/Windows, this is really Ctrl+C/X — send to PTY
-                            match event {
-                                egui::Event::Copy => ctrl_c_for_pty = true,
-                                egui::Event::Cut => ctrl_x_for_pty = true,
-                                _ => {}
-                            }
-                        }
-                    }
-                    egui::Event::Paste(text) => paste_text = Some(text.clone()),
-                    _ => {}
+        // ── Exit when ALL windows are closed ──
+        let all_closed = self.windows.iter().all(|w| w.lock().should_close);
+        if all_closed || self.quit_requested {
+            if self.quit_requested {
+                for w in &self.windows {
+                    let mut win = w.lock();
+                    for (_, session) in &win.sessions { session.shutdown(); }
                 }
             }
-        });
-
-        // Keyboard/paste forwarding is deferred until after all panels render,
-        // so that egui's focus state reflects the current frame (see end of update).
-
-        // Handle close request on the main window.
-        let close_requested = ctx.input(|i| i.viewport().close_requested());
-        if close_requested && !self.quit_requested {
-            if self.extra_windows.iter().any(|w| !w.should_close) {
-                // Extra windows still open — hide main window instead of exiting.
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.main_window_hidden = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                // Shut down main-window sessions so we don't leak shell processes.
-                let ids: Vec<_> = self.state.sessions.keys().copied().collect();
-                for id in ids {
-                    self.remove_session(id);
-                }
-            } else {
-                self.save_window_state(ctx);
-            }
-        }
-        if self.quit_requested {
-            self.save_window_state(ctx);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-
-        // When the main window is hidden, skip all main-window UI rendering.
-        // Only process extra windows, plugin events, and check whether to exit.
-        if self.main_window_hidden {
-            // Slow the hidden window's repaint cadence — we only need to poll
-            // plugin events and check extra window status, not render UI.
-            ctx.request_repaint_after(std::time::Duration::from_millis(500));
-            let t0 = Instant::now();
-            self.render_extra_windows(ctx);
-            let t_extra = t0.elapsed();
-            // If all extra windows are now closed, actually quit.
-            if self.extra_windows.is_empty() {
-                self.quit_requested = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            // Bench reporting.
-            if self.bench_hidden_mode {
-                self.bench_frame_count += 1;
-                let now = Instant::now();
-                if let Some(last) = self.bench_last_report {
-                    if now.duration_since(last).as_secs() >= 2 {
-                        let elapsed = self.bench_start.map(|s| now.duration_since(s).as_secs_f64()).unwrap_or(0.0);
-                        let frame_ms = now.duration_since(frame_start).as_secs_f64() * 1000.0;
-                        let poll_ms = (frame_start.elapsed().as_secs_f64() - t_extra.as_secs_f64()) * 1000.0;
-                        let extra_ms = t_extra.as_secs_f64() * 1000.0;
-                        let rss_mb = get_rss_mb();
-                        eprintln!(
-                            "[bench] t={elapsed:.1}s  frames={}  total={frame_ms:.2}ms  poll={poll_ms:.2}ms  extra_win={extra_ms:.2}ms  rss={rss_mb:.1}MB",
-                            self.bench_frame_count,
-                        );
-                        self.bench_last_report = Some(now);
-                    }
-                }
-            }
+            ctx.send_viewport_cmd(ViewportCommand::Close);
             return;
         }
 
-        // -- Dialogs (floating windows, rendered before panels) --
-
-        if let Some(mut form) = self.state.new_connection_form.take() {
-            let folder_names: Vec<String> = self
-                .state
-                .sessions_config
-                .folders
-                .iter()
-                .map(|f| f.name.clone())
-                .collect();
-            match new_connection::show_new_connection(ctx, &mut form, &folder_names) {
-                DialogAction::Save { entry, folder_index } => {
-                    self.save_or_update_server(entry, folder_index);
-                }
-                DialogAction::SaveAndConnect {
-                    entry,
-                    folder_index,
-                    password,
-                } => {
-                    let host = entry.host.clone();
-                    let port = entry.port;
-                    let user = entry.user.clone();
-                    let identity_file = entry.identity_file.clone();
-                    let proxy_command = entry.proxy_command.clone();
-                    let proxy_jump = entry.proxy_jump.clone();
-                    self.save_or_update_server(entry, folder_index);
-                    self.start_ssh_connect(
-                        host,
-                        port,
-                        user,
-                        identity_file,
-                        proxy_command,
-                        proxy_jump,
-                        password,
-                    );
-                }
-                DialogAction::Cancel => {
-                    self.state.editing_server_addr = None;
-                }
-                DialogAction::None => {
-                    self.state.new_connection_form = Some(form);
-                }
-            }
-        }
-
-        if self.show_about {
-            self.show_about_dialog(ctx);
-        }
-
-        // Rename tab dialog.
-        if let Some(tab_id) = self.rename_tab_id {
-            let mut save = false;
-            let mut cancel = false;
-            egui::Window::new("Rename Tab")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    let te = ui.add(
-                        crate::ui::widgets::text_edit(&mut self.rename_tab_buf)
-                            .desired_width(200.0)
-                            .hint_text("Tab name\u{2026}"),
-                    );
-                    if self.rename_tab_focus {
-                        te.request_focus();
-                        self.rename_tab_focus = false;
-                    }
-                    // Enter key confirms.
-                    if te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        save = true;
-                    }
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if crate::ui::widgets::dialog_button(ui, "Save").clicked() {
-                                save = true;
-                            }
-                            if crate::ui::widgets::dialog_button(ui, "Cancel").clicked() {
-                                cancel = true;
-                            }
-                        });
-                    });
-                });
-            if save {
-                let name = self.rename_tab_buf.trim().to_string();
-                if let Some(session) = self.state.sessions.get_mut(&tab_id) {
-                    session.custom_title = if name.is_empty() { None } else { Some(name) };
-                }
-                self.rename_tab_id = None;
-                self.rename_tab_buf.clear();
-            } else if cancel {
-                self.rename_tab_id = None;
-                self.rename_tab_buf.clear();
-            }
-        }
-
-
-        // Tunnel dialog.
-        // Refresh active tunnel IDs (poll TunnelManager).
-        if self.tunnel_dialog.is_some() {
-            let tm = &self.tunnel_manager;
-            let tunnels = &self.state.sessions_config.tunnels;
-            let mut active = Vec::new();
-            for t in tunnels {
-                // Use try_lock to avoid blocking; falls back to previous state.
-                let rt = &self.rt;
-                if rt.block_on(tm.is_active(&t.id)) {
-                    active.push(t.id);
-                }
-            }
-            self.tunnel_active_ids = active;
-        }
-
-        // Poll pending tunnel activation results.
-        self.pending_tunnel_results.retain(|(_id, rx)| {
-            match rx.try_recv() {
-                Ok(Ok(())) => {
-                    log::info!("Tunnel activated successfully");
-                    false
-                }
-                Ok(Err(e)) => {
-                    log::error!("Tunnel activation failed: {e}");
-                    false
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => true,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
-            }
-        });
-
-        if let Some(mut dialog) = self.tunnel_dialog.take() {
-            let all_servers = self.collect_all_servers();
-            let action = tunnels::show_tunnel_manager(
-                ctx,
-                &mut dialog,
-                &self.state.sessions_config.tunnels,
-                &self.tunnel_active_ids,
-                &all_servers,
-            );
-            match action {
-                TunnelManagerAction::NewTunnel(tunnel) => {
-                    self.activate_tunnel(&tunnel);
-                    self.state.sessions_config.tunnels.push(tunnel);
-                    let _ = config::save_sessions(&self.state.sessions_config);
-                    self.tunnel_dialog = Some(dialog);
-                }
-                TunnelManagerAction::Activate(id) => {
-                    if let Some(tunnel) = self.state.sessions_config.tunnels.iter().find(|t| t.id == id).cloned() {
-                        self.activate_tunnel(&tunnel);
-                    }
-                    self.tunnel_dialog = Some(dialog);
-                }
-                TunnelManagerAction::Stop(id) => {
-                    let tm = self.tunnel_manager.clone_inner();
-                    self.rt.spawn(async move {
-                        tm.stop(&id).await;
-                    });
-                    self.tunnel_dialog = Some(dialog);
-                }
-                TunnelManagerAction::Delete(id) => {
-                    // Stop if active, then remove from saved list.
-                    let tm = self.tunnel_manager.clone_inner();
-                    self.rt.spawn(async move {
-                        tm.stop(&id).await;
-                    });
-                    self.state.sessions_config.tunnels.retain(|t| t.id != id);
-                    let _ = config::save_sessions(&self.state.sessions_config);
-                    self.tunnel_dialog = Some(dialog);
-                }
-                TunnelManagerAction::Close => {
-                    // Dialog closed — don't put it back.
-                }
-                TunnelManagerAction::None => {
-                    self.tunnel_dialog = Some(dialog);
-                }
-            }
-        }
-
-        // Notification history dialog.
-        if let Some(mut dialog) = self.notification_history_dialog.take() {
-            use crate::ui::dialogs::notification_history::{self, NotificationHistoryAction};
-            let action = notification_history::show_notification_history(
-                ctx,
-                &mut dialog,
-                self.notifications.history(),
-            );
-            match action {
-                NotificationHistoryAction::Close => {}
-                NotificationHistoryAction::None => {
-                    self.notification_history_dialog = Some(dialog);
-                }
-            }
-        }
-
-        // Plugin dialog (form, prompt, confirm, alert, error, text, table).
-        if let Some(mut dialog) = self.active_plugin_dialog.take() {
-            if plugin_dialog::show_plugin_dialog(ctx, &mut dialog) {
-                // Dialog was closed (response already sent via channel).
-            } else {
-                self.active_plugin_dialog = Some(dialog);
-            }
-        }
-
-        // Plugin progress indicator.
-        if let Some(msg) = &self.plugin_progress {
-            egui::Window::new("Working...")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(msg.as_str());
-                    });
-                });
-        }
-
-        // -- Panels --
-
-        {
-            use config::WindowDecorations;
-            let decorations = self.state.user_config.window.decorations;
-
-            // Buttonless: no title bar, so add a thin drag region at the top so the
-            // user can still move the window by dragging the first terminal line.
-            if decorations == WindowDecorations::Buttonless {
-                let drag_h = self.cell_height.max(6.0);
-                let drag_frame = egui::Frame::NONE.fill(ctx.style().visuals.panel_fill);
-                egui::TopBottomPanel::top("drag_region")
-                    .exact_height(drag_h)
-                    .frame(drag_frame)
-                    .show(ctx, |ui| {
-                        let rect = ui.available_rect_before_wrap();
-                        let response = ui.interact(rect, ui.id().with("drag"), egui::Sense::drag());
-                        if response.drag_started() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                        }
-                    });
-            }
-
-            // When using native menu bar on macOS with fullsize_content_view (Transparent
-            // or Full-non-native), the in-window menu bar is not rendered, but the content
-            // still extends behind the title bar area. Add a spacer to push content below
-            // the ~28px title bar. Buttonless and None have no title bar, so no spacer.
-            if self.use_native_menu {
-                // Only Transparent uses fullsize_content_view with native menu,
-                // so only it needs a spacer to push content below the title bar.
-                let needs_spacer = matches!(decorations, WindowDecorations::Transparent)
-                    && cfg!(target_os = "macos");
-                if needs_spacer {
-                    egui::TopBottomPanel::top("titlebar_spacer")
-                        .exact_height(28.0)
-                        .frame(egui::Frame::NONE)
-                        .show(ctx, |_ui| {});
-                }
-            }
-        }
-
-        // Menu bar (File, Sessions, Tools, View, Help).
-        // Shown in-window when native macOS menu bar is disabled (or on non-macOS).
-        // On macOS with fullsize_content_view, the menu lives inside the title bar area.
-        if !self.use_native_menu {
-            // On macOS with transparent title bar, add top padding to clear the
-            // title bar chrome and left padding for the traffic light buttons.
-            let in_titlebar = cfg!(target_os = "macos");
-            // On macOS, the title bar is ~28px. Traffic light centers are at ~14px.
-            // We pad top so menu text aligns vertically with them.
-            let top_pad: i8 = if in_titlebar { 7 } else { 4 };
-            let bottom_pad: i8 = if in_titlebar { 6 } else { 4 };
-            let left_pad: i8 = if in_titlebar { 72 } else { 8 };
-
-            egui::TopBottomPanel::top("menu_bar")
-                .frame(egui::Frame::side_top_panel(ctx.style().as_ref())
-                    .inner_margin(egui::Margin { top: top_pad, bottom: bottom_pad, left: left_pad, right: 8 }))
-                .show(ctx, |ui| {
-                egui::menu::bar(ui, |ui| {
-                    // App title centered in the full title bar.
-                    if in_titlebar {
-                        let bar_rect = ui.max_rect();
-                        let font_id = egui::TextStyle::Body.resolve(ui.style());
-                        let color = ui.visuals().weak_text_color();
-                        let galley = ui.painter().layout_no_wrap(
-                            "Conch".to_owned(),
-                            font_id,
-                            color,
-                        );
-                        let text_pos = egui::pos2(
-                            bar_rect.center().x - galley.size().x / 2.0,
-                            bar_rect.center().y - galley.size().y / 2.0,
-                        );
-                        ui.painter().galley(text_pos, galley, color);
-                    }
-
-                    // Menu buttons right-aligned.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Render in reverse order (right-to-left).
-                        ui.menu_button("Help", |ui| {
-                            if ui.button("About Conch").clicked() {
-                                self.show_about = true;
-                                ui.close_menu();
-                            }
-                        });
-
-                        ui.menu_button("View", |ui| {
-                            let left_check = if self.state.show_left_sidebar { "✓ " } else { "   " };
-                            if ui.add(egui::Button::new(format!("{left_check}Left Toolbar")).shortcut_text(cmd_shortcut("1"))).clicked() {
-                                self.toggle_left_sidebar();
-                                ui.close_menu();
-                            }
-                            let right_check = if self.state.show_right_sidebar { "✓ " } else { "   " };
-                            if ui.add(egui::Button::new(format!("{right_check}Right Toolbar")).shortcut_text(cmd_shortcut("2"))).clicked() {
-                                self.toggle_right_sidebar();
-                                ui.close_menu();
-                            }
-                            let bottom_check = if self.show_bottom_panel { "✓ " } else { "   " };
-                            if ui.add(egui::Button::new(format!("{bottom_check}Bottom Panel")).shortcut_text(cmd_shortcut("J"))).clicked() {
-                                self.toggle_bottom_panel();
-                                ui.close_menu();
-                            }
-                            ui.separator();
-                            if ui.button("Notification History...").clicked() {
-                                self.notification_history_dialog = Some(
-                                    crate::ui::dialogs::notification_history::NotificationHistoryState::new(),
-                                );
-                                ui.close_menu();
-                            }
-                        });
-
-                        ui.menu_button("Tools", |ui| {
-                            if ui.button("SSH Tunnels...").clicked() {
-                                self.tunnel_dialog = Some(TunnelManagerState::new());
-                                ui.close_menu();
-                            }
-                            // Show loaded action (non-panel) plugins
-                            let loaded_actions: Vec<(usize, String)> = self
-                                .discovered_plugins
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, meta)| {
-                                    meta.plugin_type == conch_plugin::PluginType::Action && {
-                                        let filename = meta.path.file_name()
-                                            .unwrap_or_default()
-                                            .to_string_lossy()
-                                            .into_owned();
-                                        self.state.persistent.loaded_plugins.contains(&filename)
-                                    }
-                                })
-                                .map(|(i, meta)| (i, meta.name.clone()))
-                                .collect();
-                            if !loaded_actions.is_empty() {
-                                ui.separator();
-                                let mut run_idx = None;
-                                for (i, name) in &loaded_actions {
-                                    if ui.button(name).clicked() {
-                                        run_idx = Some(*i);
-                                        ui.close_menu();
-                                    }
-                                }
-                                if let Some(idx) = run_idx {
-                                    self.run_plugin_by_index(idx);
-                                }
-                            }
-                        });
-
-                        ui.menu_button("Sessions", |ui| {
-                            if ui.add(egui::Button::new("New Local Terminal").shortcut_text(cmd_shortcut("T"))).clicked() {
-                                self.open_local_tab();
-                                ui.close_menu();
-                            }
-                            if ui.add(egui::Button::new("New SSH Session...").shortcut_text(cmd_shortcut("N"))).clicked() {
-                                self.state.new_connection_form =
-                                    Some(NewConnectionForm::with_defaults());
-                                ui.close_menu();
-                            }
-                        });
-
-                        ui.menu_button("File", |ui| {
-                            if ui.add(egui::Button::new("New Connection...").shortcut_text(cmd_shortcut("N"))).clicked() {
-                                self.state.new_connection_form =
-                                    Some(NewConnectionForm::with_defaults());
-                                ui.close_menu();
-                            }
-                            ui.separator();
-                            if ui.add(egui::Button::new("Quit Conch").shortcut_text(cmd_shortcut("Q"))).clicked() {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                ui.close_menu();
-                            }
-                        });
-                    });
-                });
-            });
-        } // end if !use_native_menu
-
-        // Left sidebar: narrow tab strip + resizable content panel.
-        let (sidebar_action, deferred_plugin_action) = {
-            let icons = self.icon_cache.as_ref();
-            let loaded_plugins = &self.state.persistent.loaded_plugins;
-            let plugin_display: Vec<sidebar::PluginDisplayInfo> = self
-                .discovered_plugins
-                .iter()
-                .map(|meta| {
-                    let filename = meta.path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned();
-                    let is_loaded = loaded_plugins.contains(&filename);
-                    sidebar::PluginDisplayInfo {
-                        name: meta.name.clone(),
-                        description: meta.description.clone(),
-                        is_panel: meta.plugin_type == conch_plugin::PluginType::Panel,
-                        is_bottom_panel: meta.plugin_type == conch_plugin::PluginType::BottomPanel,
-                        is_loaded,
-                    }
-                })
-                .collect();
-            let panel_tabs: Vec<(usize, String)> = self
-                .panel_names
-                .iter()
-                .map(|(idx, name)| (*idx, name.clone()))
-                .collect();
-            let action = if self.state.show_left_sidebar {
-                sidebar::show_tab_strip(ctx, &mut self.state.sidebar_tab, icons, &panel_tabs, &self.plugin_icons, self.state.user_config.conch.plugins_enabled, egui::Id::new("sidebar_tabs"));
-                sidebar::show_sidebar_content(
-                    ctx,
-                    &self.state.sidebar_tab,
-                    &mut self.state.file_browser,
-                    icons,
-                    &plugin_display,
-                    &self.plugin_output_lines,
-                    &mut self.selected_plugin,
-                    &self.transfers,
-                    &mut self.plugin_search_query,
-                    &mut self.plugin_search_focus,
-                    &self.panel_widgets,
-                    &self.panel_names,
-                    &mut self.pending_plugin_loads,
-                    egui::Id::new("sidebar_content"),
-                )
-            } else {
-                SidebarAction::None
-            };
-            let deferred = match &action {
-                SidebarAction::RunPlugin(i) => Some(SidebarAction::RunPlugin(*i)),
-                SidebarAction::RefreshPlugins => Some(SidebarAction::RefreshPlugins),
-                SidebarAction::ApplyPluginChanges(indices) => {
-                    Some(SidebarAction::ApplyPluginChanges(indices.clone()))
-                }
-                SidebarAction::PanelButtonClick { plugin_idx, button_id } => {
-                    Some(SidebarAction::PanelButtonClick { plugin_idx: *plugin_idx, button_id: button_id.clone() })
-                }
-                SidebarAction::DeactivatePanel(i) => Some(SidebarAction::DeactivatePanel(*i)),
-                _ => None,
-            };
-            (action, deferred)
-        };
-        self.handle_sidebar_action(sidebar_action);
-
-        // Sync file browser column visibility to persistent state.
-        {
-            let cols = &self.state.file_browser.columns;
-            let p = &mut self.state.persistent.layout.file_browser_columns;
-            if cols.ext != p.ext || cols.size != p.size || cols.modified != p.modified {
-                p.ext = cols.ext;
-                p.size = cols.size;
-                p.modified = cols.modified;
-                let _ = config::save_persistent_state(&self.state.persistent);
-            }
-        }
-
-        // Right sidebar (session / server tree).
-        let mut panel_action = SessionPanelAction::None;
-        if self.state.show_right_sidebar {
-            let icons = self.icon_cache.as_ref();
-            egui::SidePanel::right("right_sidebar")
-                .resizable(true)
-                .default_width(220.0)
-                .width_range(100.0..=400.0)
-                .show(ctx, |ui| {
-                    panel_action = session_panel::show_session_panel(
-                        ui,
-                        &self.state.sessions_config.folders,
-                        &self.state.ssh_config_hosts,
-                        icons,
-                        &mut self.session_panel_state,
-                    );
-                });
-        }
-        // Escape in the quick connect search bar → restore sidebar to previous state.
-        if self.session_panel_state.dismissed {
-            self.session_panel_state.dismissed = false;
-            if self.quick_connect_opened_sidebar {
-                self.state.show_right_sidebar = false;
-                self.quick_connect_opened_sidebar = false;
-            }
-        }
-        self.handle_session_panel_action(panel_action);
-
-        // Tab bar — only shown when multiple tabs are open.
-        if self.state.tab_order.len() > 1 {
-        egui::TopBottomPanel::top("tab_bar")
-            .exact_height(28.0)
-            .frame(egui::Frame::NONE)
-            .show(ctx, |ui| {
-                let panel_rect = ui.available_rect_before_wrap();
-                let painter = ui.painter_at(panel_rect);
-                let style = ui.style();
-                let base_bg = style.visuals.panel_fill;
-                let darker_bg = sidebar::darken_color(base_bg, 18);
-                let accent_color = egui::Color32::from_rgb(47, 101, 202);
-                let text_color = style.visuals.text_color();
-                let dim_text = style.visuals.weak_text_color();
-                let font_id = egui::FontId::new(13.0, egui::FontFamily::Proportional);
-
-                const TAB_MAX_W: f32 = 140.0;
-                let tab_h = panel_rect.height();
-
-                // Fill entire strip with darker background.
-                painter.rect_filled(panel_rect, 0.0, darker_bg);
-
-                let mut switch_to = None;
-                let mut close_id = None;
-                let mut x = panel_rect.min.x;
-
-                let tab_count = self.state.tab_order.len();
-                // Equal width, capped at TAB_MAX_W
-                let tab_w = if tab_count > 0 {
-                    TAB_MAX_W.min(panel_rect.width() / (tab_count as f32 + 1.0))
-                } else {
-                    TAB_MAX_W
-                };
-
-                let hint_font = egui::FontId::new(9.0, egui::FontFamily::Proportional);
-                let mut rename_id = None;
-
-                for (tab_idx, &id) in self.state.tab_order.iter().enumerate() {
-                    // Determine the tab title — either from the session or from pending info.
-                    let tab_title_str: Option<String> = if let Some(session) = self.state.sessions.get(&id) {
-                        Some(session.custom_title.as_deref().unwrap_or(&session.title).to_string())
-                    } else if let Some(info) = self.pending_ssh_info.get(&id) {
-                        if info.error.is_some() {
-                            Some(format!("{} (failed)", info.label))
-                        } else {
-                            Some(format!("{}...", info.label))
-                        }
-                    } else {
-                        None
-                    };
-                    if let Some(title) = tab_title_str {
-                        let selected = self.state.active_tab == Some(id);
-                        let tab_rect = egui::Rect::from_min_size(
-                            egui::Pos2::new(x, panel_rect.min.y),
-                            egui::Vec2::new(tab_w, tab_h),
-                        );
-
-                        // Background: selected gets lighter panel fill.
-                        if selected {
-                            painter.rect_filled(tab_rect, 0.0, base_bg);
-                            // Accent bar on bottom edge.
-                            let accent_rect = egui::Rect::from_min_size(
-                                egui::Pos2::new(tab_rect.min.x, tab_rect.max.y - 3.0),
-                                egui::Vec2::new(tab_w, 3.0),
-                            );
-                            painter.rect_filled(accent_rect, 0.0, accent_color);
-                        }
-
-                        // Separator line between tabs.
-                        if x > panel_rect.min.x {
-                            painter.line_segment(
-                                [
-                                    egui::Pos2::new(x, panel_rect.min.y + 4.0),
-                                    egui::Pos2::new(x, panel_rect.max.y - 4.0),
-                                ],
-                                egui::Stroke::new(
-                                    1.0,
-                                    style.visuals.widgets.noninteractive.bg_stroke.color,
-                                ),
-                            );
-                        }
-
-                        // Close button icon on the right side.
-                        let close_size = 14.0;
-                        let close_pad = 4.0;
-                        let close_x = tab_rect.max.x - close_size - close_pad;
-                        let close_y = tab_rect.center().y - close_size / 2.0;
-                        let close_rect = egui::Rect::from_min_size(
-                            egui::Pos2::new(close_x - 2.0, close_y - 2.0),
-                            egui::Vec2::new(close_size + 4.0, close_size + 4.0),
-                        );
-                        if let Some(tex_id) = self.icon_cache.as_ref().and_then(|ic| ic.texture_id(Icon::TabClose)) {
-                            painter.image(
-                                tex_id,
-                                egui::Rect::from_min_size(
-                                    egui::Pos2::new(close_x, close_y),
-                                    egui::Vec2::new(close_size, close_size),
-                                ),
-                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-                                egui::Color32::WHITE,
-                            );
-                        }
-
-                        // Tab number hint (right of title, left of close button).
-                        let hint_text = format!("{}", tab_idx + 1);
-                        let hint_galley = painter.layout_no_wrap(
-                            hint_text,
-                            hint_font.clone(),
-                            style.visuals.weak_text_color(),
-                        );
-                        let hint_w = hint_galley.size().x;
-                        let hint_x = close_x - hint_w - 4.0;
-                        let hint_y = tab_rect.center().y - hint_galley.size().y / 2.0;
-                        painter.galley(
-                            egui::Pos2::new(hint_x, hint_y),
-                            hint_galley,
-                            style.visuals.weak_text_color(),
-                        );
-
-                        // Tab label — pixel-based truncation with "…".
-                        let label_color = if selected { text_color } else { dim_text };
-                        let left_pad = 6.0;
-                        let max_text_w = hint_x - tab_rect.min.x - left_pad - 2.0;
-
-                        let full_galley = painter.layout_no_wrap(
-                            title.to_string(),
-                            font_id.clone(),
-                            label_color,
-                        );
-
-                        let galley = if full_galley.size().x > max_text_w && max_text_w > 0.0 {
-                            // Binary search for the longest prefix that fits with "…".
-                            let ellipsis_w = painter.layout_no_wrap(
-                                "\u{2026}".to_string(),
-                                font_id.clone(),
-                                label_color,
-                            ).size().x;
-                            let target_w = max_text_w - ellipsis_w;
-                            let mut end = title.len();
-                            while end > 0 {
-                                let truncated = &title[..end];
-                                let g = painter.layout_no_wrap(
-                                    truncated.to_string(),
-                                    font_id.clone(),
-                                    label_color,
-                                );
-                                if g.size().x <= target_w {
-                                    break;
-                                }
-                                // Step back by one char.
-                                end = truncated.floor_char_boundary(end.saturating_sub(1));
-                            }
-                            let mut truncated = title[..end].to_string();
-                            truncated.push('\u{2026}');
-                            painter.layout_no_wrap(truncated, font_id.clone(), label_color)
-                        } else {
-                            full_galley
-                        };
-
-                        let text_pos = egui::Pos2::new(
-                            tab_rect.min.x + left_pad,
-                            tab_rect.center().y - galley.size().y / 2.0,
-                        );
-                        painter.galley(text_pos, galley, label_color);
-
-                        // Click detection: check pointer position manually to
-                        // avoid overlapping-interact issues in egui.
-                        let tab_resp = ui.interact(
-                            tab_rect,
-                            ui.id().with(("tab_select", id)),
-                            egui::Sense::click(),
-                        );
-                        if tab_resp.clicked() {
-                            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                                if close_rect.contains(pos) {
-                                    close_id = Some(id);
-                                } else {
-                                    switch_to = Some(id);
-                                }
-                            }
-                        }
-                        // Right-click context menu for rename.
-                        tab_resp.context_menu(|ui| {
-                            if ui.button("Rename Tab").clicked() {
-                                rename_id = Some(id);
-                                ui.close_menu();
-                            }
-                        });
-
-                        x += tab_w;
-                    }
-                }
-
-                // Open rename dialog if requested from context menu.
-                if let Some(id) = rename_id {
-                    if let Some(session) = self.state.sessions.get(&id) {
-                        self.rename_tab_buf = session.custom_title.clone()
-                            .unwrap_or_else(|| session.title.clone());
-                        self.rename_tab_id = Some(id);
-                        self.rename_tab_focus = true;
-                    }
-                }
-
-                // "+" button after tabs.
-                let plus_rect = egui::Rect::from_min_size(
-                    egui::Pos2::new(x + 4.0, panel_rect.min.y),
-                    egui::Vec2::new(24.0, tab_h),
-                );
-                let plus_galley = painter.layout_no_wrap(
-                    "+".to_string(),
-                    font_id.clone(),
-                    dim_text,
-                );
-                painter.galley(
-                    egui::Pos2::new(
-                        plus_rect.center().x - plus_galley.size().x / 2.0,
-                        plus_rect.center().y - plus_galley.size().y / 2.0,
-                    ),
-                    plus_galley,
-                    dim_text,
-                );
-                let plus_resp = ui.interact(
-                    plus_rect,
-                    ui.id().with("tab_plus"),
-                    egui::Sense::click(),
-                );
-                if plus_resp.clicked() {
-                    self.open_local_tab();
-                }
-
-                if let Some(id) = switch_to {
-                    self.state.active_tab = Some(id);
-                }
-                if let Some(id) = close_id {
-                    self.remove_session(id);
-                    if self.state.sessions.is_empty() {
-                        self.open_local_tab();
-                    }
-                }
-            });
-        } // end tab bar (multi-tab only)
-
-        // Bottom panel (bottom-panel plugins).
-        if self.show_bottom_panel && !self.bottom_panel_tabs.is_empty() {
-            let bp_action = crate::ui::bottom_panel::show_bottom_panel(
-                ctx,
-                &self.bottom_panel_tabs,
-                &mut self.active_bottom_panel,
-                &self.panel_widgets,
-                &self.panel_names,
-                &mut self.bottom_panel_height,
-                &mut self.show_bottom_panel,
-                egui::Id::new("bottom_panel"),
-            );
-            self.handle_bottom_panel_action(bp_action);
-
-            // Thin spacer above the bottom panel so the terminal's
-            // click_and_drag sense doesn't overlap the resize handle.
-            let grab = ctx.style().interaction.resize_grab_radius_side;
-            egui::TopBottomPanel::bottom(egui::Id::new("bottom_panel_resize_spacer"))
-                .exact_height(grab)
-                .frame(egui::Frame::NONE)
-                .show(ctx, |_ui| {});
-        }
-
-        // Central panel (active terminal or connecting screen).
-        let font_size = self.state.user_config.font.size;
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE)
-            .show(ctx, |ui| {
-                if let Some(id) = self.state.active_tab {
-                    if let Some(session) = self.state.sessions.get(&id) {
-                        let term = session.backend.term().clone();
-                        let (response, size_info) = show_terminal(
-                            ui,
-                            &term,
-                            self.cell_width,
-                            self.cell_height,
-                            &self.state.colors,
-                            font_size,
-                            self.cursor_visible,
-                            self.selection.normalized(),
-                            &mut self.terminal_frame_cache,
-                        );
-
-                        {
-                            let cell_height = self.cell_height;
-                            let write_fn = |data: &[u8]| {
-                                if let Some(s) = self.state.active_session() {
-                                    s.backend.write(data);
-                                }
-                            };
-                            handle_terminal_mouse(
-                                ctx,
-                                &response,
-                                &size_info,
-                                &mut self.selection,
-                                &term,
-                                &write_fn,
-                                cell_height,
-                                self.state.user_config.terminal.scroll_sensitivity,
-                            );
-                        }
-
-                        if copy_requested {
-                            if let Some((start, end)) = self.selection.normalized() {
-                                let text = get_selected_text(&term, start, end);
-                                if !text.is_empty() {
-                                    ui.ctx().copy_text(text);
-                                }
-                            }
-                        }
-
-                        self.resize_sessions(
-                            size_info.columns() as u16,
-                            size_info.rows() as u16,
-                        );
-                    } else if let Some(info) = self.pending_ssh_info.get_mut(&id) {
-                        // Connecting, password prompt, or error screen.
-                        let is_connecting = info.error.is_none() && !info.needs_password;
-                        match show_connecting_screen(ui, info) {
-                            ssh::ConnectingScreenAction::Close => {
-                                self.pending_ssh_info.remove(&id);
-                                self.state.tab_order.retain(|&tab_id| tab_id != id);
-                                if self.state.active_tab == Some(id) {
-                                    self.state.active_tab = self.state.tab_order.last().copied();
-                                }
-                            }
-                            ssh::ConnectingScreenAction::SubmitPassword(password) => {
-                                if let Some(info) = self.pending_ssh_info.get_mut(&id) {
-                                    if let Some(pending_result) = info.pending_auth.take() {
-                                        // Take ownership and spawn async password auth.
-                                        info.needs_password = false;
-                                        info.started = Instant::now();
-                                        let (tx, rx) = std::sync::mpsc::channel();
-                                        self.pending_ssh_connections.push(PendingSsh { id, rx });
-                                        self.rt.spawn(async move {
-                                            match pending_result {
-                                                conch_session::SshConnectResult::NeedsPassword {
-                                                    pending_auth, term, event_proxy, event_rx, term_config, connect_info,
-                                                } => {
-                                                    match SshSession::try_password(
-                                                        pending_auth, &password, term, event_proxy, event_rx, term_config, connect_info,
-                                                    ).await {
-                                                        Ok(conch_session::SshPasswordResult::Connected(session)) => {
-                                                            let _ = tx.send(SshConnectOutcome::Connected(session));
-                                                        }
-                                                        Ok(conch_session::SshPasswordResult::WrongPassword(pending)) => {
-                                                            let _ = tx.send(SshConnectOutcome::WrongPassword(pending));
-                                                        }
-                                                        Err(e) => {
-                                                            let _ = tx.send(SshConnectOutcome::Failed(format!("{e:#}")));
-                                                        }
-                                                    }
-                                                }
-                                                conch_session::SshConnectResult::Connected(_) => unreachable!(),
-                                            }
-                                        });
-                                    }
-                                }
-                            }
-                            ssh::ConnectingScreenAction::AcceptHostKey => {
-                                if let Some(info) = self.pending_ssh_info.get_mut(&id) {
-                                    if let Some(prompt) = info.host_key_prompt.take() {
-                                        let _ = prompt.response_tx.send(true);
-                                    }
-                                }
-                            }
-                            ssh::ConnectingScreenAction::RejectHostKey => {
-                                if let Some(info) = self.pending_ssh_info.get_mut(&id) {
-                                    if let Some(prompt) = info.host_key_prompt.take() {
-                                        let _ = prompt.response_tx.send(false);
-                                    }
-                                }
-                            }
-                            ssh::ConnectingScreenAction::None => {}
-                        }
-                        if is_connecting {
-                            ctx.request_repaint();
-                        }
-                    }
-                } else {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("No terminal open. Press Ctrl+T to open one.");
-                    });
-                }
-            });
-
-        // Now that all panels have been laid out, check if a text-entry
-        // widget (TextEdit) has focus. The terminal no longer grabs egui
-        // focus, so `focused().is_some()` means a real text widget is active.
-        //
-        // If we consumed Tab for the PTY, undo any focus that egui's
-        // begin_frame focus-direction cycling caused during widget layout.
-        if consumed_tab_for_pty {
-            if let Some(id) = ctx.memory(|m| m.focused()) {
-                ctx.memory_mut(|m| m.surrender_focus(id));
-            }
-        }
-        let forward_to_pty = !ctx.memory(|m| m.focused().is_some()) && !self.any_dialog_open();
-
-        if let Some(text) = paste_text {
-            if forward_to_pty {
-                if let Some(session) = self.state.active_session() {
-                    let bracketed = session
-                        .backend
-                        .term()
-                        .try_lock_unfair()
-                        .map_or(false, |term| {
-                            term.mode().contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
-                        });
-                    if bracketed {
-                        session.backend.write(b"\x1b[200~");
-                        session.backend.write(text.as_bytes());
-                        session.backend.write(b"\x1b[201~");
-                    } else {
-                        session.backend.write(text.as_bytes());
-                    }
-                }
-            }
-        }
-
-        // Drag-and-drop files → paste paths into the terminal.
-        if forward_to_pty {
-            let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-            if !dropped.is_empty() {
-                if let Some(session) = self.state.active_session() {
-                    let paths: Vec<String> = dropped
-                        .iter()
-                        .filter_map(|f| f.path.as_ref())
-                        .map(|p| {
-                            let s = p.to_string_lossy().into_owned();
-                            // Quote paths containing spaces.
-                            if s.contains(' ') {
-                                format!("'{s}'")
-                            } else {
-                                s
-                            }
-                        })
-                        .collect();
-                    if !paths.is_empty() {
-                        let text = paths.join(" ");
-                        let bracketed = session
-                            .backend
-                            .term()
-                            .try_lock_unfair()
-                            .map_or(false, |term| {
-                                term.mode().contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
-                            });
-                        if bracketed {
-                            session.backend.write(b"\x1b[200~");
-                            session.backend.write(text.as_bytes());
-                            session.backend.write(b"\x1b[201~");
-                        } else {
-                            session.backend.write(text.as_bytes());
-                        }
-                    }
-                }
-            }
-        }
-
-        // On Linux/Windows, forward Ctrl+C (0x03) and Ctrl+X (0x18) to the PTY.
-        // These were captured as Event::Copy/Cut by egui since Ctrl is the
-        // "command" modifier on non-macOS platforms.
-        if forward_to_pty {
-            if ctrl_c_for_pty {
-                if let Some(session) = self.state.active_session() {
-                    session.backend.write(&[0x03]); // ETX — Ctrl+C
-                }
-            }
-            if ctrl_x_for_pty {
-                if let Some(session) = self.state.active_session() {
-                    session.backend.write(&[0x18]); // CAN — Ctrl+X
-                }
-            }
-        }
-
-        self.handle_keyboard(ctx, forward_to_pty);
-
-        // Handle deferred plugin sidebar actions (after all borrows are released).
-        if let Some(action) = deferred_plugin_action {
-            match action {
-                SidebarAction::RunPlugin(idx) => {
-                    self.run_plugin_by_index(idx);
-                    if self.plugin_search_opened_sidebar {
-                        self.state.show_left_sidebar = false;
-                        self.plugin_search_opened_sidebar = false;
-                    }
-                }
-                SidebarAction::RefreshPlugins => self.refresh_plugins(),
-                SidebarAction::ApplyPluginChanges(loaded_indices) => {
-                    self.apply_plugin_changes(loaded_indices);
-                }
-                SidebarAction::PanelButtonClick { plugin_idx, button_id } => {
-                    self.send_panel_button_event(plugin_idx, button_id);
-                }
-                SidebarAction::DeactivatePanel(idx) => {
-                    self.deactivate_panel_plugin(idx);
-                }
-                _ => {}
-            }
-        }
-
-        // Render notification toasts (overlay, on top of everything).
-        if let Some(plugin_idx) = self.notifications.show(ctx) {
-            // User clicked a notification linked to a panel plugin — navigate to it.
-            if !self.state.show_left_sidebar {
-                self.state.show_left_sidebar = true;
-                self.state.persistent.layout.left_panel_collapsed = false;
-                let _ = config::save_persistent_state(&self.state.persistent);
-            }
-            self.state.sidebar_tab = sidebar::SidebarTab::PluginPanel(plugin_idx);
-        }
-
-        let window_title = self.state.active_session()
-            .map(|s| {
-                let name = s.custom_title.as_ref().unwrap_or(&s.title);
-                format!("{name} — Conch")
-            })
-            .unwrap_or_else(|| "Conch".into());
-        if window_title != self.last_window_title {
-            self.last_window_title = window_title.clone();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(window_title));
-        }
-        // Poll for async events (SSH, plugins, tunnels) at ~2 Hz when idle.
-        // Active terminal output triggers immediate repaints via Wakeup events,
-        // and cursor blink already requests repaint every 500ms.
-        ctx.request_repaint_after(std::time::Duration::from_millis(500));
-
-        // Keep window state in memory each frame so on_exit can persist it.
-        if let Some(rect) = ctx.input(|i| i.viewport().inner_rect) {
-            self.state.persistent.layout.window_width = rect.width();
-            self.state.persistent.layout.window_height = rect.height();
-        }
-        self.state.persistent.layout.zoom_factor = ctx.zoom_factor();
-
-        self.render_extra_windows(ctx);
-
-        // Bench reporting for normal mode.
-        if self.bench_start.is_some() && !self.bench_hidden_mode {
-            self.bench_frame_count += 1;
-            let now = Instant::now();
-            if let Some(last) = self.bench_last_report {
-                if now.duration_since(last).as_secs() >= 2 {
-                    let elapsed = self.bench_start.map(|s| now.duration_since(s).as_secs_f64()).unwrap_or(0.0);
-                    let frame_ms = now.duration_since(frame_start).as_secs_f64() * 1000.0;
-                    let rss_mb = get_rss_mb();
-                    eprintln!(
-                        "[bench] t={elapsed:.1}s  frames={} frame_time={frame_ms:.2}ms  rss={rss_mb:.1}MB  extra_windows={}",
-                        self.bench_frame_count,
-                        self.extra_windows.len(),
-                    );
-                    self.bench_last_report = Some(now);
-                }
-            }
-        }
+        // If the root closed but other windows remain, make the root
+        // visible again if a new window was promoted into it (future),
+        // or just keep it hidden.  The app stays alive.
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Shut down sessions in extra windows.
-        for win in &self.extra_windows {
-            for session in win.sessions.values() {
-                session.backend.shutdown();
+        self.save_loaded_plugins();
+        let lua_names: Vec<String> = self.lua_plugins.keys().cloned().collect();
+        for name in lua_names {
+            if let Some(mut running) = self.lua_plugins.remove(&name) {
+                let _ = running.sender.try_send(conch_plugin::bus::PluginMail::Shutdown);
+                if let Some(handle) = running.thread.take() { let _ = handle.join(); }
+                self.shared.plugin_bus.unregister_plugin(&name);
             }
         }
-        let _ = config::save_persistent_state(&self.state.persistent);
+        if let Some(mgr) = &mut self.native_plugin_mgr { mgr.shutdown_all(); }
+        if let Some(mgr) = &mut self.java_plugin_mgr { mgr.shutdown_all(); }
+        let cfg = self.shared.config.lock();
+        let _ = config::save_persistent_state(&cfg.persistent);
     }
 }
 
-impl ConchApp {
-    /// Render extra windows and process their pending actions.
-    fn render_extra_windows(&mut self, ctx: &egui::Context) {
-        let mut extra = std::mem::take(&mut self.extra_windows);
-        let mut focused_extra: Option<usize> = None;
-        {
-            let loaded_plugins = &self.state.persistent.loaded_plugins;
-            let plugin_display: Vec<sidebar::PluginDisplayInfo> = self
-                .discovered_plugins
-                .iter()
-                .map(|meta| {
-                    let filename = meta.path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned();
-                    let is_loaded = loaded_plugins.contains(&filename);
-                    sidebar::PluginDisplayInfo {
-                        name: meta.name.clone(),
-                        description: meta.description.clone(),
-                        is_panel: meta.plugin_type == conch_plugin::PluginType::Panel,
-                        is_bottom_panel: meta.plugin_type == conch_plugin::PluginType::BottomPanel,
-                        is_loaded,
-                    }
-                })
-                .collect();
+// ---------------------------------------------------------------------------
+// Connecting / Error screens (free functions, used by render_window)
+// ---------------------------------------------------------------------------
 
-            let shared = crate::extra_window::SharedState {
-                user_config: &self.state.user_config,
-                colors: &self.state.colors,
-                shortcuts: &self.shortcuts,
-                icon_cache: &self.icon_cache,
-                sessions_config: &self.state.sessions_config,
-                ssh_config_hosts: &self.state.ssh_config_hosts,
-                plugin_display: &plugin_display,
-                plugin_output_lines: &self.plugin_output_lines,
-                panel_widgets: &self.panel_widgets,
-                panel_names: &self.panel_names,
-                plugin_icons: &self.plugin_icons,
-                use_native_menu: self.use_native_menu,
-                bottom_panel_tabs: &self.bottom_panel_tabs,
-                transfers: &self.transfers,
-            };
+pub(crate) enum ConnectingAction { None, Accept, Reject, SubmitPassword(String) }
 
-            for (idx, win) in extra.iter_mut().enumerate() {
-                if win.should_close {
-                    continue;
-                }
-                let builder = win.viewport_builder.clone()
-                    .with_title(&win.title);
-                let vid = win.viewport_id;
-                ctx.show_viewport_immediate(vid, builder, |vp_ctx, _class| {
-                    win.update(vp_ctx, &shared);
+pub(crate) fn show_connecting_screen(
+    ui: &mut egui::Ui, title: &str, detail: Option<&str>,
+    started: Option<std::time::Instant>,
+    prompt: Option<&mut crate::state::SessionPrompt>,
+    icon_cache: Option<&crate::icons::IconCache>,
+) -> ConnectingAction {
+    let rect = ui.available_rect_before_wrap();
+    let bg = if ui.visuals().dark_mode { egui::Color32::from_gray(30) } else { egui::Color32::from_gray(241) };
+    ui.painter().rect_filled(rect, 0.0, bg);
+    let center = rect.center();
+
+    if let Some(prompt) = prompt {
+        let content_width = (rect.width() * 0.7).min(560.0);
+        let content_rect = egui::Rect::from_center_size(center, egui::Vec2::new(content_width, rect.height() * 0.7));
+        let mut action = ConnectingAction::None;
+        if prompt.prompt_type == 0 {
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(20.0);
+                    let is_changed = prompt.message.contains("HAS CHANGED");
+                    if is_changed {
+                        ui.label(egui::RichText::new("WARNING: HOST KEY HAS CHANGED!").size(22.0).strong().color(egui::Color32::from_rgb(220, 50, 50)));
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(&prompt.message).size(13.0).color(if ui.visuals().dark_mode { egui::Color32::from_gray(180) } else { egui::Color32::from_gray(60) }));
+                    } else { ui.label(egui::RichText::new(&prompt.message).size(18.0)); }
+                    if !prompt.detail.is_empty() { ui.add_space(16.0); ui.label(egui::RichText::new(&prompt.detail).size(15.0).family(egui::FontFamily::Monospace).strong()); }
+                    ui.add_space(20.0);
+                    ui.label(egui::RichText::new("Are you sure you want to continue connecting?").size(14.0));
+                    ui.add_space(12.0);
+                    let btn_size = egui::Vec2::new(120.0, 34.0);
+                    ui.horizontal(|ui| {
+                        let total_w = btn_size.x * 2.0 + ui.spacing().item_spacing.x;
+                        let avail = ui.available_width();
+                        if avail > total_w { ui.add_space((avail - total_w) / 2.0); }
+                        if ui.add_sized(btn_size, egui::Button::new("Accept")).clicked() { action = ConnectingAction::Accept; }
+                        if ui.add_sized(btn_size, egui::Button::new("Reject")).clicked() { action = ConnectingAction::Reject; }
+                    });
                 });
-                if win.is_focused {
-                    focused_extra = Some(idx);
-                }
-            }
-        }
-        self.focused_extra_window = focused_extra;
-
-        for win in &mut extra {
-            for action in win.pending_actions.drain(..) {
-                use crate::extra_window::ExtraWindowAction;
-                match action {
-                    ExtraWindowAction::SpawnNewWindow => {
-                        self.spawn_extra_window();
-                    }
-                    ExtraWindowAction::QuitApp => {
-                        self.quit_requested = true;
-                    }
-                    ExtraWindowAction::OpenNewConnection => {
-                        self.state.new_connection_form =
-                            Some(crate::ui::dialogs::new_connection::NewConnectionForm::with_defaults());
-                    }
-                    ExtraWindowAction::OpenAbout => {
-                        self.show_about = true;
-                    }
-                    ExtraWindowAction::OpenTunnelDialog => {
-                        self.tunnel_dialog = Some(crate::ui::dialogs::tunnels::TunnelManagerState::new());
-                    }
-                    ExtraWindowAction::OpenNotificationHistory => {
-                        self.notification_history_dialog = Some(
-                            crate::ui::dialogs::notification_history::NotificationHistoryState::new(),
-                        );
-                    }
-                    ExtraWindowAction::RunPlugin(idx) => {
-                        self.run_plugin_by_index(idx);
-                    }
-                    ExtraWindowAction::RefreshPlugins => {
-                        self.discovered_plugins = crate::plugins::scan_plugin_dirs();
-                    }
-                    ExtraWindowAction::ApplyPluginChanges(indices) => {
-                        self.apply_plugin_changes(indices);
-                    }
-                    ExtraWindowAction::PanelButtonClick { plugin_idx, button_id } => {
-                        self.send_panel_button_event(plugin_idx, button_id);
-                    }
-                    ExtraWindowAction::DeactivatePanel(idx) => {
-                        self.deactivate_bottom_panel_plugin(idx);
-                    }
-                    ExtraWindowAction::SessionPanelAction(spa) => {
-                        self.handle_session_panel_action(spa);
-                    }
-                    ExtraWindowAction::BottomPanelAction(bpa) => {
-                        self.handle_bottom_panel_action(bpa);
-                    }
-                }
-            }
-        }
-
-        extra.retain(|w| !w.should_close);
-        self.extra_windows = extra;
-    }
-
-    /// Push an internal notification (not from a plugin).
-    #[allow(dead_code)]
-    pub(crate) fn notify(&mut self, body: impl Into<String>, level: conch_plugin::NotificationLevel) {
-        self.notifications.push(crate::notifications::Notification::simple(
-            body.into(),
-            None,
-            level,
-            None,
-            None,
-        ));
-    }
-
-    /// Push an internal notification with a title.
-    #[allow(dead_code)]
-    pub(crate) fn notify_with_title(
-        &mut self,
-        title: impl Into<String>,
-        body: impl Into<String>,
-        level: conch_plugin::NotificationLevel,
-    ) {
-        self.notifications.push(crate::notifications::Notification::simple(
-            body.into(),
-            Some(title.into()),
-            level,
-            None,
-            None,
-        ));
-    }
-
-    /// Persist current window size and zoom factor to state.toml.
-    fn save_window_state(&mut self, ctx: &egui::Context) {
-        // Read the current inner rect from the viewport.
-        if let Some(rect) = ctx.input(|i| i.viewport().inner_rect) {
-            self.state.persistent.layout.window_width = rect.width();
-            self.state.persistent.layout.window_height = rect.height();
-        }
-        self.state.persistent.layout.zoom_factor = ctx.zoom_factor();
-        self.state.persistent.layout.bottom_panel_collapsed = !self.show_bottom_panel;
-        self.state.persistent.layout.bottom_panel_height = self.bottom_panel_height;
-        let _ = config::save_persistent_state(&self.state.persistent);
-    }
-
-    #[cfg(target_os = "macos")]
-    fn handle_macos_menu_action(
-        &mut self,
-        action: crate::macos_menu::MenuAction,
-    ) {
-        use crate::macos_menu::MenuAction;
-        match action {
-            MenuAction::NewConnection | MenuAction::NewSshSession => {
-                self.state.new_connection_form =
-                    Some(NewConnectionForm::with_defaults());
-            }
-            MenuAction::NewWindow => {
-                self.spawn_extra_window();
-            }
-            MenuAction::NewLocalTerminal => {
-                self.open_local_tab();
-            }
-            MenuAction::SshTunnels => {
-                self.tunnel_dialog = Some(TunnelManagerState::new());
-            }
-            MenuAction::NotificationHistory => {
-                self.notification_history_dialog = Some(
-                    crate::ui::dialogs::notification_history::NotificationHistoryState::new(),
-                );
-            }
-            MenuAction::ToggleLeftSidebar => {
-                self.toggle_left_sidebar();
-            }
-            MenuAction::ToggleRightSidebar => {
-                self.toggle_right_sidebar();
-            }
-            MenuAction::ToggleBottomPanel => {
-                self.toggle_bottom_panel();
-            }
-            MenuAction::AboutConch => {
-                self.show_about = true;
-            }
-            MenuAction::RunPlugin(idx) => {
-                self.run_plugin_by_index(idx);
-            }
-        }
-    }
-
-
-    /// Apply the initial visual style, load icons, and set up platform-specific
-    /// window decorations. Called once on the first frame.
-    fn apply_initial_style(&mut self, ctx: &egui::Context) {
-        match self.state.user_config.colors.appearance_mode.as_str() {
-            "light" => {
-                ctx.set_visuals(egui::Visuals::light());
-                ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Light);
-                ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Light));
-            }
-            "system" => {
-                ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::System);
-                ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::SystemDefault));
-            }
-            _ => {
-                ctx.set_visuals(egui::Visuals::dark());
-                ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Dark);
-                ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
-            }
-        }
-        let mut style = (*ctx.style()).clone();
-        style.visuals.window_corner_radius = egui::CornerRadius::ZERO;
-        style.visuals.menu_corner_radius = egui::CornerRadius::ZERO;
-        style.visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::ZERO;
-        style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
-        style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
-        style.visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
-        style.visuals.widgets.open.corner_radius = egui::CornerRadius::ZERO;
-
-        if style.visuals.dark_mode {
-            let fg = egui::Color32::from_gray(240);
-            style.visuals.widgets.noninteractive.fg_stroke.color = fg;
-            style.visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_gray(220);
-            style.visuals.widgets.hovered.fg_stroke.color = egui::Color32::WHITE;
-            style.visuals.widgets.active.fg_stroke.color = egui::Color32::WHITE;
-            style.visuals.widgets.open.fg_stroke.color = fg;
-
-            let border = egui::Color32::from_gray(80);
-            let border_focus = egui::Color32::from_gray(140);
-            style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, border);
-            style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, border_focus);
-            style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, border_focus);
+            });
         } else {
-            let base = egui::Color32::from_gray(0xF2);
-            let accent = egui::Color32::WHITE;
-
-            style.visuals.panel_fill = base;
-            style.visuals.window_fill = base;
-            style.visuals.extreme_bg_color = accent;
-            style.visuals.faint_bg_color = egui::Color32::from_gray(0xE8);
-
-            style.visuals.widgets.noninteractive.bg_fill = base;
-            style.visuals.widgets.inactive.bg_fill = accent;
-            style.visuals.widgets.hovered.bg_fill = egui::Color32::from_gray(0xE8);
-            style.visuals.widgets.active.bg_fill = egui::Color32::from_gray(0xDD);
-            style.visuals.widgets.open.bg_fill = accent;
-
-            let fg = egui::Color32::from_gray(10);
-            style.visuals.widgets.noninteractive.fg_stroke.color = fg;
-            style.visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_gray(30);
-            style.visuals.widgets.hovered.fg_stroke.color = egui::Color32::BLACK;
-            style.visuals.widgets.active.fg_stroke.color = egui::Color32::BLACK;
-            style.visuals.widgets.open.fg_stroke.color = fg;
-
-            let border = egui::Color32::from_gray(180);
-            let border_focus = egui::Color32::from_gray(120);
-            style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, border);
-            style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, border_focus);
-            style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, border_focus);
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(20.0);
+                    ui.label(egui::RichText::new(&prompt.message).size(22.0));
+                    if !prompt.detail.is_empty() { ui.add_space(4.0); ui.label(egui::RichText::new(&prompt.detail).size(14.0).color(if ui.visuals().dark_mode { egui::Color32::from_gray(160) } else { egui::Color32::from_gray(80) })); }
+                    ui.add_space(16.0);
+                    let field_width = 340.0; let field_height = 34.0; let btn_zone = 32.0;
+                    let (outer_rect, _) = ui.allocate_exact_size(egui::Vec2::new(field_width, field_height), egui::Sense::hover());
+                    let visuals = ui.visuals();
+                    ui.painter().rect(outer_rect, egui::CornerRadius::ZERO, visuals.widgets.inactive.bg_fill, visuals.widgets.active.bg_stroke, egui::StrokeKind::Outside);
+                    let text_rect = egui::Rect::from_min_max(outer_rect.min, egui::Pos2::new(outer_rect.max.x - btn_zone, outer_rect.max.y));
+                    let mut text_child = ui.new_child(egui::UiBuilder::new().max_rect(text_rect.shrink2(egui::vec2(8.0, 0.0))));
+                    let pw_resp = text_child.add(egui::TextEdit::singleline(&mut prompt.password_buf).password(!prompt.show_password).frame(false).margin(egui::Margin { left: 0, right: 0, top: 8, bottom: 4 }).font(egui::TextStyle::Body).desired_width(text_rect.width() - 16.0).hint_text("Password"));
+                    if prompt.focus_password { pw_resp.request_focus(); prompt.focus_password = false; }
+                    let enter_pressed = pw_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let btn_rect = egui::Rect::from_min_max(egui::Pos2::new(outer_rect.max.x - btn_zone, outer_rect.min.y), outer_rect.max).shrink(4.0);
+                    let dark_mode = ui.visuals().dark_mode;
+                    let tooltip = if prompt.show_password { "Hide password" } else { "Show password" };
+                    let icon_size = egui::vec2(16.0, 16.0);
+                    let icon_pos = egui::Pos2::new(btn_rect.center().x - 8.0, btn_rect.center().y - 8.0);
+                    let icon_rect = egui::Rect::from_min_size(icon_pos, icon_size);
+                    let eye_resp = ui.allocate_rect(icon_rect, egui::Sense::click());
+                    if let Some(img) = icon_cache.and_then(|ic| ic.themed_image(crate::icons::Icon::Eye, dark_mode)) { img.fit_to_exact_size(icon_size).paint_at(ui, icon_rect); }
+                    if eye_resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tooltip).clicked() { prompt.show_password = !prompt.show_password; }
+                    if enter_pressed && !prompt.password_buf.is_empty() { action = ConnectingAction::SubmitPassword(prompt.password_buf.clone()); }
+                    ui.add_space(8.0);
+                    let cancel_text = egui::RichText::new("Cancel").size(13.0).color(if ui.visuals().dark_mode { egui::Color32::from_gray(140) } else { egui::Color32::from_gray(100) });
+                    if ui.add(egui::Label::new(cancel_text).sense(egui::Sense::click())).clicked() { action = ConnectingAction::Reject; }
+                });
+            });
         }
-
-        ctx.set_style(style);
-
-        // Register the user's configured terminal font with egui's Monospace family.
-        let font_family_name = &self.state.user_config.font.normal.family;
-        if !font_family_name.is_empty() {
-            if let Some(font_data) = load_system_font(font_family_name) {
-                let mut fonts = egui::FontDefinitions::default();
-                let key = font_family_name.clone();
-                fonts
-                    .font_data
-                    .insert(key.clone(), egui::FontData::from_owned(font_data).into());
-                // Put the user font first so it takes priority for Monospace glyphs.
-                fonts
-                    .families
-                    .entry(egui::FontFamily::Monospace)
-                    .or_default()
-                    .insert(0, key);
-                ctx.set_fonts(fonts);
-            } else {
-                let msg = format!(
-                    "Font '{}' not found on this system — using default monospace font",
-                    font_family_name,
-                );
-                log::warn!("{msg}");
-                self.notifications.push(crate::notifications::Notification::simple(
-                    msg,
-                    Some("Configuration Warning".into()),
-                    conch_plugin::NotificationLevel::Warning,
-                    Some(10.0),
-                    None,
-                ));
-            }
-        }
-
-        self.icon_cache = Some(IconCache::load(ctx));
-
-        let zoom = self.state.persistent.layout.zoom_factor;
-        if zoom > 0.0 && zoom != 1.0 {
-            ctx.set_zoom_factor(zoom);
-        }
-
-        #[cfg(target_os = "macos")]
-        if !self.use_native_menu {
-            crate::macos_menu::set_titlebar_transparent();
-        }
-
-        #[cfg(target_os = "macos")]
-        crate::macos_menu::set_tabbing_identifier("com.conch.terminal");
-
-        self.style_applied = true;
+        return action;
     }
+
+    let heading = format!("Connecting to {title}\u{2026}");
+    let heading_galley = ui.painter().layout_no_wrap(heading, egui::FontId::new(28.0, egui::FontFamily::Proportional), if ui.visuals().dark_mode { egui::Color32::WHITE } else { egui::Color32::BLACK });
+    ui.painter().galley(egui::Pos2::new(center.x - heading_galley.size().x / 2.0, center.y - 40.0), heading_galley, egui::Color32::PLACEHOLDER);
+    if let Some(detail) = detail {
+        let dg = ui.painter().layout_no_wrap(detail.to_string(), egui::FontId::new(16.0, egui::FontFamily::Proportional), if ui.visuals().dark_mode { egui::Color32::from_gray(200) } else { egui::Color32::from_gray(40) });
+        ui.painter().galley(egui::Pos2::new(center.x - dg.size().x / 2.0, center.y + 5.0), dg, egui::Color32::PLACEHOLDER);
+    }
+    let bar_w = 400.0_f32.min(rect.width() * 0.6); let bar_h = 6.0; let bar_y = center.y + 50.0;
+    let bar_rect = egui::Rect::from_min_size(egui::Pos2::new(center.x - bar_w / 2.0, bar_y), egui::Vec2::new(bar_w, bar_h));
+    ui.painter().rect_filled(bar_rect, bar_h / 2.0, if ui.visuals().dark_mode { egui::Color32::from_gray(60) } else { egui::Color32::from_gray(210) });
+    let elapsed = started.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
+    let t = (elapsed % 1.8) / 1.8; let pos_t = if t < 0.5 { t * 2.0 } else { 2.0 - t * 2.0 }; let eased = pos_t * pos_t * (3.0 - 2.0 * pos_t);
+    let iw = bar_w * 0.15; let ix = bar_rect.min.x + eased * (bar_w - iw);
+    ui.painter().rect_filled(egui::Rect::from_min_size(egui::Pos2::new(ix, bar_y), egui::Vec2::new(iw, bar_h)), bar_h / 2.0, egui::Color32::from_rgb(66, 133, 244));
+    ConnectingAction::None
 }
 
-/// Try to load a font by family name from the system using font-kit.
-/// Returns the raw font file bytes on success.
-fn load_system_font(family: &str) -> Option<Vec<u8>> {
-    use font_kit::family_name::FamilyName;
-    use font_kit::properties::Properties;
-    use font_kit::source::SystemSource;
-
-    let source = SystemSource::new();
-    let handle = source
-        .select_best_match(
-            &[FamilyName::Title(family.to_string())],
-            &Properties::new(),
-        )
-        .ok()?;
-    match handle {
-        font_kit::handle::Handle::Path { path, .. } => std::fs::read(path).ok(),
-        font_kit::handle::Handle::Memory { bytes, .. } => Some((*bytes).clone()),
-    }
+pub(crate) fn show_error_screen(ui: &mut egui::Ui, title: &str, error: &str) -> bool {
+    let rect = ui.available_rect_before_wrap();
+    ui.painter().rect_filled(rect, 0.0, if ui.visuals().dark_mode { egui::Color32::from_gray(30) } else { egui::Color32::from_gray(241) });
+    let center = rect.center();
+    let content_rect = egui::Rect::from_center_size(center, egui::Vec2::new((rect.width() * 0.7).min(600.0), rect.height() * 0.8));
+    let mut close = false;
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.vertical_centered(|ui| { ui.add_space(20.0); ui.label(egui::RichText::new(format!("Connection to {title} failed")).size(24.0).color(egui::Color32::from_rgb(220, 50, 50))); ui.add_space(16.0); });
+            ui.label(egui::RichText::new(error).size(13.0).family(egui::FontFamily::Monospace).color(if ui.visuals().dark_mode { egui::Color32::from_gray(180) } else { egui::Color32::from_gray(60) }));
+            ui.add_space(16.0);
+            ui.vertical_centered(|ui| { if ui.button("Close Tab").clicked() { close = true; } });
+            ui.add_space(12.0);
+        });
+    });
+    close
 }
-

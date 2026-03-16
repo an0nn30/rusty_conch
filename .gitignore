@@ -22,6 +22,7 @@
 # macOS packaging intermediates
 *.iconset/
 Conch.app/
+dmg-staging/
 *.dmg
 
 # cross-rs
@@ -29,3 +30,6 @@ Conch.app/
 
 # Logs
 *.log
+
+# Java SDK build output
+java-sdk/build/
