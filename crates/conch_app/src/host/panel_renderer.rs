@@ -1355,8 +1355,16 @@ fn render_table(
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
 
-            let row_color_a = egui::Color32::from_rgb(0x1C, 0x1C, 0x1D);
-            let row_color_b = egui::Color32::from_rgb(0x27, 0x26, 0x28);
+            let row_color_a = if theme.dark_mode {
+                egui::Color32::from_rgb(0x1C, 0x1C, 0x1D)
+            } else {
+                egui::Color32::from_rgb(0xF5, 0xF5, 0xF5)
+            };
+            let row_color_b = if theme.dark_mode {
+                egui::Color32::from_rgb(0x27, 0x26, 0x28)
+            } else {
+                egui::Color32::from_rgb(0xEB, 0xEB, 0xEB)
+            };
 
             for (row_idx, row) in rows.iter().enumerate() {
                 let is_selected = selected_row == Some(row.id.as_str());

@@ -82,54 +82,44 @@ impl UiTheme {
             }
         };
 
-        // In dark mode, use a warm near-black base (#201E1F) for the UI chrome.
+        // Use explicit base colors for UI chrome.
         // The terminal area still uses the color scheme's background.
-        let ui_bg = if dark_mode {
-            Color32::from_rgb(0x20, 0x1E, 0x1F) // #201E1F
-        } else {
-            bg
-        };
+        let (ui_bg, surface, text_primary, text_secondary, text_muted, focus_glow, border) =
+            if dark_mode {
+                (
+                    Color32::from_rgb(0x20, 0x1E, 0x1F), // #201E1F
+                    Color32::from_rgb(0x29, 0x28, 0x29), // #292829
+                    fg,
+                    Color32::from_rgb(0xA0, 0x9C, 0x9D), // warm gray
+                    Color32::from_rgb(0x5A, 0x57, 0x58),  // warm muted
+                    Color32::from_rgb(100, 160, 230),      // soft sky blue
+                    Color32::from_rgb(0x48, 0x45, 0x46),  // dark border
+                )
+            } else {
+                (
+                    Color32::from_rgb(0xF0, 0xF0, 0xF0), // light gray bg
+                    Color32::from_rgb(0xFA, 0xFA, 0xFA), // near-white surface
+                    Color32::from_rgb(0x1A, 0x1A, 0x1A), // near-black text
+                    Color32::from_rgb(0x60, 0x60, 0x60), // medium gray
+                    Color32::from_rgb(0xA0, 0xA0, 0xA0), // light muted
+                    Color32::from_rgb(80, 140, 210),       // blue focus
+                    Color32::from_rgb(0xCC, 0xCC, 0xCC),  // light border
+                )
+            };
 
-        // Surface levels: in dark mode use explicit warm tones, otherwise compute.
-        let surface = if dark_mode {
-            Color32::from_rgb(0x29, 0x28, 0x29) // #292829 — panel content
-        } else {
-            offset_color(ui_bg, dark_mode, 12)
-        };
         let surface_raised = offset_color(surface, dark_mode, 12);
         let surface_top = offset_color(surface, dark_mode, 24);
-        let border = offset_color(surface, dark_mode, 35);
 
         Self {
             bg: ui_bg,
             surface,
             surface_raised,
             surface_top,
-            text: fg,
-            text_secondary: if dark_mode {
-                Color32::from_rgb(0xA0, 0x9C, 0x9D) // warm gray
-            } else {
-                Color32::from_rgb(
-                    (colors.foreground[0] * 180.0) as u8,
-                    (colors.foreground[1] * 180.0) as u8,
-                    (colors.foreground[2] * 180.0) as u8,
-                )
-            },
-            text_muted: if dark_mode {
-                Color32::from_rgb(0x5A, 0x57, 0x58) // warm muted
-            } else {
-                Color32::from_rgb(
-                    (colors.foreground[0] * 90.0) as u8,
-                    (colors.foreground[1] * 90.0) as u8,
-                    (colors.foreground[2] * 90.0) as u8,
-                )
-            },
+            text: text_primary,
+            text_secondary,
+            text_muted,
             accent: to_color32(colors.normal[4]), // blue
-            focus_glow: if dark_mode {
-                Color32::from_rgb(100, 160, 230) // soft sky blue
-            } else {
-                Color32::from_rgb(80, 140, 210)
-            },
+            focus_glow,
             border,
             warn: to_color32(colors.normal[3]),  // yellow
             error: to_color32(colors.normal[1]), // red
@@ -459,10 +449,12 @@ mod tests {
     }
 
     #[test]
-    fn from_colors_surfaces_darker_in_light_mode() {
+    fn from_colors_light_mode_has_light_surfaces() {
         let theme = UiTheme::from_colors(&light_colors(), AppearanceMode::Light);
-        // Surface should be darker than bg.
-        assert!(theme.surface.r() < theme.bg.r());
+        // Light mode uses explicit light colors regardless of terminal scheme.
+        assert!(theme.bg.r() > 200);
+        assert!(theme.surface.r() > 200);
+        assert!(!theme.dark_mode);
     }
 
     #[test]
