@@ -532,9 +532,15 @@ pub(crate) fn render_window(ctx: &egui::Context, win: &mut WindowState, shared: 
             }
         })
     });
+    // Only forward paste to the PTY when no dialog or text widget has focus.
+    // Otherwise the pasted text goes to both the widget and the terminal.
+    let dialog_active = shared.dialog_state.lock().is_active_for(win.viewport_id);
+    let any_widget_focused = ctx.memory(|m| m.focused()).is_some() && ctx.wants_keyboard_input();
     if let Some(text) = paste_text {
-        if let Some(session) = win.active_session() {
-            session.write(text.as_bytes());
+        if !dialog_active && !any_widget_focused {
+            if let Some(session) = win.active_session() {
+                session.write(text.as_bytes());
+            }
         }
     }
 
