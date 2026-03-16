@@ -146,6 +146,36 @@ jar {
 }
 ```
 
+> **Tip: Bundling dependencies into a fat JAR.** Conch loads your plugin as a
+> single JAR — external dependencies (like Gson) must be bundled inside it.
+> Use the Shadow plugin to create a fat JAR:
+>
+> ```groovy
+> plugins {
+>     id 'java'
+>     id 'com.github.johnrengelman.shadow' version '8.1.1'
+> }
+>
+> dependencies {
+>     compileOnly files('libs/conch-plugin-sdk.jar')  // provided by Conch
+>     implementation 'com.google.code.gson:gson:2.11.0'  // bundled into JAR
+> }
+>
+> shadowJar {
+>     archiveClassifier.set('')  // replace the default jar
+>     manifest {
+>         attributes 'Plugin-Class': 'com.example.MyPlugin'
+>     }
+>     // Don't bundle the SDK — Conch provides it at runtime.
+>     dependencies {
+>         exclude(dependency('conch.plugin:.*'))
+>     }
+> }
+> ```
+>
+> Build with `gradle shadowJar` instead of `gradle build`. The output JAR
+> in `build/libs/` will contain your code + all `implementation` dependencies.
+
 **Maven:**
 
 ```xml
