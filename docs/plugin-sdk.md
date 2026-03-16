@@ -479,13 +479,13 @@ Create a file in your plugins directory (e.g., `~/.config/conch/plugins/my-scrip
 -- plugin-version: 1.0.0
 
 function setup()
-    host.log(2, "My script loaded!")
-    host.register_menu_item("Tools", "Run My Script", "run_script")
+    app.log(2, "My script loaded!")
+    app.register_menu_item("Tools", "Run My Script", "run_script")
 end
 
-function on_event(event_json)
-    if string.find(event_json, "run_script") then
-        host.log(2, "Script executed!")
+function on_event(event)
+    if type(event) == "table" and event.action == "run_script" then
+        app.log(2, "Script executed!")
     end
 end
 
@@ -494,7 +494,7 @@ function render()
 end
 
 function teardown()
-    host.log(2, "My script unloaded")
+    app.log(2, "My script unloaded")
 end
 ```
 
@@ -603,7 +603,7 @@ Plugins can publish events that other plugins subscribe to:
 ```java
 // Java — subscribe in setup(), receive in onEvent()
 // Native — api.subscribe("ssh.connected"), api.publish_event(...)
-// Lua — host.subscribe("ssh.connected"), host.publish_event(...)
+// Lua — app.subscribe("ssh.connected"), app.publish_event(...)
 ```
 
 ### RPC Queries
