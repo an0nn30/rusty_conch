@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
-use jni::sys::jint;
+use jni::sys::{jboolean, jfloat, jint, jobject};
 use jni::{InitArgsBuilder, JNIEnv, JavaVM, NativeMethod};
 use tokio::sync::mpsc;
 
@@ -562,6 +562,61 @@ fn register_host_natives(env: &mut JNIEnv) -> Result<(), LoadError> {
             sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V".into(),
             fn_ptr: native_host_register_menu_item as *mut std::ffi::c_void,
         },
+        NativeMethod {
+            name: "registerMenuItemWithKeybind".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V".into(),
+            fn_ptr: native_host_register_menu_item_keybind as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "notify".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V".into(),
+            fn_ptr: native_host_notify as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "setStatus".into(),
+            sig: "(Ljava/lang/String;IF)V".into(),
+            fn_ptr: native_host_set_status as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "clipboardSet".into(),
+            sig: "(Ljava/lang/String;)V".into(),
+            fn_ptr: native_host_clipboard_set as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "clipboardGet".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: native_host_clipboard_get as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "getConfig".into(),
+            sig: "(Ljava/lang/String;)Ljava/lang/String;".into(),
+            fn_ptr: native_host_get_config as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "setConfig".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;)V".into(),
+            fn_ptr: native_host_set_config as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "subscribe".into(),
+            sig: "(Ljava/lang/String;)V".into(),
+            fn_ptr: native_host_subscribe as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "publishEvent".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;)V".into(),
+            fn_ptr: native_host_publish_event as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "writeToPty".into(),
+            sig: "(Ljava/lang/String;)V".into(),
+            fn_ptr: native_host_write_to_pty as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "newTab".into(),
+            sig: "(Ljava/lang/String;Z)V".into(),
+            fn_ptr: native_host_new_tab as *mut std::ffi::c_void,
+        },
     ];
 
     env.register_native_methods(class, methods).map_err(jni_err)?;
@@ -614,6 +669,173 @@ extern "system" fn native_host_register_menu_item(
             std::ptr::null(),
         );
     }
+}
+
+/// JNI implementation of `HostApi.registerMenuItemWithKeybind`.
+extern "system" fn native_host_register_menu_item_keybind(
+    mut env: JNIEnv, _class: JClass,
+    menu: JString, label: JString, action: JString, keybind: JString,
+) {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return; }
+    let menu_str = match env.get_string(&menu) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let label_str = match env.get_string(&label) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let action_str = match env.get_string(&action) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let keybind_str = match env.get_string(&keybind) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let c_menu = CString::new(menu_str).unwrap_or_default();
+    let c_label = CString::new(label_str).unwrap_or_default();
+    let c_action = CString::new(action_str).unwrap_or_default();
+    let c_keybind = CString::new(keybind_str).unwrap_or_default();
+    unsafe { ((*host_api).register_menu_item)(c_menu.as_ptr(), c_label.as_ptr(), c_action.as_ptr(), c_keybind.as_ptr()); }
+}
+
+/// JNI implementation of `HostApi.notify`.
+extern "system" fn native_host_notify(
+    mut env: JNIEnv, _class: JClass,
+    title: JString, body: JString, level: JString, duration_ms: jint,
+) {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return; }
+    let title_str = env.get_string(&title).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let body_str = match env.get_string(&body) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let level_str = env.get_string(&level).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|_| "info".into());
+    let json = serde_json::json!({
+        "title": title_str,
+        "body": body_str,
+        "level": level_str,
+        "duration_ms": if duration_ms < 0 { serde_json::Value::Null } else { serde_json::json!(duration_ms) },
+    });
+    let json_str = json.to_string();
+    let c_json = CString::new(json_str.clone()).unwrap_or_default();
+    unsafe { ((*host_api).notify)(c_json.as_ptr(), json_str.len()); }
+}
+
+/// JNI implementation of `HostApi.setStatus`.
+extern "system" fn native_host_set_status(
+    mut env: JNIEnv, _class: JClass,
+    text: JString, level: jint, progress: jfloat,
+) {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return; }
+    let text_str = match env.get_string(&text) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let c_text = CString::new(text_str).unwrap_or_default();
+    unsafe { ((*host_api).set_status)(c_text.as_ptr(), level as u8, progress); }
+}
+
+/// JNI implementation of `HostApi.clipboardSet`.
+extern "system" fn native_host_clipboard_set(
+    mut env: JNIEnv, _class: JClass, text: JString,
+) {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return; }
+    let text_str = match env.get_string(&text) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let c_text = CString::new(text_str).unwrap_or_default();
+    unsafe { ((*host_api).clipboard_set)(c_text.as_ptr()); }
+}
+
+/// JNI implementation of `HostApi.clipboardGet`.
+extern "system" fn native_host_clipboard_get(
+    mut env: JNIEnv, _class: JClass,
+) -> jobject {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return std::ptr::null_mut(); }
+    let ptr = unsafe { ((*host_api).clipboard_get)() };
+    if ptr.is_null() { return std::ptr::null_mut(); }
+    let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    unsafe { ((*host_api).free_string)(ptr); }
+    match env.new_string(&s) {
+        Ok(js) => js.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// JNI implementation of `HostApi.getConfig`.
+extern "system" fn native_host_get_config(
+    mut env: JNIEnv, _class: JClass, key: JString,
+) -> jobject {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return std::ptr::null_mut(); }
+    let key_str = match env.get_string(&key) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return std::ptr::null_mut() };
+    let c_key = CString::new(key_str).unwrap_or_default();
+    let ptr = unsafe { ((*host_api).get_config)(c_key.as_ptr()) };
+    if ptr.is_null() { return std::ptr::null_mut(); }
+    let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    unsafe { ((*host_api).free_string)(ptr); }
+    match env.new_string(&s) {
+        Ok(js) => js.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// JNI implementation of `HostApi.setConfig`.
+extern "system" fn native_host_set_config(
+    mut env: JNIEnv, _class: JClass, key: JString, value: JString,
+) {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return; }
+    let key_str = match env.get_string(&key) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let value_str = match env.get_string(&value) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let c_key = CString::new(key_str).unwrap_or_default();
+    let c_value = CString::new(value_str).unwrap_or_default();
+    unsafe { ((*host_api).set_config)(c_key.as_ptr(), c_value.as_ptr()); }
+}
+
+/// JNI implementation of `HostApi.subscribe`.
+extern "system" fn native_host_subscribe(
+    mut env: JNIEnv, _class: JClass, event_type: JString,
+) {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return; }
+    let et = match env.get_string(&event_type) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let c_et = CString::new(et).unwrap_or_default();
+    unsafe { ((*host_api).subscribe)(c_et.as_ptr()); }
+}
+
+/// JNI implementation of `HostApi.publishEvent`.
+extern "system" fn native_host_publish_event(
+    mut env: JNIEnv, _class: JClass, event_type: JString, data_json: JString,
+) {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return; }
+    let et = match env.get_string(&event_type) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let data = match env.get_string(&data_json) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let c_et = CString::new(et).unwrap_or_default();
+    let c_data = CString::new(data.clone()).unwrap_or_default();
+    unsafe { ((*host_api).publish_event)(c_et.as_ptr(), c_data.as_ptr(), data.len()); }
+}
+
+/// JNI implementation of `HostApi.writeToPty`.
+extern "system" fn native_host_write_to_pty(
+    mut env: JNIEnv, _class: JClass, text: JString,
+) {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return; }
+    let text_str = match env.get_string(&text) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    unsafe { ((*host_api).write_to_pty)(text_str.as_ptr(), text_str.len()); }
+}
+
+/// JNI implementation of `HostApi.newTab`.
+extern "system" fn native_host_new_tab(
+    mut env: JNIEnv, _class: JClass, command: JString, plain: jboolean,
+) {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return; }
+    let cmd_ptr = if command.is_null() {
+        std::ptr::null()
+    } else {
+        match env.get_string(&command) {
+            Ok(s) => {
+                let owned = s.to_string_lossy().into_owned();
+                let c = CString::new(owned).unwrap_or_default();
+                let ptr = c.as_ptr();
+                // Keep CString alive through the FFI call.
+                unsafe { ((*host_api).new_tab)(ptr, plain != 0); }
+                return;
+            }
+            Err(_) => std::ptr::null(),
+        }
+    };
+    unsafe { ((*host_api).new_tab)(cmd_ptr, plain != 0); }
 }
 
 // ---------------------------------------------------------------------------

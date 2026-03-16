@@ -112,27 +112,166 @@ public class HostApi {
      * clicks it, the plugin's {@link ConchPlugin#onEvent(String)} is called
      * with a JSON event containing the {@code action} string:</p>
      *
-     * <pre>{@code {"MenuAction":{"action":"your_action_id"}}}</pre>
+     * <pre>{@code {"kind":"menu_action","action":"your_action_id"}}</pre>
      *
-     * <p>Typically called during {@link ConchPlugin#setup()}. Duplicate
-     * registrations (same menu + label) are allowed but will create
-     * multiple entries.</p>
+     * <p>Typically called during {@link ConchPlugin#setup()}.</p>
      *
-     * <p><b>Example:</b></p>
-     * <pre>{@code
-     * // In setup():
-     * HostApi.registerMenuItem("Tools", "Analyze Code", "analyze");
-     * HostApi.registerMenuItem("Tools", "Clear Cache", "clear_cache");
-     *
-     * // In onEvent(String eventJson):
-     * if (eventJson.contains("analyze")) { ... }
-     * if (eventJson.contains("clear_cache")) { ... }
-     * }</pre>
-     *
-     * @param menu   the top-level menu name (e.g. {@code "Tools"},
-     *               {@code "File"}, {@code "View"})
+     * @param menu   the top-level menu name (e.g. {@code "Tools"})
      * @param label  the menu item label shown to the user
      * @param action the action identifier included in the event when clicked
      */
     public static native void registerMenuItem(String menu, String label, String action);
+
+    /**
+     * Register a menu item with a keyboard shortcut.
+     *
+     * @param menu    the top-level menu name
+     * @param label   the menu item label
+     * @param action  the action identifier
+     * @param keybind keyboard shortcut (e.g. {@code "cmd+shift+j"})
+     */
+    public static native void registerMenuItemWithKeybind(String menu, String label, String action, String keybind);
+
+    // -----------------------------------------------------------------------
+    // Notifications
+    // -----------------------------------------------------------------------
+
+    /**
+     * Show a toast notification.
+     *
+     * @param title      notification title (may be null)
+     * @param body       notification body text
+     * @param level      one of {@code "info"}, {@code "success"},
+     *                   {@code "warn"}, {@code "error"}
+     * @param durationMs display duration in milliseconds (0 = persistent,
+     *                   -1 = default 5 seconds)
+     */
+    public static native void notify(String title, String body, String level, int durationMs);
+
+    /**
+     * Show a toast notification with default duration.
+     *
+     * @param title notification title
+     * @param body  notification body text
+     * @param level notification level
+     */
+    public static void notify(String title, String body, String level) {
+        notify(title, body, level, -1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Status Bar
+    // -----------------------------------------------------------------------
+
+    /**
+     * Update the global status bar.
+     *
+     * @param text     status text to display (null to clear)
+     * @param level    0=info, 1=warn, 2=error, 3=success
+     * @param progress 0.0–1.0 to show a progress bar, or negative to hide it
+     */
+    public static native void setStatus(String text, int level, float progress);
+
+    // -----------------------------------------------------------------------
+    // Clipboard
+    // -----------------------------------------------------------------------
+
+    /**
+     * Set the system clipboard contents.
+     *
+     * @param text the text to copy to the clipboard
+     */
+    public static native void clipboardSet(String text);
+
+    /**
+     * Get the system clipboard contents.
+     *
+     * @return the clipboard text, or null if unavailable
+     */
+    public static native String clipboardGet();
+
+    // -----------------------------------------------------------------------
+    // Plugin Config (persistent key/value storage)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Read a persisted config value for this plugin.
+     *
+     * <p>Config is stored per-plugin in
+     * {@code ~/.config/conch/plugins/<plugin-name>/<key>.json}.</p>
+     *
+     * @param key the config key
+     * @return the JSON value string, or null if not set
+     */
+    public static native String getConfig(String key);
+
+    /**
+     * Write a persisted config value for this plugin.
+     *
+     * @param key   the config key
+     * @param value the JSON value string (null to delete)
+     */
+    public static native void setConfig(String key, String value);
+
+    // -----------------------------------------------------------------------
+    // Inter-Plugin Communication
+    // -----------------------------------------------------------------------
+
+    /**
+     * Subscribe to bus events from other plugins.
+     *
+     * <p>When a matching event is published, the plugin's
+     * {@link ConchPlugin#onEvent(String)} receives it as a
+     * {@code bus_event} JSON envelope.</p>
+     *
+     * @param eventType the event type to subscribe to (e.g. {@code "ssh.connected"})
+     */
+    public static native void subscribe(String eventType);
+
+    /**
+     * Publish an event on the plugin bus.
+     *
+     * @param eventType the event type string
+     * @param dataJson  JSON-encoded event data
+     */
+    public static native void publishEvent(String eventType, String dataJson);
+
+    // -----------------------------------------------------------------------
+    // Terminal / Session
+    // -----------------------------------------------------------------------
+
+    /**
+     * Write text to the focused window's active terminal session.
+     *
+     * <p>The text is sent as raw bytes to the PTY. Include {@code "\n"} to
+     * simulate pressing Enter.</p>
+     *
+     * @param text the text to write (e.g. {@code "ls -la\n"})
+     */
+    public static native void writeToPty(String text);
+
+    /**
+     * Open a new local shell tab in the focused window.
+     *
+     * @param command optional command to run in the new tab (null for none)
+     * @param plain   if true, use the OS default shell instead of the
+     *                configured terminal.shell (avoids nesting tmux, etc.)
+     */
+    public static native void newTab(String command, boolean plain);
+
+    /**
+     * Open a new tab with default shell configuration.
+     */
+    public static void newTab() {
+        newTab(null, false);
+    }
+
+    /**
+     * Open a new plain shell tab and run a command.
+     *
+     * @param command the command to execute in the new tab
+     */
+    public static void newPlainTab(String command) {
+        newTab(command, true);
+    }
 }

@@ -202,7 +202,9 @@ Panel locations: `"left"`, `"right"`, `"bottom"`, `"none"`.
 
 ### Java HostApi
 
-Static methods on `conch.plugin.HostApi`. The Java tier currently supports logging and menu registration. Additional host APIs (panels, dialogs, notifications, clipboard, etc.) are planned — see the [Native HostApi](#hostapi-reference) for the full set that will eventually be exposed to Java.
+Static methods on `conch.plugin.HostApi`.
+
+**Logging:**
 
 | Method | Description |
 |--------|-------------|
@@ -212,7 +214,51 @@ Static methods on `conch.plugin.HostApi`. The Java tier currently supports loggi
 | `info(String message)` | Log at INFO |
 | `warn(String message)` | Log at WARN |
 | `error(String message)` | Log at ERROR |
-| `registerMenuItem(String menu, String label, String action)` | Add a menu item to the app menu bar |
+
+**Menu Items:**
+
+| Method | Description |
+|--------|-------------|
+| `registerMenuItem(String menu, String label, String action)` | Add a menu item |
+| `registerMenuItemWithKeybind(String menu, String label, String action, String keybind)` | Add a menu item with keyboard shortcut (e.g. `"cmd+shift+j"`) |
+
+**Notifications & Status:**
+
+| Method | Description |
+|--------|-------------|
+| `notify(String title, String body, String level, int durationMs)` | Show a toast notification (level: `"info"`, `"success"`, `"warn"`, `"error"`) |
+| `notify(String title, String body, String level)` | Show notification with default duration |
+| `setStatus(String text, int level, float progress)` | Update status bar (progress: 0.0–1.0, or negative to hide) |
+
+**Clipboard:**
+
+| Method | Description |
+|--------|-------------|
+| `clipboardSet(String text)` | Copy text to system clipboard |
+| `clipboardGet()` | Get clipboard text (returns null if unavailable) |
+
+**Config (persistent per-plugin storage):**
+
+| Method | Description |
+|--------|-------------|
+| `getConfig(String key)` | Read a config value (returns JSON string or null) |
+| `setConfig(String key, String value)` | Write a config value (null to delete) |
+
+**Inter-Plugin Communication:**
+
+| Method | Description |
+|--------|-------------|
+| `subscribe(String eventType)` | Subscribe to bus events from other plugins |
+| `publishEvent(String eventType, String dataJson)` | Publish a bus event |
+
+**Terminal / Session:**
+
+| Method | Description |
+|--------|-------------|
+| `writeToPty(String text)` | Write text to the focused terminal (include `\n` for Enter) |
+| `newTab(String command, boolean plain)` | Open a new tab (plain=true bypasses terminal.shell config) |
+| `newTab()` | Open a new tab with default shell |
+| `newPlainTab(String command)` | Open a plain shell tab and run a command |
 
 ### Widget Builder
 
@@ -516,6 +562,11 @@ All functions are on the `app` global table.
 | `app.set_config(key, value)` | Write a persisted config value |
 | `app.notify(title, body, level, duration_ms?)` | Show a toast notification |
 | `app.set_status(text, level, progress)` | Update the status bar (`progress`: 0.0–1.0, or -1.0 to hide) |
+| `session.exec(command)` | Run a shell command locally, returns `{stdout, stderr, exit_code, status}` |
+| `session.write(text)` | Write text to the focused terminal's PTY (include `\n` for Enter) |
+| `session.new_tab(command?, plain?)` | Open a new tab; `plain=true` bypasses terminal.shell config |
+| `session.current()` | Get info about the active session (`{platform, type}`) |
+| `session.platform` | Get the current OS platform string |
 
 **Log levels:**
 
