@@ -159,9 +159,10 @@ jobs:
           cp ./target/release/conch.exe portable/
           cp ./target/release/conch_ssh.dll portable/ 2>/dev/null || true
           cp ./target/release/conch_files.dll portable/ 2>/dev/null || true
-          cp portable/conch.exe ./Conch-v${{ steps.version.outputs.version }}-portable.exe
+          # Zip the portable directory (exe + plugin DLLs)
+          cd portable && 7z a -tzip "../Conch-v${{ steps.version.outputs.version }}-portable.zip" . && cd ..
           ./.github/workflows/upload_asset.sh \
-            ./Conch-v${{ steps.version.outputs.version }}-portable.exe $GITHUB_TOKEN
+            ./Conch-v${{ steps.version.outputs.version }}-portable.zip $GITHUB_TOKEN
 
       - name: Install WiX
         run: dotnet tool install --global wix --version 4.0.5
