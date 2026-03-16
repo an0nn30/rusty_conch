@@ -214,6 +214,56 @@ public class HostApi {
     public static native void setConfig(String key, String value);
 
     // -----------------------------------------------------------------------
+    // Dialogs
+    // -----------------------------------------------------------------------
+
+    /**
+     * Show a blocking text prompt dialog and wait for user input.
+     *
+     * <p>The dialog blocks the plugin thread until the user submits or
+     * cancels. Returns the entered text, or null if cancelled.</p>
+     *
+     * @param message      the prompt message
+     * @param defaultValue pre-filled default value (use "" for empty)
+     * @return the entered text, or null if cancelled
+     */
+    public static native String prompt(String message, String defaultValue);
+
+    /**
+     * Show a blocking text prompt with no default value.
+     *
+     * @param message the prompt message
+     * @return the entered text, or null if cancelled
+     */
+    public static String prompt(String message) {
+        return prompt(message, "");
+    }
+
+    /**
+     * Show a blocking confirmation dialog (OK / Cancel).
+     *
+     * @param message the confirmation message
+     * @return true if the user confirmed, false if cancelled
+     */
+    public static native boolean confirm(String message);
+
+    /**
+     * Show a blocking alert dialog with an OK button.
+     *
+     * @param title   the alert title
+     * @param message the alert message
+     */
+    public static native void alert(String title, String message);
+
+    /**
+     * Show a blocking error dialog with an OK button.
+     *
+     * @param title   the error title
+     * @param message the error message
+     */
+    public static native void showError(String title, String message);
+
+    // -----------------------------------------------------------------------
     // Inter-Plugin Communication
     // -----------------------------------------------------------------------
 

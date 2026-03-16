@@ -598,6 +598,26 @@ fn register_host_natives(env: &mut JNIEnv) -> Result<(), LoadError> {
             fn_ptr: native_host_set_config as *mut std::ffi::c_void,
         },
         NativeMethod {
+            name: "prompt".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
+            fn_ptr: native_host_prompt as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "confirm".into(),
+            sig: "(Ljava/lang/String;)Z".into(),
+            fn_ptr: native_host_confirm as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "alert".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;)V".into(),
+            fn_ptr: native_host_alert as *mut std::ffi::c_void,
+        },
+        NativeMethod {
+            name: "showError".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;)V".into(),
+            fn_ptr: native_host_show_error as *mut std::ffi::c_void,
+        },
+        NativeMethod {
             name: "subscribe".into(),
             sig: "(Ljava/lang/String;)V".into(),
             fn_ptr: native_host_subscribe as *mut std::ffi::c_void,
@@ -778,6 +798,64 @@ extern "system" fn native_host_set_config(
     let c_key = CString::new(key_str).unwrap_or_default();
     let c_value = CString::new(value_str).unwrap_or_default();
     unsafe { ((*host_api).set_config)(c_key.as_ptr(), c_value.as_ptr()); }
+}
+
+/// JNI implementation of `HostApi.prompt`.
+extern "system" fn native_host_prompt(
+    mut env: JNIEnv, _class: JClass, message: JString, default_value: JString,
+) -> jobject {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return std::ptr::null_mut(); }
+    let msg = match env.get_string(&message) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return std::ptr::null_mut() };
+    let default = env.get_string(&default_value).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let c_msg = CString::new(msg).unwrap_or_default();
+    let c_default = CString::new(default).unwrap_or_default();
+    let ptr = unsafe { ((*host_api).show_prompt)(c_msg.as_ptr(), c_default.as_ptr()) };
+    if ptr.is_null() { return std::ptr::null_mut(); }
+    let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    unsafe { ((*host_api).free_string)(ptr); }
+    match env.new_string(&s) {
+        Ok(js) => js.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// JNI implementation of `HostApi.confirm`.
+extern "system" fn native_host_confirm(
+    mut env: JNIEnv, _class: JClass, message: JString,
+) -> jboolean {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return 0; }
+    let msg = match env.get_string(&message) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return 0 };
+    let c_msg = CString::new(msg).unwrap_or_default();
+    let result = unsafe { ((*host_api).show_confirm)(c_msg.as_ptr()) };
+    if result { 1 } else { 0 }
+}
+
+/// JNI implementation of `HostApi.alert`.
+extern "system" fn native_host_alert(
+    mut env: JNIEnv, _class: JClass, title: JString, message: JString,
+) {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return; }
+    let title_str = match env.get_string(&title) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let msg_str = match env.get_string(&message) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let c_title = CString::new(title_str).unwrap_or_default();
+    let c_msg = CString::new(msg_str).unwrap_or_default();
+    unsafe { ((*host_api).show_alert)(c_title.as_ptr(), c_msg.as_ptr()); }
+}
+
+/// JNI implementation of `HostApi.showError`.
+extern "system" fn native_host_show_error(
+    mut env: JNIEnv, _class: JClass, title: JString, message: JString,
+) {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() { return; }
+    let title_str = match env.get_string(&title) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let msg_str = match env.get_string(&message) { Ok(s) => s.to_string_lossy().into_owned(), Err(_) => return };
+    let c_title = CString::new(title_str).unwrap_or_default();
+    let c_msg = CString::new(msg_str).unwrap_or_default();
+    unsafe { ((*host_api).show_error)(c_title.as_ptr(), c_msg.as_ptr()); }
 }
 
 /// JNI implementation of `HostApi.subscribe`.

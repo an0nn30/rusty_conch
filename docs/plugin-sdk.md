@@ -230,6 +230,16 @@ Static methods on `conch.plugin.HostApi`.
 | `notify(String title, String body, String level)` | Show notification with default duration |
 | `setStatus(String text, int level, float progress)` | Update status bar (progress: 0.0–1.0, or negative to hide) |
 
+**Dialogs (blocking):**
+
+| Method | Description |
+|--------|-------------|
+| `prompt(String message, String defaultValue)` | Show a text input dialog, returns entered text or null |
+| `prompt(String message)` | Prompt with no default value |
+| `confirm(String message)` | Show OK/Cancel dialog, returns true/false |
+| `alert(String title, String message)` | Show an alert dialog |
+| `showError(String title, String message)` | Show an error dialog |
+
 **Clipboard:**
 
 | Method | Description |
@@ -562,6 +572,10 @@ All functions are on the `app` global table.
 | `app.set_config(key, value)` | Write a persisted config value |
 | `app.notify(title, body, level, duration_ms?)` | Show a toast notification |
 | `app.set_status(text, level, progress)` | Update the status bar (`progress`: 0.0–1.0, or -1.0 to hide) |
+| `ui.prompt(message, default?)` | Show a blocking text input dialog, returns string or nil |
+| `ui.confirm(message)` | Show a blocking OK/Cancel dialog, returns boolean |
+| `ui.alert(title, message)` | Show a blocking alert dialog |
+| `ui.error(title, message)` | Show a blocking error dialog |
 | `session.exec(command)` | Run a shell command locally, returns `{stdout, stderr, exit_code, status}` |
 | `session.write(text)` | Write text to the focused terminal's PTY (include `\n` for Enter) |
 | `session.new_tab(command?, plain?)` | Open a new tab; `plain=true` bypasses terminal.shell config |
