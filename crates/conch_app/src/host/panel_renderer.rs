@@ -15,6 +15,25 @@ use egui::RichText;
 use crate::icons::IconCache;
 use crate::ui_theme::UiTheme;
 
+fn text_input_activity_key(ctx: &egui::Context) -> egui::Id {
+    egui::Id::new("__plugin_text_input_active").with(ctx.viewport_id())
+}
+
+fn mark_text_input_activity(ui: &egui::Ui) {
+    let key = text_input_activity_key(ui.ctx());
+    ui.ctx().data_mut(|d| d.insert_temp(key, true));
+}
+
+pub fn clear_text_input_activity(ctx: &egui::Context) {
+    let key = text_input_activity_key(ctx);
+    ctx.data_mut(|d| d.insert_temp(key, false));
+}
+
+pub fn text_input_activity(ctx: &egui::Context) -> bool {
+    let key = text_input_activity_key(ctx);
+    ctx.data(|d| d.get_temp::<bool>(key).unwrap_or(false))
+}
+
 /// Render a list of widgets into an egui Ui, collecting widget events.
 ///
 /// If the widget list ends with `Separator + <widgets...>`, the trailing
@@ -118,7 +137,9 @@ pub fn render_panel_header<'a>(
             if let Some(items) = toolbar_items {
                 use conch_plugin_sdk::widgets::ToolbarItem;
 
-                let text_idx = items.iter().position(|i| matches!(i, ToolbarItem::TextInput { .. }));
+                let text_idx = items
+                    .iter()
+                    .position(|i| matches!(i, ToolbarItem::TextInput { .. }));
 
                 if let Some(idx) = text_idx {
                     // Toolbar has a text input — split into before/input/after.
@@ -127,7 +148,9 @@ pub fn render_panel_header<'a>(
 
                     // Render items before the text input (e.g. back/forward).
                     for item in before {
-                        if matches!(item, ToolbarItem::Spacer) { continue; }
+                        if matches!(item, ToolbarItem::Spacer) {
+                            continue;
+                        }
                         render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
                     }
 
@@ -140,12 +163,26 @@ pub fn render_panel_header<'a>(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
                             for item in after.iter().rev() {
-                                if matches!(item, ToolbarItem::Spacer) { continue; }
-                                render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
+                                if matches!(item, ToolbarItem::Spacer) {
+                                    continue;
+                                }
+                                render_toolbar_item(
+                                    ui,
+                                    item,
+                                    theme,
+                                    text_input_state,
+                                    events,
+                                    icon_cache,
+                                );
                             }
                             let text_width = ui.available_width();
                             render_toolbar_text_input(
-                                ui, &items[idx], theme, text_input_state, events, text_width,
+                                ui,
+                                &items[idx],
+                                theme,
+                                text_input_state,
+                                events,
+                                text_width,
                             );
                         },
                     );
@@ -158,8 +195,17 @@ pub fn render_panel_header<'a>(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
                             for item in items.iter().rev() {
-                                if matches!(item, ToolbarItem::Spacer) { continue; }
-                                render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
+                                if matches!(item, ToolbarItem::Spacer) {
+                                    continue;
+                                }
+                                render_toolbar_item(
+                                    ui,
+                                    item,
+                                    theme,
+                                    text_input_state,
+                                    events,
+                                    icon_cache,
+                                );
                             }
                         },
                     );
@@ -183,18 +229,18 @@ fn render_widget(
 ) {
     match widget {
         // -- Layout Containers ------------------------------------------------
-
         Widget::Horizontal {
-            children, spacing, centered, ..
+            children,
+            spacing,
+            centered,
+            ..
         } => {
             if centered.unwrap_or(false) {
                 // Get the full clip rect width (the actual panel content area).
                 let panel_width = ui.clip_rect().width();
                 let panel_left = ui.clip_rect().left();
                 let cache_id = ui.id().with("_hcw");
-                let cached_w: f32 = ui.ctx().data_mut(|d| {
-                    *d.get_temp_mut_or(cache_id, 0.0_f32)
-                });
+                let cached_w: f32 = ui.ctx().data_mut(|d| *d.get_temp_mut_or(cache_id, 0.0_f32));
                 ui.horizontal(|ui| {
                     if let Some(sp) = spacing {
                         ui.spacing_mut().item_spacing.x = *sp;
@@ -217,7 +263,8 @@ fn render_widget(
                             render_widget(ui, child, theme, text_input_state, events, icon_cache);
                         }
                     });
-                    ui.ctx().data_mut(|d| d.insert_temp(cache_id, inner.response.rect.width()));
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(cache_id, inner.response.rect.width()));
                 });
             } else {
                 ui.horizontal(|ui| {
@@ -261,7 +308,6 @@ fn render_widget(
         }
 
         // -- Data Display -----------------------------------------------------
-
         Widget::Heading { text } => {
             ui.label(
                 RichText::new(text)
@@ -349,8 +395,7 @@ fn render_widget(
         Widget::Progress {
             fraction, label, ..
         } => {
-            let mut bar = egui::ProgressBar::new(*fraction)
-                .desired_height(6.0);
+            let mut bar = egui::ProgressBar::new(*fraction).desired_height(6.0);
             if let Some(lbl) = label {
                 bar = bar.text(lbl.as_str());
             }
@@ -366,7 +411,6 @@ fn render_widget(
         }
 
         // -- Interactive Widgets ----------------------------------------------
-
         Widget::Button {
             id,
             label,
@@ -374,7 +418,11 @@ fn render_widget(
             enabled,
         } => {
             let is_enabled = enabled.unwrap_or(true);
-            let text_color = if is_enabled { theme.text } else { theme.text_muted };
+            let text_color = if is_enabled {
+                theme.text
+            } else {
+                theme.text_muted
+            };
             ui.add_enabled_ui(is_enabled, |ui| {
                 // Icon-only button: use ImageButton when label is empty.
                 if label.is_empty() {
@@ -422,28 +470,35 @@ fn render_widget(
             let buf = text_input_state
                 .entry(id.clone())
                 .or_insert_with(|| value.clone());
+            let te_id = ui.id().with(id);
 
             let mut te = egui::TextEdit::singleline(buf)
+                .id(te_id)
                 .font(egui::TextStyle::Body)
                 .margin(theme.text_edit_margin());
             if let Some(h) = hint {
                 te = te.hint_text(h);
             }
 
-            let response = ui.add(te);
+            let output = te.show(ui);
 
             if request_focus.unwrap_or(false) {
-                response.request_focus();
+                output.response.request_focus();
             }
 
-            // Sync from plugin's canonical value only when the widget is NOT
-            // focused — otherwise the plugin's stale value overwrites typing.
-            if buf != value && !response.has_focus() {
+            if output.response.has_focus() || output.response.changed() {
+                mark_text_input_activity(ui);
+            }
+
+            // Sync from plugin's canonical value only when the widget is idle.
+            // Guard on `changed()` so transient focus flicker doesn't overwrite
+            // the user's most recent keystroke with a stale plugin value.
+            if buf != value && !output.response.has_focus() && !output.response.changed() {
                 *buf = value.clone();
             }
 
             // Detect value change.
-            if response.changed() {
+            if output.response.changed() {
                 events.push(WidgetEvent::TextInputChanged {
                     id: id.clone(),
                     value: buf.clone(),
@@ -451,7 +506,8 @@ fn render_widget(
             }
 
             // Detect Enter key submission.
-            if submit_on_enter.unwrap_or(false) && response.lost_focus()
+            if submit_on_enter.unwrap_or(false)
+                && output.response.lost_focus()
                 && ui.input(|i| i.key_pressed(egui::Key::Enter))
             {
                 let submitted = buf.clone();
@@ -462,10 +518,23 @@ fn render_widget(
                     value: submitted,
                 });
             }
+
+            // Arrow keys while text input has focus (for list navigation).
+            if output.response.has_focus() {
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                    events.push(WidgetEvent::TextInputArrowDown { id: id.clone() });
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                    events.push(WidgetEvent::TextInputArrowUp { id: id.clone() });
+                }
+            }
         }
 
         Widget::TextEdit {
-            id, value, hint, lines,
+            id,
+            value,
+            hint,
+            lines,
         } => {
             let buf = text_input_state
                 .entry(id.clone())
@@ -481,6 +550,9 @@ fn render_widget(
             }
 
             let response = ui.add(te);
+            if response.has_focus() || response.changed() {
+                mark_text_input_activity(ui);
+            }
             if response.changed() {
                 events.push(WidgetEvent::TextEditChanged {
                     id: id.clone(),
@@ -489,11 +561,7 @@ fn render_widget(
             }
         }
 
-        Widget::Checkbox {
-            id,
-            label,
-            checked,
-        } => {
+        Widget::Checkbox { id, label, checked } => {
             let mut val = *checked;
             if ui.checkbox(&mut val, label).changed() {
                 events.push(WidgetEvent::CheckboxChanged {
@@ -525,9 +593,13 @@ fn render_widget(
         }
 
         // -- Complex Widgets (MVP placeholders) -------------------------------
-
         Widget::SplitPane {
-            id, direction, ratio, left, right, ..
+            id,
+            direction,
+            ratio,
+            left,
+            right,
+            ..
         } => {
             match direction {
                 SplitDirection::Horizontal => {
@@ -587,8 +659,14 @@ fn render_widget(
             use conch_plugin_sdk::widgets::ToolbarItem;
 
             let has_leading_spacer = matches!(items.first(), Some(ToolbarItem::Spacer));
-            let items_to_render = if has_leading_spacer { &items[1..] } else { &items[..] };
-            let text_idx = items_to_render.iter().position(|i| matches!(i, ToolbarItem::TextInput { .. }));
+            let items_to_render = if has_leading_spacer {
+                &items[1..]
+            } else {
+                &items[..]
+            };
+            let text_idx = items_to_render
+                .iter()
+                .position(|i| matches!(i, ToolbarItem::TextInput { .. }));
 
             if let Some(idx) = text_idx {
                 // Toolbar with a text input: left items, then RTL sub-layout
@@ -598,7 +676,9 @@ fn render_widget(
 
                 ui.horizontal(|ui| {
                     for item in before {
-                        if matches!(item, ToolbarItem::Spacer) { continue; }
+                        if matches!(item, ToolbarItem::Spacer) {
+                            continue;
+                        }
                         render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
                     }
 
@@ -609,12 +689,26 @@ fn render_widget(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
                             for item in after.iter().rev() {
-                                if matches!(item, ToolbarItem::Spacer) { continue; }
-                                render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
+                                if matches!(item, ToolbarItem::Spacer) {
+                                    continue;
+                                }
+                                render_toolbar_item(
+                                    ui,
+                                    item,
+                                    theme,
+                                    text_input_state,
+                                    events,
+                                    icon_cache,
+                                );
                             }
                             let text_width = ui.available_width();
                             render_toolbar_text_input(
-                                ui, &items_to_render[idx], theme, text_input_state, events, text_width,
+                                ui,
+                                &items_to_render[idx],
+                                theme,
+                                text_input_state,
+                                events,
+                                text_width,
                             );
                         },
                     );
@@ -628,7 +722,14 @@ fn render_widget(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
                             for item in items_to_render {
-                                render_toolbar_item(ui, item, theme, text_input_state, events, icon_cache);
+                                render_toolbar_item(
+                                    ui,
+                                    item,
+                                    theme,
+                                    text_input_state,
+                                    events,
+                                    icon_cache,
+                                );
                             }
                         },
                     );
@@ -644,18 +745,44 @@ fn render_widget(
         }
 
         Widget::Table {
-            id, columns, rows, sort_column, sort_ascending, selected_row,
+            id,
+            columns,
+            rows,
+            sort_column,
+            sort_ascending,
+            selected_row,
         } => {
             render_table(
-                ui, id, columns, rows,
-                sort_column.as_deref(), *sort_ascending,
-                selected_row.as_deref(), theme, events, icon_cache,
+                ui,
+                id,
+                columns,
+                rows,
+                sort_column.as_deref(),
+                *sort_ascending,
+                selected_row.as_deref(),
+                theme,
+                events,
+                icon_cache,
             );
         }
 
-        Widget::TreeView { id, nodes, selected } => {
+        Widget::TreeView {
+            id,
+            nodes,
+            selected,
+        } => {
             for node in nodes {
-                render_tree_node(ui, id, node, selected.as_deref(), 0, theme, text_input_state, events, icon_cache);
+                render_tree_node(
+                    ui,
+                    id,
+                    node,
+                    selected.as_deref(),
+                    0,
+                    theme,
+                    text_input_state,
+                    events,
+                    icon_cache,
+                );
             }
         }
 
@@ -687,7 +814,9 @@ fn render_widget(
             });
         }
 
-        Widget::DropZone { label, children, .. } => {
+        Widget::DropZone {
+            label, children, ..
+        } => {
             ui.group(|ui| {
                 ui.label(
                     RichText::new(label)
@@ -759,9 +888,14 @@ fn render_tree_node(
             }
 
             // Label — clicking toggles the collapsing state.
-            let mut label_text = RichText::new(&node.label)
-                .size(theme.font_normal)
-                .color(if is_selected { theme.accent } else { theme.text });
+            let mut label_text =
+                RichText::new(&node.label)
+                    .size(theme.font_normal)
+                    .color(if is_selected {
+                        theme.accent
+                    } else {
+                        theme.text
+                    });
             if is_bold {
                 label_text = label_text.strong();
             }
@@ -901,7 +1035,9 @@ fn render_footer_widget(
     icon_cache: Option<&IconCache>,
 ) {
     match widget {
-        Widget::Button { id, label, icon, .. } => {
+        Widget::Button {
+            id, label, icon, ..
+        } => {
             ui.horizontal(|ui| {
                 if let Some(icon_name) = icon {
                     let dark_mode = ui.visuals().dark_mode;
@@ -912,9 +1048,14 @@ fn render_footer_widget(
                     }
                 }
                 if ui
-                    .add(egui::Label::new(
-                        RichText::new(label).size(theme.font_normal).color(theme.text),
-                    ).sense(egui::Sense::click()))
+                    .add(
+                        egui::Label::new(
+                            RichText::new(label)
+                                .size(theme.font_normal)
+                                .color(theme.text),
+                        )
+                        .sense(egui::Sense::click()),
+                    )
                     .clicked()
                 {
                     events.push(WidgetEvent::ButtonClick { id: id.clone() });
@@ -943,7 +1084,11 @@ fn render_toolbar_item(
 ) {
     match item {
         conch_plugin_sdk::widgets::ToolbarItem::Button {
-            id, icon, label, tooltip, enabled,
+            id,
+            icon,
+            label,
+            tooltip,
+            enabled,
         } => {
             let is_enabled = enabled.unwrap_or(true);
             let dark_mode = ui.visuals().dark_mode;
@@ -954,7 +1099,8 @@ fn render_toolbar_item(
                 if let Some(icon_name) = icon {
                     if let Some(ic) = icon_cache {
                         if let Some(img) = ic.image_by_name(icon_name, dark_mode) {
-                            let resp = ui.add_enabled(is_enabled, egui::ImageButton::new(img).frame(false));
+                            let resp = ui
+                                .add_enabled(is_enabled, egui::ImageButton::new(img).frame(false));
                             if resp.clicked() {
                                 did_click = true;
                             }
@@ -974,7 +1120,10 @@ fn render_toolbar_item(
                         }
                     }
                 }
-                let resp = ui.add_enabled(is_enabled, egui::Button::new(label.as_deref().unwrap()).frame(false));
+                let resp = ui.add_enabled(
+                    is_enabled,
+                    egui::Button::new(label.as_deref().unwrap()).frame(false),
+                );
                 let did_click = resp.clicked();
                 if let Some(tt) = tooltip {
                     resp.on_hover_text(tt);
@@ -1009,14 +1158,17 @@ fn render_toolbar_item(
             if let Some(h) = hint {
                 te = te.hint_text(h);
             }
-            let response = ui.add(te);
-            if response.changed() {
+            let output = te.show(ui);
+            if output.response.has_focus() || output.response.changed() {
+                mark_text_input_activity(ui);
+            }
+            if output.response.changed() {
                 events.push(WidgetEvent::ToolbarInputChanged {
                     id: id.clone(),
                     value: buf.clone(),
                 });
             }
-            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if output.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 events.push(WidgetEvent::ToolbarInputSubmit {
                     id: id.clone(),
                     value: buf.clone(),
@@ -1051,14 +1203,17 @@ fn render_toolbar_text_input(
         if let Some(h) = hint {
             te = te.hint_text(h);
         }
-        let response = ui.add(te);
-        if response.changed() {
+        let output = te.show(ui);
+        if output.response.has_focus() || output.response.changed() {
+            mark_text_input_activity(ui);
+        }
+        if output.response.changed() {
             events.push(WidgetEvent::ToolbarInputChanged {
                 id: id.clone(),
                 value: buf.clone(),
             });
         }
-        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        if output.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             events.push(WidgetEvent::ToolbarInputSubmit {
                 id: id.clone(),
                 value: buf.clone(),
@@ -1132,12 +1287,14 @@ fn render_table(
 
             let sortable = col.sortable.unwrap_or(false);
             let width = col_widths[vi];
-            let sense = if sortable { egui::Sense::click() } else { egui::Sense::hover() };
+            let sense = if sortable {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            };
 
-            let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(width, ui.spacing().interact_size.y),
-                sense,
-            );
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(width, ui.spacing().interact_size.y), sense);
 
             // Draw left-aligned header text.
             let text_pos = rect.left_center() + egui::vec2(4.0, 0.0);
@@ -1197,21 +1354,20 @@ fn render_table(
                 let row_width = ui.available_width();
 
                 // Allocate a single clickable rect for the whole row.
-                let (row_rect, row_resp) = ui.allocate_exact_size(
-                    egui::vec2(row_width, row_height),
-                    egui::Sense::click(),
-                );
+                let (row_rect, row_resp) =
+                    ui.allocate_exact_size(egui::vec2(row_width, row_height), egui::Sense::click());
 
                 // Alternating row background, then selection on top.
-                let bg = if row_idx % 2 == 0 { row_color_a } else { row_color_b };
+                let bg = if row_idx % 2 == 0 {
+                    row_color_a
+                } else {
+                    row_color_b
+                };
                 ui.painter().rect_filled(row_rect, 0.0, bg);
 
                 if is_selected {
-                    ui.painter().rect_filled(
-                        row_rect,
-                        0.0,
-                        ui.visuals().selection.bg_fill,
-                    );
+                    ui.painter()
+                        .rect_filled(row_rect, 0.0, ui.visuals().selection.bg_fill);
                 }
 
                 // Draw cells within the row rect.

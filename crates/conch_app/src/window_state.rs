@@ -37,6 +37,10 @@ use crate::ui_theme::UiTheme;
 /// Cursor blink interval in milliseconds.
 const CURSOR_BLINK_MS: u128 = 500;
 
+fn deferred_select_all_key(ctx: &egui::Context) -> egui::Id {
+    egui::Id::new("__deferred_plugin_select_all").with(ctx.viewport_id())
+}
+
 // ── SharedConfig ──
 
 /// Read-mostly configuration state updated on config/theme reload.
@@ -240,15 +244,18 @@ impl WindowState {
 
     /// Open a new local terminal tab, inheriting the CWD from the active session.
     pub fn open_local_tab(&mut self, user_config: &config::UserConfig) {
-        let cwd = self.active_tab
+        let cwd = self
+            .active_tab
             .and_then(|id| self.sessions.get(&id))
             .and_then(|s| s.child_pid())
             .and_then(conch_pty::get_cwd_of_pid);
         if let Some((id, session)) = create_local_session(user_config, cwd) {
             if self.last_cols > 0 && self.last_rows > 0 {
                 session.resize(
-                    self.last_cols, self.last_rows,
-                    self.cell_width as u16, self.cell_height as u16,
+                    self.last_cols,
+                    self.last_rows,
+                    self.cell_width as u16,
+                    self.cell_height as u16,
                 );
             }
             self.sessions.insert(id, session);
@@ -259,7 +266,9 @@ impl WindowState {
 
     /// Remove a session by ID, triggering the close animation.
     pub fn remove_session(&mut self, id: Uuid) {
-        let title = self.sessions.get(&id)
+        let title = self
+            .sessions
+            .get(&id)
             .map(|s| s.display_title().to_string())
             .unwrap_or_default();
         let index = self.tab_order.iter().position(|&t| t == id).unwrap_or(0);
@@ -308,16 +317,26 @@ impl WindowState {
 ///
 /// This replaces both the main window rendering in `app.rs update()` AND
 /// `ExtraWindow::update_deferred()`.
-pub(crate) fn render_window(
-    ctx: &egui::Context,
-    win: &mut WindowState,
-    shared: &SharedAppState,
-) {
+pub(crate) fn render_window(ctx: &egui::Context, win: &mut WindowState, shared: &SharedAppState) {
     use egui::ViewportCommand;
     use std::time::Duration;
 
     // 1. Clear pending actions from previous frame.
     win.pending_actions.clear();
+    crate::host::panel_renderer::clear_text_input_activity(ctx);
+    let select_all_key = deferred_select_all_key(ctx);
+    let deferred_select_all = ctx.data_mut(|d| d.remove_temp::<bool>(select_all_key)).unwrap_or(false);
+    if deferred_select_all {
+        ctx.input_mut(|input| {
+            input.events.push(egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: Some(egui::Key::A),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            });
+        });
+    }
 
     // 2. Track OS focus.
     win.has_focus = ctx.input(|i| i.focused);
@@ -363,7 +382,10 @@ pub(crate) fn render_window(
                 .order(egui::Order::Background)
                 .show(ctx, |ui| {
                     let r = ui.allocate_rect(
-                        egui::Rect::from_min_size(egui::Pos2::new(-100.0, -100.0), egui::Vec2::ZERO),
+                        egui::Rect::from_min_size(
+                            egui::Pos2::new(-100.0, -100.0),
+                            egui::Vec2::ZERO,
+                        ),
                         egui::Sense::focusable_noninteractive(),
                     );
                     // The allocate_rect with focusable sense calls interested_in_focus,
@@ -477,9 +499,7 @@ pub(crate) fn render_window(
     }
 
     // 11. Copy/Paste handling.
-    let copy_requested = ctx.input(|i| {
-        i.events.iter().any(|e| matches!(e, egui::Event::Copy))
-    });
+    let copy_requested = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
     if copy_requested {
         if let Some((start, end)) = win.selection.normalized() {
             if let Some(session) = win.active_session() {
@@ -493,7 +513,11 @@ pub(crate) fn render_window(
 
     let paste_text: Option<String> = ctx.input(|i| {
         i.events.iter().find_map(|e| {
-            if let egui::Event::Paste(text) = e { Some(text.clone()) } else { None }
+            if let egui::Event::Paste(text) = e {
+                Some(text.clone())
+            } else {
+                None
+            }
         })
     });
     if let Some(text) = paste_text {
@@ -511,9 +535,9 @@ pub(crate) fn render_window(
     }
 
     // 13. Compute effective decorations from platform + config.
-    let effective_decorations = shared.platform.effective_decorations(
-        cfg.user_config.window.decorations,
-    );
+    let effective_decorations = shared
+        .platform
+        .effective_decorations(cfg.user_config.window.decorations);
 
     let bg_color = cfg.theme.bg;
     let theme_clone = cfg.theme.clone();
@@ -540,9 +564,7 @@ pub(crate) fn render_window(
     }
 
     // 15. macOS fullsize_content_view titlebar spacer.
-    if effective_decorations == config::WindowDecorations::Full
-        && cfg!(target_os = "macos")
-    {
+    if effective_decorations == config::WindowDecorations::Full && cfg!(target_os = "macos") {
         let title_bar_h = 34.0;
         egui::TopBottomPanel::top("titlebar_spacer")
             .exact_height(title_bar_h)
@@ -575,7 +597,8 @@ pub(crate) fn render_window(
             &cfg.theme,
         );
         for pm_action in pm_actions {
-            win.pending_actions.push(WindowAction::PluginAction(pm_action));
+            win.pending_actions
+                .push(WindowAction::PluginAction(pm_action));
         }
     }
 
@@ -594,9 +617,21 @@ pub(crate) fn render_window(
     let panel_sizes = {
         let render_cache = shared.render_cache.lock();
         let icon_cache = shared.icon_cache.lock();
-        let left_w = if layout.left_panel_width > 0.0 { layout.left_panel_width } else { 240.0 };
-        let right_w = if layout.right_panel_width > 0.0 { layout.right_panel_width } else { 240.0 };
-        let bottom_h = if layout.bottom_panel_height > 0.0 { layout.bottom_panel_height } else { 180.0 };
+        let left_w = if layout.left_panel_width > 0.0 {
+            layout.left_panel_width
+        } else {
+            240.0
+        };
+        let right_w = if layout.right_panel_width > 0.0 {
+            layout.right_panel_width
+        } else {
+            240.0
+        };
+        let bottom_h = if layout.bottom_panel_height > 0.0 {
+            layout.bottom_panel_height
+        } else {
+            180.0
+        };
         crate::host::plugin_panels::render_plugin_panels_for_ctx(
             ctx,
             &shared.panel_registry,
@@ -635,13 +670,25 @@ pub(crate) fn render_window(
 
     // 22. Tab bar.
     {
-        let tabs: Vec<(Uuid, String)> = win.tab_order.iter().map(|&id| {
-            let title = win.sessions.get(&id)
-                .map(|s| s.display_title().to_string())
-                .unwrap_or_default();
-            (id, title)
-        }).collect();
-        for action in tab_bar::show_for(ctx, &tabs, win.active_tab, &theme_clone, &mut win.tab_bar_state) {
+        let tabs: Vec<(Uuid, String)> = win
+            .tab_order
+            .iter()
+            .map(|&id| {
+                let title = win
+                    .sessions
+                    .get(&id)
+                    .map(|s| s.display_title().to_string())
+                    .unwrap_or_default();
+                (id, title)
+            })
+            .collect();
+        for action in tab_bar::show_for(
+            ctx,
+            &tabs,
+            win.active_tab,
+            &theme_clone,
+            &mut win.tab_bar_state,
+        ) {
             match action {
                 tab_bar::TabBarAction::SwitchTo(id) => {
                     win.active_tab = Some(id);
@@ -719,11 +766,15 @@ pub(crate) fn render_window(
                             &mut win.frame_cache,
                         );
 
-                        pending_resize = Some((size_info.columns() as u16, size_info.rows() as u16));
+                        pending_resize =
+                            Some((size_info.columns() as u16, size_info.rows() as u16));
 
                         let mouse_mode = term
                             .try_lock_unfair()
-                            .map(|t| t.mode().intersects(alacritty_terminal::term::TermMode::MOUSE_MODE))
+                            .map(|t| {
+                                t.mode()
+                                    .intersects(alacritty_terminal::term::TermMode::MOUSE_MODE)
+                            })
                             .unwrap_or(false);
 
                         crate::mouse::handle_terminal_mouse(
@@ -859,7 +910,10 @@ pub(crate) fn handle_menu_action(
         MenuAction::PluginManager => {
             win.show_plugin_manager = !win.show_plugin_manager;
         }
-        MenuAction::PluginAction { plugin_name, action } => {
+        MenuAction::PluginAction {
+            plugin_name,
+            action,
+        } => {
             // Auto-show the panel that this plugin owns.  Track auto-reveal
             // so Escape can hide it again.
             {
@@ -886,18 +940,26 @@ pub(crate) fn handle_menu_action(
                 }
             }
             crate::host::bridge::set_event_viewport(&plugin_name, win.viewport_id);
-            let event = conch_plugin_sdk::PluginEvent::MenuAction { action: action.clone() };
+            let event = conch_plugin_sdk::PluginEvent::MenuAction {
+                action: action.clone(),
+            };
             if let Ok(json) = serde_json::to_string(&event) {
                 if let Some(sender) = shared.plugin_bus.sender_for(&plugin_name) {
                     log::info!("Dispatching menu action '{action}' to plugin '{plugin_name}'");
                     let _ = sender.try_send(conch_plugin::bus::PluginMail::WidgetEvent { json });
                 } else {
-                    log::warn!("No bus sender found for plugin '{plugin_name}' (menu action '{action}')");
+                    log::warn!(
+                        "No bus sender found for plugin '{plugin_name}' (menu action '{action}')"
+                    );
                 }
             }
         }
         MenuAction::SelectAll => {
-            // TODO: implement select-all for terminal content
+            // Defer to next frame so the focused TextEdit sees a native
+            // Command+A event in its own event-processing pass.
+            let select_all_key = deferred_select_all_key(ctx);
+            ctx.data_mut(|d| d.insert_temp(select_all_key, true));
+            ctx.request_repaint();
         }
     }
 }
@@ -919,8 +981,8 @@ pub(crate) fn handle_keyboard(
 
     // If a text input widget (e.g. plugin quick-connect search box) has focus,
     // don't forward key/text events to the PTY.  App shortcuts still work.
-    let text_widget_focused = ctx.memory(|m| m.focused()).is_some()
-        && ctx.wants_keyboard_input();
+    let text_widget_focused = (ctx.memory(|m| m.focused()).is_some() && ctx.wants_keyboard_input())
+        || crate::host::panel_renderer::text_input_activity(ctx);
 
     let app_cursor = !text_widget_focused
         && win.active_session().map_or(false, |s| {
@@ -939,6 +1001,19 @@ pub(crate) fn handle_keyboard(
                 modifiers,
                 ..
             } => {
+                // Cross-platform convenience: treat Ctrl+A as Select All in
+                // focused plugin text inputs (in addition to Cmd+A on macOS).
+                if text_widget_focused
+                    && *key == egui::Key::A
+                    && modifiers.ctrl
+                    && !modifiers.command
+                {
+                    let select_all_key = deferred_select_all_key(ctx);
+                    ctx.data_mut(|d| d.insert_temp(select_all_key, true));
+                    ctx.request_repaint();
+                    continue;
+                }
+
                 // Escape: re-hide any panel that was auto-revealed by a
                 // plugin shortcut and return focus to the terminal.
                 // Note: egui's begin_pass() already clears focused_widget
@@ -1068,16 +1143,14 @@ pub(crate) fn handle_keyboard(
                                 }
                             }
                         }
-                        crate::host::bridge::set_event_viewport(
-                            &pkb.plugin_name,
-                            win.viewport_id,
-                        );
+                        crate::host::bridge::set_event_viewport(&pkb.plugin_name, win.viewport_id);
                         let event = conch_plugin_sdk::PluginEvent::MenuAction {
                             action: pkb.action.clone(),
                         };
                         if let Ok(json) = serde_json::to_string(&event) {
                             if let Some(sender) = shared.plugin_bus.sender_for(&pkb.plugin_name) {
-                                let _ = sender.try_send(conch_plugin::bus::PluginMail::WidgetEvent { json });
+                                let _ = sender
+                                    .try_send(conch_plugin::bus::PluginMail::WidgetEvent { json });
                             }
                         }
                         // Force immediate render poll so the plugin's UI
@@ -1109,7 +1182,14 @@ pub(crate) fn handle_keyboard(
                 // Forward to active terminal via key_to_bytes — but not when
                 // a text input widget has focus (e.g. plugin search boxes).
                 if !text_widget_focused {
-                    if let Some(bytes) = input::key_to_bytes(key, modifiers, None, shortcuts, app_cursor, plugin_keybindings) {
+                    if let Some(bytes) = input::key_to_bytes(
+                        key,
+                        modifiers,
+                        None,
+                        shortcuts,
+                        app_cursor,
+                        plugin_keybindings,
+                    ) {
                         if let Some(session) = win.active_session() {
                             if let Some(mut term) = session.term().try_lock_unfair() {
                                 term.scroll_display(alacritty_terminal::grid::Scroll::Bottom);
