@@ -28,35 +28,35 @@ package conch.plugin;
  * {@link HostApi} methods are safe to call from any thread.</p>
  *
  * <h2>Example</h2>
- * <pre>{@code
+ * <pre>
  * public class MyPlugin implements ConchPlugin {
  *
- *     @Override
+ *     &#64;Override
  *     public PluginInfo getInfo() {
  *         return new PluginInfo("My Plugin", "Does cool things", "1.0.0");
  *     }
  *
- *     @Override
+ *     &#64;Override
  *     public void setup() {
  *         HostApi.registerMenuItem("Tools", "Do Thing", "do_thing");
  *     }
  *
- *     @Override
+ *     &#64;Override
  *     public void onEvent(String eventJson) {
  *         if (eventJson.contains("do_thing")) {
  *             HostApi.info("Thing was done!");
  *         }
  *     }
  *
- *     @Override
+ *     &#64;Override
  *     public String render() {
  *         return "[]"; // No panel widgets
  *     }
  *
- *     @Override
+ *     &#64;Override
  *     public void teardown() {}
  * }
- * }</pre>
+ * </pre>
  *
  * @see HostApi
  * @see PluginInfo
