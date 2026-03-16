@@ -81,7 +81,7 @@ jobs:
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Create universal .app bundle & DMG
+      - name: Create universal .app bundle
         run: |
           APP="Conch.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Plugins"
@@ -107,9 +107,29 @@ jobs:
           codesign --remove-signature "$APP" 2>/dev/null || true
           codesign --force --deep --sign - "$APP"
 
-          hdiutil create -volname "Conch" -srcfolder "$APP" \
-            -fs HFS+ -ov -format UDZO \
-            "Conch-v${{ steps.version.outputs.version }}.dmg"
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG
+        run: |
+          # create-dmg copies contents of source_folder into the DMG,
+          # so stage the .app inside a temporary directory.
+          mkdir -p dmg-staging
+          mv Conch.app dmg-staging/
+          create-dmg \
+            --volname "Conch" \
+            --volicon "crates/conch_app/icons/conch.icns" \
+            --background "packaging/macos/dmg-background.png" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 80 \
+            --icon "Conch.app" 150 200 \
+            --hide-extension "Conch.app" \
+            --app-drop-link 450 200 \
+            --no-internet-enable \
+            "Conch-v${{ steps.version.outputs.version }}.dmg" \
+            "dmg-staging/" || true
+          rm -rf dmg-staging
 
       - name: Upload DMG
         run: |

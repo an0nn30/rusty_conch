@@ -22,6 +22,7 @@
 # macOS packaging intermediates
 *.iconset/
 Conch.app/
+dmg-staging/
 *.dmg
 
 # cross-rs

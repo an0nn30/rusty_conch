@@ -68,10 +68,21 @@ dmg-native: java-sdk
 	cp crates/conch_app/icons/conch.icns "$(APP)/Contents/Resources/"
 	codesign --remove-signature "$(APP)" 2>/dev/null || true
 	codesign --force --deep --sign - "$(APP)"
-	hdiutil create -volname "Conch" -srcfolder "$(APP)" \
-		-fs HFS+ -ov -format UDZO \
-		"$(DIST)/Conch-v$(VERSION)-$(shell uname -m).dmg"
-	rm -rf "$(APP)"
+	mkdir -p dmg-staging && mv "$(APP)" dmg-staging/
+	create-dmg \
+		--volname "Conch" \
+		--volicon "crates/conch_app/icons/conch.icns" \
+		--background "packaging/macos/dmg-background.png" \
+		--window-pos 200 120 \
+		--window-size 600 400 \
+		--icon-size 80 \
+		--icon "Conch.app" 150 200 \
+		--hide-extension "Conch.app" \
+		--app-drop-link 450 200 \
+		--no-internet-enable \
+		"$(DIST)/Conch-v$(VERSION)-$(shell uname -m).dmg" \
+		"dmg-staging/" || true
+	rm -rf dmg-staging
 	@echo "Built $(DIST)/Conch-v$(VERSION)-$(shell uname -m).dmg"
 
 # ---------------------------------------------------------------------------
@@ -99,10 +110,21 @@ dmg-universal: java-sdk
 	cp crates/conch_app/icons/conch.icns "$(APP)/Contents/Resources/"
 	codesign --remove-signature "$(APP)" 2>/dev/null || true
 	codesign --force --deep --sign - "$(APP)"
-	hdiutil create -volname "Conch" -srcfolder "$(APP)" \
-		-fs HFS+ -ov -format UDZO \
-		"$(DIST)/Conch-v$(VERSION).dmg"
-	rm -rf "$(APP)"
+	mkdir -p dmg-staging && mv "$(APP)" dmg-staging/
+	create-dmg \
+		--volname "Conch" \
+		--volicon "crates/conch_app/icons/conch.icns" \
+		--background "packaging/macos/dmg-background.png" \
+		--window-pos 200 120 \
+		--window-size 600 400 \
+		--icon-size 80 \
+		--icon "Conch.app" 150 200 \
+		--hide-extension "Conch.app" \
+		--app-drop-link 450 200 \
+		--no-internet-enable \
+		"$(DIST)/Conch-v$(VERSION).dmg" \
+		"dmg-staging/" || true
+	rm -rf dmg-staging
 	@echo "Built $(DIST)/Conch-v$(VERSION).dmg"
 
 # ---------------------------------------------------------------------------
