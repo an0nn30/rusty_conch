@@ -151,27 +151,18 @@ fn load_system_font_by_name(names: &[&str]) -> Option<(String, Vec<u8>)> {
 }
 
 /// Apply the configured appearance mode to egui and the native window chrome.
-pub(crate) fn apply_appearance_mode(ctx: &egui::Context, mode: config::AppearanceMode) {
-    let (theme_pref, sys_theme) = match mode {
-        config::AppearanceMode::Dark => (egui::ThemePreference::Dark, egui::SystemTheme::Dark),
-        config::AppearanceMode::Light => (egui::ThemePreference::Light, egui::SystemTheme::Light),
-        config::AppearanceMode::System => (egui::ThemePreference::System, egui::SystemTheme::SystemDefault),
-    };
-    ctx.set_theme(theme_pref);
-    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(sys_theme));
+///
+/// The title bar is always dark regardless of the UI appearance mode.
+pub(crate) fn apply_appearance_mode(ctx: &egui::Context, _mode: config::AppearanceMode) {
+    // Always use dark system theme so the native title bar stays dark.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
 
     // On Windows, eframe's SetTheme viewport command does not reliably set the
-    // dark title bar.  Call the DWM API directly to apply the immersive dark
-    // mode attribute to the window chrome.
+    // dark title bar.  Call the DWM API directly.
     #[cfg(target_os = "windows")]
     {
-        let dark = match mode {
-            config::AppearanceMode::Dark => true,
-            config::AppearanceMode::Light => false,
-            // For System mode, check what egui resolved to.
-            config::AppearanceMode::System => ctx.style().visuals.dark_mode,
-        };
-        platform::windows::set_dark_title_bar(dark);
+        platform::windows::set_dark_title_bar(true);
     }
 }
 
