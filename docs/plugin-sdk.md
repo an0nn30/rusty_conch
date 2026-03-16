@@ -173,8 +173,10 @@ jar {
 > }
 > ```
 >
-> Build with `gradle shadowJar` instead of `gradle build`. The output JAR
-> in `build/libs/` will contain your code + all `implementation` dependencies.
+> Build with `gradle shadowJar`. The output JAR in `build/libs/` will
+> contain your code + all `implementation` dependencies. With the
+> `archiveClassifier.set('')` config above, `gradle build` also produces
+> the fat JAR automatically.
 
 **Maven:**
 
