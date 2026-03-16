@@ -569,7 +569,7 @@ fn render_widget(
 
         Widget::Checkbox { id, label, checked } => {
             let mut val = *checked;
-            if ui.checkbox(&mut val, label).changed() {
+            if circle_checkbox(ui, &mut val, label).clicked() {
                 events.push(WidgetEvent::CheckboxChanged {
                     id: id.clone(),
                     checked: val,
@@ -1330,7 +1330,7 @@ fn render_table(
                 ui.separator();
                 for toggle_col in columns.iter() {
                     let mut visible = toggle_col.visible.unwrap_or(true);
-                    if ui.checkbox(&mut visible, &toggle_col.label).clicked() {
+                    if circle_checkbox(ui, &mut visible, &toggle_col.label).clicked() {
                         events.push(WidgetEvent::TableHeaderContextMenu {
                             id: table_id.to_string(),
                             column: toggle_col.id.clone(),
@@ -1460,6 +1460,43 @@ fn render_table(
 }
 
 /// Map an optional `TextStyle` to a theme color.
+/// Custom checkbox rendered as a filled circle (checked) or hollow circle (unchecked).
+fn circle_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui::Response {
+    let spacing = 4.0;
+    let circle_radius = 5.0;
+    let text_galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(11.0),
+        ui.visuals().text_color(),
+    );
+    let desired_size = egui::vec2(
+        circle_radius * 2.0 + spacing + text_galley.size().x,
+        text_galley.size().y.max(circle_radius * 2.0),
+    );
+    let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+
+    if response.clicked() {
+        *checked = !*checked;
+    }
+
+    if ui.is_rect_visible(rect) {
+        let circle_center = egui::pos2(rect.left() + circle_radius, rect.center().y);
+        let accent = ui.visuals().selection.bg_fill;
+        let border = ui.visuals().widgets.inactive.fg_stroke.color;
+
+        if *checked {
+            ui.painter().circle_filled(circle_center, circle_radius, accent);
+        } else {
+            ui.painter().circle_stroke(circle_center, circle_radius, egui::Stroke::new(1.0, border));
+        }
+
+        let text_pos = egui::pos2(rect.left() + circle_radius * 2.0 + spacing, rect.center().y - text_galley.size().y / 2.0);
+        ui.painter().galley(text_pos, text_galley, egui::Color32::PLACEHOLDER);
+    }
+
+    response
+}
+
 fn text_style_color(style: Option<&TextStyle>, theme: &UiTheme) -> egui::Color32 {
     match style {
         None | Some(TextStyle::Normal) => theme.text,
