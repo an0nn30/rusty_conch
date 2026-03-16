@@ -500,6 +500,33 @@ end
 
 Metadata is declared in comments at the top of the file. No build step — the host reads and executes the Lua source directly.
 
+### Lua API Reference
+
+All functions are on the `app` global table.
+
+| Function | Description |
+|----------|-------------|
+| `app.log(level, message)` | Log a message at the given level |
+| `app.register_menu_item(menu, label, action, keybind?)` | Add a menu item (keybind is optional, e.g. `"cmd+shift+j"`) |
+| `app.register_panel(location, name)` | Register a panel (`"left"`, `"right"`, `"bottom"`) |
+| `app.register_service(name)` | Register as a named service for inter-plugin queries |
+| `app.subscribe(event_type)` | Subscribe to bus events from other plugins |
+| `app.publish_event(event_type, data_json)` | Publish a bus event |
+| `app.get_config(key)` | Read a persisted config value (returns string or nil) |
+| `app.set_config(key, value)` | Write a persisted config value |
+| `app.notify(title, body, level, duration_ms?)` | Show a toast notification |
+| `app.set_status(text, level, progress)` | Update the status bar (`progress`: 0.0–1.0, or -1.0 to hide) |
+
+**Log levels:**
+
+| Value | Level |
+|-------|-------|
+| `0` | Trace |
+| `1` | Debug |
+| `2` | Info |
+| `3` | Warn |
+| `4` | Error |
+
 ---
 
 ## Widget System
