@@ -236,6 +236,11 @@ fn parse_key_name(name: &str) -> Option<Key> {
         "f7" => Some(Key::F7), "f8" => Some(Key::F8), "f9" => Some(Key::F9),
         "f10" => Some(Key::F10), "f11" => Some(Key::F11), "f12" => Some(Key::F12),
         "/" | "slash" => Some(Key::Slash),
+        "\\" | "backslash" => Some(Key::Backslash),
+        "[" | "openbracket" => Some(Key::OpenBracket),
+        "]" | "closebracket" => Some(Key::CloseBracket),
+        "-" | "minus" => Some(Key::Minus),
+        "=" | "equals" | "plus" => Some(Key::Equals),
         _ => None,
     }
 }
@@ -359,6 +364,16 @@ mod tests {
     fn parse_key_name_slash() {
         assert_eq!(parse_key_name("/"), Some(Key::Slash));
         assert_eq!(parse_key_name("slash"), Some(Key::Slash));
+    }
+
+    #[test]
+    fn parse_key_name_punctuation() {
+        assert_eq!(parse_key_name("\\"), Some(Key::Backslash));
+        assert_eq!(parse_key_name("backslash"), Some(Key::Backslash));
+        assert_eq!(parse_key_name("["), Some(Key::OpenBracket));
+        assert_eq!(parse_key_name("]"), Some(Key::CloseBracket));
+        assert_eq!(parse_key_name("-"), Some(Key::Minus));
+        assert_eq!(parse_key_name("="), Some(Key::Equals));
     }
 
     #[test]
