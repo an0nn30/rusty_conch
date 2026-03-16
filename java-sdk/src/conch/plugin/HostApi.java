@@ -264,6 +264,48 @@ public class HostApi {
     public static native void showError(String title, String message);
 
     // -----------------------------------------------------------------------
+    // Forms
+    // -----------------------------------------------------------------------
+
+    /**
+     * Show a blocking multi-field form dialog.
+     *
+     * <p>The form descriptor is a JSON string describing the title and fields.
+     * Supported field types: {@code text}, {@code password}, {@code number},
+     * {@code combo} (dropdown), {@code checkbox}, {@code host_port},
+     * {@code file_picker}, {@code collapsible}, {@code separator},
+     * {@code label}.</p>
+     *
+     * <p><b>Example:</b></p>
+     * <pre>{@code
+     * String formJson = """
+     *     {
+     *         "title": "New Connection",
+     *         "fields": [
+     *             {"type": "text", "id": "host", "label": "Hostname", "hint": "e.g. server.example.com"},
+     *             {"type": "number", "id": "port", "label": "Port", "value": 22},
+     *             {"type": "text", "id": "user", "label": "Username"},
+     *             {"type": "password", "id": "pass", "label": "Password"},
+     *             {"type": "combo", "id": "auth", "label": "Auth Method",
+     *              "options": ["password", "key", "agent"], "value": "password"},
+     *             {"type": "checkbox", "id": "save", "label": "Save credentials", "value": true}
+     *         ]
+     *     }
+     *     """;
+     * String result = HostApi.showForm(formJson);
+     * if (result != null) {
+     *     // result is a JSON object: {"host":"...", "port":22, "user":"...", ...}
+     *     JsonObject obj = JsonParser.parseString(result).getAsJsonObject();
+     *     String host = obj.get("host").getAsString();
+     * }
+     * }</pre>
+     *
+     * @param formDescriptorJson JSON string with {@code title} and {@code fields} array
+     * @return JSON object with field values keyed by id, or null if cancelled
+     */
+    public static native String showForm(String formDescriptorJson);
+
+    // -----------------------------------------------------------------------
     // Inter-Plugin Communication
     // -----------------------------------------------------------------------
 

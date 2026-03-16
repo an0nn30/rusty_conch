@@ -239,6 +239,7 @@ Static methods on `conch.plugin.HostApi`.
 | `confirm(String message)` | Show OK/Cancel dialog, returns true/false |
 | `alert(String title, String message)` | Show an alert dialog |
 | `showError(String title, String message)` | Show an error dialog |
+| `showForm(String formJson)` | Show a multi-field form dialog (returns JSON result or null) |
 
 **Clipboard:**
 

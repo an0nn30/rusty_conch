@@ -597,6 +597,11 @@ fn register_host_natives(env: &mut JNIEnv) -> Result<(), LoadError> {
             fn_ptr: native_host_set_config as *mut std::ffi::c_void,
         },
         NativeMethod {
+            name: "showForm".into(),
+            sig: "(Ljava/lang/String;)Ljava/lang/String;".into(),
+            fn_ptr: native_host_show_form as *mut std::ffi::c_void,
+        },
+        NativeMethod {
             name: "prompt".into(),
             sig: "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
             fn_ptr: native_host_prompt as *mut std::ffi::c_void,
@@ -797,6 +802,41 @@ extern "system" fn native_host_set_config(
     let c_key = CString::new(key_str).unwrap_or_default();
     let c_value = CString::new(value_str).unwrap_or_default();
     unsafe { ((*host_api).set_config)(c_key.as_ptr(), c_value.as_ptr()); }
+}
+
+/// JNI implementation of `HostApi.showForm`.
+extern "system" fn native_host_show_form(
+    mut env: JNIEnv, _class: JClass, form_json: JString,
+) -> jobject {
+    let host_api = HOST_API_PTR.load(Ordering::Acquire);
+    if host_api.is_null() {
+        log::error!("jvm: HostApi.showForm called but HOST_API_PTR is null");
+        return std::ptr::null_mut();
+    }
+    let json = match env.get_string(&form_json) {
+        Ok(s) => s.to_string_lossy().into_owned(),
+        Err(e) => {
+            log::error!("jvm: HostApi.showForm: failed to read JSON arg: {e}");
+            describe_java_exception(&mut env);
+            return std::ptr::null_mut();
+        }
+    };
+    let c_json = CString::new(json.clone()).unwrap_or_default();
+    let ptr = unsafe { ((*host_api).show_form)(c_json.as_ptr(), json.len()) };
+    if ptr.is_null() {
+        log::debug!("jvm: HostApi.showForm: user cancelled (null result)");
+        return std::ptr::null_mut();
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    unsafe { ((*host_api).free_string)(ptr); }
+    match env.new_string(&s) {
+        Ok(js) => js.into_raw(),
+        Err(e) => {
+            log::error!("jvm: HostApi.showForm: failed to create result string: {e}");
+            describe_java_exception(&mut env);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// JNI implementation of `HostApi.prompt`.
