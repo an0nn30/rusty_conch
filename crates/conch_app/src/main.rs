@@ -150,12 +150,14 @@ fn load_system_font_by_name(names: &[&str]) -> Option<(String, Vec<u8>)> {
     None
 }
 
-/// Apply the configured appearance mode to egui and the native window chrome.
+/// Apply the configured appearance mode to the native window chrome.
 ///
 /// The title bar is always dark regardless of the UI appearance mode.
+/// Note: this must NOT call `ctx.set_theme()` because that would overwrite
+/// the custom visuals set by `UiTheme::apply()`.
 pub(crate) fn apply_appearance_mode(ctx: &egui::Context, _mode: config::AppearanceMode) {
-    // Always use dark system theme so the native title bar stays dark.
-    ctx.set_theme(egui::ThemePreference::Dark);
+    // Only set the OS-level window chrome to dark — don't touch egui's
+    // internal theme which would reset our custom UiTheme visuals.
     ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
 
     // On Windows, eframe's SetTheme viewport command does not reliably set the
