@@ -24,41 +24,59 @@ use app::ConchApp;
 use clap::{Parser, Subcommand};
 use conch_core::config;
 
-/// Load the platform's preferred UI font and set it as egui's default proportional font.
-fn setup_system_ui_font(ctx: &egui::Context) {
-    #[cfg(target_os = "linux")]
-    {
-        log::info!("Using egui built-in proportional font (Linux)");
-        return;
-    }
+/// Load system UI font and the user-configured terminal monospace font.
+fn setup_fonts(ctx: &egui::Context, terminal_font_family: &str) {
+    let mut fonts = egui::FontDefinitions::default();
 
+    // ── System UI font (proportional) ──
     #[cfg(target_os = "macos")]
-    let font_data = load_macos_system_font();
+    let ui_font_data = load_macos_system_font();
 
     #[cfg(target_os = "windows")]
-    let font_data = load_system_font_by_name(&["Segoe UI Variable", "Segoe UI"]);
+    let ui_font_data = load_system_font_by_name(&["Segoe UI Variable", "Segoe UI"]);
 
-    #[cfg(not(target_os = "linux"))]
-    match font_data {
-        Some((name, data)) => {
-            log::info!("Font data loaded: {} bytes from '{name}'", data.len());
-            let mut fonts = egui::FontDefinitions::default();
-            fonts.font_data.insert(
-                "system-ui".to_owned(),
-                egui::FontData::from_owned(data).into(),
-            );
-            fonts
-                .families
-                .entry(egui::FontFamily::Proportional)
-                .or_default()
-                .insert(0, "system-ui".to_owned());
-            ctx.set_fonts(fonts);
-            log::info!("UI font set to '{name}'");
-        }
-        None => {
-            log::warn!("Could not load system UI font, using egui default");
+    #[cfg(target_os = "linux")]
+    let ui_font_data: Option<(String, Vec<u8>)> = None;
+
+    if let Some((name, data)) = ui_font_data {
+        log::info!("UI font loaded: {} bytes from '{name}'", data.len());
+        fonts.font_data.insert(
+            "system-ui".to_owned(),
+            egui::FontData::from_owned(data).into(),
+        );
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .insert(0, "system-ui".to_owned());
+    }
+
+    // ── Terminal monospace font ──
+    if !terminal_font_family.is_empty() {
+        match load_system_font_by_name(&[terminal_font_family]) {
+            Some((name, data)) => {
+                log::info!("Terminal font loaded: {} bytes from '{name}'", data.len());
+                fonts.font_data.insert(
+                    "terminal-mono".to_owned(),
+                    egui::FontData::from_owned(data).into(),
+                );
+                // Prepend so it takes priority over the built-in monospace font.
+                fonts
+                    .families
+                    .entry(egui::FontFamily::Monospace)
+                    .or_default()
+                    .insert(0, "terminal-mono".to_owned());
+                log::info!("Terminal font set to '{name}'");
+            }
+            None => {
+                log::warn!(
+                    "Could not load terminal font '{terminal_font_family}', using built-in monospace"
+                );
+            }
         }
     }
+
+    ctx.set_fonts(fonts);
 }
 
 /// On macOS, load SF Pro (San Francisco) by scanning the system font directory.
@@ -89,7 +107,6 @@ fn load_macos_system_font() -> Option<(String, Vec<u8>)> {
 }
 
 /// Use font-kit to load a font by trying a list of family names in order.
-#[cfg(not(target_os = "linux"))]
 fn load_system_font_by_name(names: &[&str]) -> Option<(String, Vec<u8>)> {
     use font_kit::family_name::FamilyName;
     use font_kit::properties::Properties;
@@ -345,12 +362,13 @@ fn main() -> eframe::Result<()> {
     };
 
     let appearance_mode = user_config.colors.appearance_mode;
+    let terminal_font_family = user_config.font.normal.family.clone();
 
     eframe::run_native(
         "Conch",
         options,
         Box::new(move |cc| {
-            setup_system_ui_font(&cc.egui_ctx);
+            setup_fonts(&cc.egui_ctx, &terminal_font_family);
             apply_appearance_mode(&cc.egui_ctx, appearance_mode);
             Ok(Box::new(ConchApp::new(rt, window_size, icon)))
         }),
