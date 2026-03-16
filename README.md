@@ -68,7 +68,7 @@ This means plugins can be written in any language that can produce a C-compatibl
 
 ### Java plugins
 
-Conch supports **Java plugins** via an embedded JVM. Any JVM language works (Java, Kotlin, Scala, Groovy). The SDK JAR is embedded in the binary — no external files needed. Java plugins currently support logging and menu item registration; additional host APIs are planned.
+Conch supports **Java plugins** via an embedded JVM. Any JVM language works (Java, Kotlin, Scala, Groovy). The SDK JAR is embedded in the binary — no external files needed. Java plugins have full access to logging, menu items, notifications, status bar, clipboard, dialogs (prompt, confirm, alert, forms), config persistence, inter-plugin communication, and terminal/tab control.
 
 See the [Java Plugin SDK section](docs/plugin-sdk.md#java-plugins) in the SDK reference.
 
@@ -77,12 +77,20 @@ See the [Java Plugin SDK section](docs/plugin-sdk.md#java-plugins) in the SDK re
 Conch also supports lightweight **Lua 5.4 plugins** for quick scripting. Drop a `.lua` file in `~/.config/conch/plugins/` and it appears in the Plugins tab.
 
 ```lua
--- name: Hello World
--- description: A simple action plugin
--- author: You
+-- plugin-name: Hello World
+-- plugin-description: A simple action plugin
+-- plugin-type: action
+-- plugin-version: 1.0.0
 
 function setup()
-    app.notify("Hello from a plugin!")
+    app.log("info", "Hello from a plugin!")
+    app.register_menu_item("Tools", "Say Hello", "say_hello")
+end
+
+function on_event(event)
+    if type(event) == "table" and event.action == "say_hello" then
+        app.notify("Hello", "Hello from a plugin!", "success")
+    end
 end
 ```
 
@@ -93,6 +101,7 @@ Example Lua plugins are included in [`examples/plugins/`](examples/plugins/):
 | **System Info** | Panel | Live hostname, memory, disk, CPU load, top processes |
 | **Port Scanner** | Panel | TCP port scanning with service identification |
 | **Encrypt/Decrypt** | Action | AES encryption (CBC, GCM, ECB) with PBKDF2 key derivation |
+| **Tmux Sessions** | Panel | List, attach, rename, kill tmux sessions from a sidebar |
 | **Demo Bottom Panel** | Bottom Panel | Service dashboard with tables, stats, progress bars, live logs |
 
 ### Plugin development
@@ -168,18 +177,15 @@ Standard [Alacritty config](https://alacritty.org/config-alacritty.html) section
 new_tab = "cmd+t"
 close_tab = "cmd+w"
 new_window = "cmd+shift+n"
+quit = "cmd+q"
 zen_mode = "cmd+shift+z"
 toggle_left_panel = "cmd+shift+e"
 toggle_right_panel = "cmd+shift+r"
 toggle_bottom_panel = "cmd+shift+j"
 
-# Bind Lua plugins to keyboard shortcuts
-[conch.keyboard.plugins]
-"system-info.open_panel" = "cmd+shift+i"
-"encrypt-decrypt.run" = "cmd+shift+y"
-
 [conch.ui]
-native_menu_bar = false    # Use native macOS menu bar (macOS only)
+native_menu_bar = true     # Use native macOS menu bar (macOS only, default: true)
+font_family = ""           # UI font family (empty = system default)
 font_size = 13.0
 
 [conch.plugins]
@@ -190,6 +196,8 @@ java = true                        # Java (.jar) plugins (disabling skips JVM st
 search_paths = ["/extra/plugins"]  # Additional plugin discovery directories
 ```
 
+> **Plugin keybindings** are registered by plugins themselves via `register_menu_item` (with an optional keybind argument), not in the config file.
+
 ## Project Structure
 
 ```
@@ -197,17 +205,18 @@ crates/
   conch_app/          GUI application (eframe/egui) — the main binary
   conch_core/         Config loading, color schemes, shared types
   conch_pty/          PTY abstraction and connector
-  conch_plugin/       Plugin host — Lua runner, native plugin manager, plugin bus
+  conch_plugin/       Plugin host — Lua runner, JVM runtime, native manager, plugin bus
   conch_plugin_sdk/   SDK for native plugins — HostApi vtable, widgets, FFI types
 plugins/
   conch-ssh/          SSH session manager (native plugin)
   conch-files/        Dual-pane file explorer (native plugin)
+java-sdk/             Java Plugin SDK (JAR + sources + javadoc)
 editors/
   vscode/             VS Code extension for Lua plugin development
 examples/
-  plugins/            Example Lua plugins
+  plugins/            Example Lua plugins (tmux-sessions, system-info, etc.)
 docs/
-  plugin-sdk.md       Native Plugin SDK reference
+  plugin-sdk.md       Plugin SDK reference (Native, Java, Lua)
 ```
 
 ## Contributing

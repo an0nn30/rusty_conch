@@ -68,6 +68,10 @@ appearance_mode = "dark"
 # Terminal
 # ---------------------------------------------------------------------------
 
+# Scroll sensitivity multiplier (0.0–1.0). Lower = slower scrolling.
+# Default 0.15, tuned for macOS trackpads. Increase for external mice.
+scroll_sensitivity = 0.15
+
 [terminal.shell]
 
 # Shell program to run. Empty string = use default login shell ($SHELL).
@@ -75,10 +79,6 @@ program = ""
 
 # Arguments passed to the shell program.
 args = []
-
-# Scroll sensitivity multiplier (0.0–1.0). Lower = slower scrolling.
-# Default 0.15, tuned for macOS trackpads. Increase for external mice.
-scroll_sensitivity = 0.15
 
 [terminal.env]
 
@@ -119,6 +119,9 @@ close_tab = "cmd+w"
 new_window = "cmd+shift+n"
 quit = "cmd+q"
 zen_mode = "cmd+shift+z"
+toggle_left_panel = "cmd+shift+e"
+toggle_right_panel = "cmd+shift+r"
+toggle_bottom_panel = "cmd+shift+j"
 
 # ---------------------------------------------------------------------------
 # Conch — UI Settings
@@ -151,12 +154,14 @@ native_menu_bar = true
 
 # Master switch: false disables all plugin discovery, loading, and the
 # plugin bus. The app runs as a pure terminal emulator.
-enabled = false
+# Default: true
+enabled = true
 
-# Per-type toggles (only relevant when enabled = true):
-native = false    # Native shared-library plugins (.dylib / .so / .dll)
-lua = false       # Lua script plugins (.lua)
-java = false      # Java JAR plugins (.jar) — disabling skips JVM startup
+# Per-type toggles (only relevant when enabled = true).
+# All default to true. Set to false to disable a specific type.
+native = true     # Native shared-library plugins (.dylib / .so / .dll)
+lua = true        # Lua script plugins (.lua)
+java = true       # Java JAR plugins (.jar) — disabling skips JVM startup
 
 # Extra directories to scan for plugins. The app always checks built-in
 # paths (~/.config/conch/plugins/, exe directory, etc.). Paths here are

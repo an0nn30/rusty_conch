@@ -41,53 +41,62 @@ Code MUST be broken into small, focused modules. `app.rs` is already too large a
 crates/
   conch_app/        — GUI application (egui/eframe), the main binary
   conch_core/       — Config loading, color schemes, shared types
-  conch_plugin/     — Plugin host: Lua runner, native plugin manager, plugin bus
+  conch_plugin/     — Plugin host: Lua runner, JVM runtime, native plugin manager, plugin bus
   conch_plugin_sdk/ — SDK for native (Rust) plugins: HostApi, widgets, FFI types
   conch_pty/        — PTY abstraction and connector
 plugins/
   conch-ssh/        — Native plugin: SSH sessions, SFTP, server tree
   conch-files/      — Native plugin: dual-pane file explorer with local + SFTP
   test-*/           — Test plugins for development
+java-sdk/           — Java Plugin SDK: HostApi, ConchPlugin, Widgets, PluginInfo
+examples/plugins/   — Example Lua plugins (tmux-sessions, system-info, etc.)
 ```
 
 ### conch_app Module Layout
 ```
-app.rs              — ConchApp struct, eframe::App impl, update() loop (KEEP SMALL)
-main.rs             — Entry point, CLI parsing, window setup
+app.rs              — ConchApp coordinator, eframe::App impl, plugin infrastructure
+main.rs             — Entry point, CLI parsing, font loading, window setup
+window_state.rs     — Per-window state, render_window(), handle_keyboard(), SharedAppState
 input.rs            — KeyBinding parsing, key_to_bytes conversion, ResolvedShortcuts
-shortcuts.rs        — handle_keyboard() — shortcut dispatch and PTY forwarding
-state.rs            — AppState, persistent state
-sessions.rs         — Session management helpers
+state.rs            — Session struct, SessionBackend, AppState
+sessions.rs         — Session creation (local + plain shell)
+notifications.rs    — Toast notification rendering and state
 icons.rs            — IconCache, icon loading
-ui_theme.rs         — UiTheme struct, font sizes, colors
+ui_theme.rs         — UiTheme struct, font sizes, colors, light/dark mode
 context_menu.rs     — Right-click context menus
 tab_bar.rs          — Tab bar rendering
 ipc.rs              — Unix socket IPC
-watcher.rs          — File system watcher
+watcher.rs          — File system watcher (config + theme hot reload)
 mouse.rs            — Mouse event handling
-extra_window.rs     — Multi-window support
 host/               — Plugin hosting bridge
-  bridge.rs         — HostApi FFI implementation, SFTP registry, global state
+  bridge.rs         — HostApi FFI implementation, SFTP registry, PTY write queue, global state
   panel_renderer.rs — Widget rendering (tables, toolbars, trees, buttons, etc.)
-  plugin_panels.rs  — Panel layout (left/right/bottom panels with tabs)
-  plugin_lifecycle.rs — Plugin start/stop/reload
+  plugin_panels.rs  — Panel layout (left/right/bottom panels with tabs), status bar
+  plugin_lifecycle.rs — Plugin discovery, start/stop/reload
   plugin_manager_ui.rs — Plugin manager UI
   session_bridge.rs — Session<->plugin bridge
-  dialogs.rs        — Plugin-triggered dialogs
+  dialogs.rs        — Plugin-triggered dialogs (form, prompt, confirm, alert, error)
 terminal/           — Terminal rendering
   widget.rs         — Terminal grid rendering, selection, cursor
   color.rs          — ANSI color mapping
   size_info.rs      — Terminal size calculations
-menu_bar/           — Menu bar (egui + native macOS)
-platform/           — Platform-specific code (macOS, Linux, Windows)
+menu_bar/           — Menu bar
+  mod.rs            — MenuAction enum, MenuBarState, mode resolution
+  egui_menu.rs      — In-window egui menu bar rendering
+  native_macos.rs   — Native macOS NSMenu integration
+platform/           — Platform-specific code
+  capabilities.rs   — PlatformCapabilities detection
+  macos.rs          — macOS-specific (fullsize content view)
+  linux.rs          — Linux-specific
+  windows.rs        — Windows-specific (dark title bar DWM API)
 ```
 
-### Native Plugin Architecture
-- Plugins are shared libraries (`.dylib`/`.so`/`.dll`) loaded at runtime
-- Communicate with the host via `HostApi` — a `#[repr(C)]` struct of function pointers
-- Declarative widget system: plugins return `Vec<Widget>` JSON, host renders them
-- Events flow back via `WidgetEvent` enum (button clicks, text input, tree selection, etc.)
-- Cross-plugin FFI: `SftpVtable` pattern for direct function-pointer access between plugins
+### Plugin Architecture (3 tiers)
+- **Native** (Rust/C/Go): shared libraries (`.dylib`/`.so`/`.dll`), communicate via `HostApi` C ABI vtable
+- **Java** (Java/Kotlin/Scala): `.jar` files loaded by embedded JVM, communicate via JNI bridge to HostApi
+- **Lua**: single `.lua` files, no compilation, communicate via Lua API wrappers around HostApi
+- All tiers share: declarative widget system (JSON), pub/sub event bus, config persistence, dialog APIs
+- Cross-plugin FFI: `SftpVtable` pattern for direct function-pointer access between native plugins
 - Plugin config persistence via `HostApi::get_config`/`set_config` (JSON files per plugin)
 
 ### Key Patterns

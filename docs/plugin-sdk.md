@@ -27,6 +27,9 @@ Conch supports three plugin tiers, each suited to different use cases:
   - [Examples in Other Languages](#examples-in-other-languages)
 - [Lua Plugins](#lua-plugins)
   - [Quick Start](#lua-quick-start)
+  - [Lua API Reference](#lua-api-reference)
+  - [Panel Widget Functions](#panel-widget-functions)
+  - [Net API](#net-api)
 - [Widget System](#widget-system)
 - [Widget Events](#widget-events)
 - [Plugin Events](#plugin-events)
@@ -569,13 +572,13 @@ Create a file in your plugins directory (e.g., `~/.config/conch/plugins/my-scrip
 -- plugin-version: 1.0.0
 
 function setup()
-    app.log(2, "My script loaded!")
+    app.log("info", "My script loaded!")
     app.register_menu_item("Tools", "Run My Script", "run_script")
 end
 
 function on_event(event)
     if type(event) == "table" and event.action == "run_script" then
-        app.log(2, "Script executed!")
+        app.log("info", "Script executed!")
     end
 end
 
@@ -584,7 +587,7 @@ function render()
 end
 
 function teardown()
-    app.log(2, "My script unloaded")
+    app.log("info", "My script unloaded")
 end
 ```
 
@@ -596,35 +599,115 @@ All functions are on the `app` global table.
 
 | Function | Description |
 |----------|-------------|
-| `app.log(level, message)` | Log a message at the given level |
+| `app.log(level, message)` | Log a message (level: `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"`) |
 | `app.register_menu_item(menu, label, action, keybind?)` | Add a menu item (keybind is optional, e.g. `"cmd+shift+j"`) |
-| `app.register_panel(location, name)` | Register a panel (`"left"`, `"right"`, `"bottom"`) |
 | `app.register_service(name)` | Register as a named service for inter-plugin queries |
 | `app.subscribe(event_type)` | Subscribe to bus events from other plugins |
-| `app.publish_event(event_type, data_json)` | Publish a bus event |
+| `app.publish(event_type, data)` | Publish a bus event |
 | `app.get_config(key)` | Read a persisted config value (returns string or nil) |
 | `app.set_config(key, value)` | Write a persisted config value |
-| `app.notify(title, body, level, duration_ms?)` | Show a toast notification |
-| `app.set_status(text, level, progress)` | Update the status bar (`progress`: 0.0–1.0, or -1.0 to hide) |
+| `app.notify(title, body, level?, duration_ms?)` | Show a toast notification (level: `"info"`, `"success"`, `"warn"`, `"error"`) |
+| `app.clipboard(text)` | Copy text to system clipboard |
+| `app.clipboard_get()` | Get clipboard text (returns string or nil) |
+| `app.query_plugin(target, method, args?)` | Send a direct RPC query to another plugin (returns string or nil) |
 | `ui.prompt(message, default?)` | Show a blocking text input dialog, returns string or nil |
 | `ui.confirm(message)` | Show a blocking OK/Cancel dialog, returns boolean |
 | `ui.alert(title, message)` | Show a blocking alert dialog |
 | `ui.error(title, message)` | Show a blocking error dialog |
+| `ui.form(title, fields)` | Show a multi-field form dialog, returns table or nil |
 | `session.exec(command)` | Run a shell command locally, returns `{stdout, stderr, exit_code, status}` |
 | `session.write(text)` | Write text to the focused terminal's PTY (include `\n` for Enter) |
 | `session.new_tab(command?, plain?)` | Open a new tab; `plain=true` bypasses terminal.shell config |
 | `session.current()` | Get info about the active session (`{platform, type}`) |
 | `session.platform` | Get the current OS platform string |
 
-**Log levels:**
+**Log levels (Lua uses strings, not integers):**
 
 | Value | Level |
 |-------|-------|
-| `0` | Trace |
-| `1` | Debug |
-| `2` | Info |
-| `3` | Warn |
-| `4` | Error |
+| `"trace"` | Trace |
+| `"debug"` | Debug |
+| `"info"` | Info |
+| `"warn"` | Warn |
+| `"error"` | Error |
+
+### Net API
+
+The `net` global table provides basic networking utilities.
+
+| Function | Description |
+|----------|-------------|
+| `net.time()` | Returns the current Unix timestamp as a float (seconds since epoch) |
+| `net.resolve(hostname)` | DNS lookup — returns an array of IP address strings (empty array on failure) |
+| `net.scan(host, ports, timeout_ms?, concurrency?)` | TCP port scan — returns an array of `{port, open}` tables for open ports |
+
+### Panel Widget Functions
+
+For Lua panel plugins (`plugin-type: panel`), the `ui` table provides `panel_*` functions that build a widget tree imperatively during `render()`. Instead of returning JSON, call these functions and they accumulate widgets automatically.
+
+```lua
+-- plugin-type: panel
+-- plugin-panel-location: left
+
+function render()
+    ui.panel_heading("My Panel")
+    ui.panel_separator()
+    ui.panel_label("Hello from Lua!")
+    ui.panel_kv("Status", "OK")
+    ui.panel_button("refresh", "Refresh")
+end
+```
+
+**Display widgets:**
+
+| Function | Description |
+|----------|-------------|
+| `ui.panel_heading(text)` | Section heading |
+| `ui.panel_label(text, style?)` | Text label (style: `"secondary"`, `"muted"`, `"accent"`, `"warn"`, `"error"`) |
+| `ui.panel_text(text)` | Monospace text |
+| `ui.panel_scroll_text(id, text, max_height?)` | Scrollable text area |
+| `ui.panel_kv(key, value)` | Key-value display row |
+| `ui.panel_separator()` | Horizontal rule |
+| `ui.panel_spacer(size?)` | Flexible or fixed spacer |
+| `ui.panel_icon_label(icon, text, style?)` | Icon + text label |
+| `ui.panel_badge(text, variant)` | Status badge (info/success/warn/error) |
+| `ui.panel_progress(id, fraction, label?)` | Progress bar (0.0--1.0) |
+| `ui.panel_image(id?, src, width?, height?)` | Image widget |
+
+**Interactive widgets:**
+
+| Function | Description |
+|----------|-------------|
+| `ui.panel_button(id, label, icon?)` | Clickable button |
+| `ui.panel_text_input(id, value, hint?)` | Single-line text input |
+| `ui.panel_text_edit(id, value, hint?, lines?)` | Multi-line text editor |
+| `ui.panel_checkbox(id, label, checked)` | Checkbox toggle |
+| `ui.panel_combobox(id, selected, options)` | Dropdown select |
+
+**Complex widgets:**
+
+| Function | Description |
+|----------|-------------|
+| `ui.panel_table(columns, rows)` | Data table |
+| `ui.panel_tree(id, nodes, selected?)` | Hierarchical tree view |
+| `ui.panel_toolbar(id?, items)` | Toolbar with buttons, separators, inputs |
+| `ui.panel_path_bar(id, segments)` | Breadcrumb path bar |
+| `ui.panel_tabs(id, active, tabs)` | Tabbed container |
+
+**Layout containers (take a function argument for children):**
+
+| Function | Description |
+|----------|-------------|
+| `ui.panel_horizontal(func, spacing?)` | Horizontal layout |
+| `ui.panel_vertical(func, spacing?)` | Vertical layout |
+| `ui.panel_scroll_area(func, max_height?)` | Scrollable container |
+| `ui.panel_drop_zone(id, label, func?)` | Drag-and-drop target |
+
+**Utility:**
+
+| Function | Description |
+|----------|-------------|
+| `ui.panel_clear()` | Clear all accumulated widgets |
 
 ---
 
@@ -727,13 +810,13 @@ function on_event(event)
     -- event is a Lua table, NOT a JSON string.
     if event.kind == "menu_action" then
         local action = event.action
-        app.log(2, "Menu action: " .. action)
+        app.log("info", "Menu action: " .. action)
     elseif event.kind == "widget" then
         if event.type == "button_click" then
-            app.log(2, "Button clicked: " .. event.id)
+            app.log("info", "Button clicked: " .. event.id)
         end
     elseif event.kind == "bus_event" then
-        app.log(2, "Bus event: " .. event.event_type)
+        app.log("info", "Bus event: " .. event.event_type)
     end
 end
 ```
@@ -897,7 +980,7 @@ Plugins can publish events that other plugins subscribe to:
 ```java
 // Java — subscribe in setup(), receive in onEvent()
 // Native — api.subscribe("ssh.connected"), api.publish_event(...)
-// Lua — app.subscribe("ssh.connected"), app.publish_event(...)
+// Lua — app.subscribe("ssh.connected"), app.publish(...)
 ```
 
 ### RPC Queries
