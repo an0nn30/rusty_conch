@@ -1161,8 +1161,8 @@ fn render_toolbar_item(
             let te_id = ui.id().with(id);
             let mut te = egui::TextEdit::singleline(buf)
                 .id(te_id)
-                .font(egui::TextStyle::Body)
-                .margin(theme.text_edit_margin())
+                .font(egui::FontId::proportional(theme.font_small))
+                .margin(egui::Margin::symmetric(4, 3))
                 .desired_width(ui.available_width());
             if let Some(h) = hint {
                 te = te.hint_text(h);
