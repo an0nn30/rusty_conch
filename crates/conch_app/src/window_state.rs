@@ -565,7 +565,7 @@ pub(crate) fn render_window(ctx: &egui::Context, win: &mut WindowState, shared: 
         let drag_h = win.cell_height.max(6.0);
         egui::TopBottomPanel::top("drag_region")
             .exact_height(drag_h)
-            .frame(egui::Frame::NONE.fill(theme_clone.bg_with_alpha(180)))
+            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgba_unmultiplied(0x20, 0x1E, 0x1F, 230)))
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.interact(rect, ui.id().with("drag"), egui::Sense::drag());
