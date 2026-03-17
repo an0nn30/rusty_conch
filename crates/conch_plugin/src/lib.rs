@@ -10,6 +10,11 @@
 //!   its own OS thread with a bounded thread pool.
 
 pub mod bus;
+#[cfg(java_sdk_available)]
 pub mod jvm;
+#[cfg(not(java_sdk_available))]
+pub mod jvm_stub;
+#[cfg(not(java_sdk_available))]
+pub use jvm_stub as jvm;
 pub mod lua;
 pub mod native;
