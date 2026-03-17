@@ -37,6 +37,10 @@ use crate::ui_theme::UiTheme;
 /// Cursor blink interval in milliseconds.
 const CURSOR_BLINK_MS: u128 = 500;
 
+/// When unfocused, poll for PTY/plugin events at this interval so background
+/// terminal updates (e.g. command output) still appear without user interaction.
+const UNFOCUSED_POLL_MS: u64 = 250;
+
 fn deferred_select_all_key(ctx: &egui::Context) -> egui::Id {
     egui::Id::new("__deferred_plugin_select_all").with(ctx.viewport_id())
 }
@@ -546,6 +550,23 @@ pub(crate) fn render_window(ctx: &egui::Context, win: &mut WindowState, shared: 
         }
     }
 
+    // 11b. File drop handling — paste shell-escaped paths into the terminal.
+    let dropped: Vec<egui::DroppedFile> =
+        ctx.input(|i| i.raw.dropped_files.clone());
+    if !dropped.is_empty() && !dialog_active && !any_widget_focused {
+        if let Some(session) = win.active_session() {
+            let paths: Vec<String> = dropped
+                .iter()
+                .filter_map(|f| f.path.as_ref())
+                .map(|p| shell_escape_path(p))
+                .collect();
+            if !paths.is_empty() {
+                let text = paths.join(" ");
+                session.write(text.as_bytes());
+            }
+        }
+    }
+
     // 12. Lazy-init icon cache on first frame.
     {
         let mut ic = shared.icon_cache.lock();
@@ -873,8 +894,11 @@ pub(crate) fn render_window(ctx: &egui::Context, win: &mut WindowState, shared: 
         let elapsed = win.last_blink.elapsed().as_millis() as u64;
         let remaining = (CURSOR_BLINK_MS as u64).saturating_sub(elapsed);
         ctx.request_repaint_after(Duration::from_millis(remaining.max(16)));
+    } else {
+        // Unfocused: poll at a low frequency so PTY output and plugin
+        // updates are still picked up without waiting for re-focus.
+        ctx.request_repaint_after(Duration::from_millis(UNFOCUSED_POLL_MS));
     }
-    // When unfocused and nothing changed: no repaint requested → true idle.
 }
 
 // ── handle_menu_action ──
@@ -1243,6 +1267,35 @@ pub(crate) fn handle_keyboard(
 
 // ── Tests ──
 
+/// Shell-escape a file path for safe pasting into a terminal.
+///
+/// Paths that contain no special characters are returned as-is.
+/// Otherwise the path is wrapped in single quotes with internal
+/// single quotes escaped as `'\''`.
+fn shell_escape_path(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+    // Characters that are safe unquoted in POSIX shells.
+    let needs_quoting = s.bytes().any(|b| {
+        !matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'
+            | b'/' | b'.' | b'_' | b'-' | b'+' | b':' | b'@' | b',')
+    });
+    if !needs_quoting {
+        return s.into_owned();
+    }
+    // Wrap in single quotes; escape embedded single quotes.
+    let mut out = String::with_capacity(s.len() + 4);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1423,5 +1476,50 @@ mod tests {
         // A window at version 1 would detect the mismatch.
         let ws = make_test_state();
         assert_ne!(ws.last_theme_version, cfg.theme_version);
+    }
+
+    #[test]
+    fn unfocused_poll_interval_is_reasonable() {
+        // Must be fast enough to feel responsive (< 1s) but slow enough
+        // to avoid burning CPU (~4fps or less).
+        assert!(UNFOCUSED_POLL_MS >= 100, "polling too aggressively when unfocused");
+        assert!(UNFOCUSED_POLL_MS <= 1000, "polling too slowly — updates will feel laggy");
+    }
+
+    #[test]
+    fn shell_escape_simple_path() {
+        let p = std::path::Path::new("/usr/local/bin/foo");
+        assert_eq!(shell_escape_path(p), "/usr/local/bin/foo");
+    }
+
+    #[test]
+    fn shell_escape_path_with_spaces() {
+        let p = std::path::Path::new("/Users/me/My Documents/file.txt");
+        assert_eq!(
+            shell_escape_path(p),
+            "'/Users/me/My Documents/file.txt'"
+        );
+    }
+
+    #[test]
+    fn shell_escape_path_with_single_quotes() {
+        let p = std::path::Path::new("/tmp/it's a file");
+        assert_eq!(
+            shell_escape_path(p),
+            "'/tmp/it'\\''s a file'"
+        );
+    }
+
+    #[test]
+    fn shell_escape_path_with_special_chars() {
+        let p = std::path::Path::new("/tmp/file(1).txt");
+        assert_eq!(shell_escape_path(p), "'/tmp/file(1).txt'");
+    }
+
+    #[test]
+    fn shell_escape_path_safe_chars_unquoted() {
+        // Dots, underscores, hyphens, plus, colon, at-sign, comma are safe.
+        let p = std::path::Path::new("/a.b_c-d+e:f@g,h");
+        assert_eq!(shell_escape_path(p), "/a.b_c-d+e:f@g,h");
     }
 }
