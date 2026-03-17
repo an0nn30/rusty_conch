@@ -518,8 +518,8 @@ const BTN_FONT_SIZE: f32 = 14.0;
 const TEXT_EDIT_MARGIN: egui::Margin = egui::Margin {
     left: 8,
     right: 8,
-    top: 6,
-    bottom: 6,
+    top: 8,
+    bottom: 8,
 };
 
 /// Consistently styled text edit matching the main branch.

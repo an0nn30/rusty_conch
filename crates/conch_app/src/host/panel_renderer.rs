@@ -474,8 +474,8 @@ fn render_widget(
 
             let mut te = egui::TextEdit::singleline(buf)
                 .id(te_id)
-                .font(egui::FontId::proportional(theme.font_small))
-                .margin(egui::Margin::symmetric(4, 3));
+                .font(egui::FontId::proportional(theme.font_normal))
+                .margin(theme.text_edit_margin());
             if let Some(h) = hint {
                 te = te.hint_text(h);
             }
@@ -548,8 +548,8 @@ fn render_widget(
 
             let desired_rows = lines.unwrap_or(4) as usize;
             let mut te = egui::TextEdit::multiline(buf)
-                .font(egui::FontId::monospace(theme.font_small))
-                .margin(egui::Margin::symmetric(4, 3))
+                .font(egui::FontId::monospace(theme.font_normal))
+                .margin(theme.text_edit_margin())
                 .desired_rows(desired_rows);
             if let Some(h) = hint {
                 te = te.hint_text(h);
@@ -1161,8 +1161,8 @@ fn render_toolbar_item(
             let te_id = ui.id().with(id);
             let mut te = egui::TextEdit::singleline(buf)
                 .id(te_id)
-                .font(egui::FontId::proportional(theme.font_small))
-                .margin(egui::Margin::symmetric(4, 3))
+                .font(egui::FontId::proportional(theme.font_normal))
+                .margin(theme.text_edit_margin())
                 .desired_width(ui.available_width());
             if let Some(h) = hint {
                 te = te.hint_text(h);
@@ -1206,8 +1206,8 @@ fn render_toolbar_text_input(
         let te_id = ui.id().with(id);
         let mut te = egui::TextEdit::singleline(buf)
             .id(te_id)
-            .font(egui::FontId::proportional(theme.font_small))
-            .margin(egui::Margin::symmetric(4, 3))
+            .font(egui::FontId::proportional(theme.font_normal))
+            .margin(theme.text_edit_margin())
             .desired_width(width);
         if let Some(h) = hint {
             te = te.hint_text(h);
