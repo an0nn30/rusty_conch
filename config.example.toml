@@ -30,20 +30,24 @@ columns = 150
 lines = 50
 
 # ---------------------------------------------------------------------------
-# Font
+# Terminal Font
 # ---------------------------------------------------------------------------
+#
+# Terminal font configuration. Controls the monospace font used in the
+# terminal grid. (Legacy [font] section is still supported but [terminal.font]
+# is preferred.)
 
-[font]
+[terminal.font]
 
 # Terminal font size in points.
 size = 14.0
 
-[font.normal]
+[terminal.font.normal]
 
 # Terminal font family name.
 family = "JetBrains Mono"
 
-[font.offset]
+[terminal.font.offset]
 
 # Extra pixel spacing added to each character cell.
 # x = horizontal pixels per cell, y = vertical pixels per cell.
@@ -67,6 +71,8 @@ appearance_mode = "dark"
 # ---------------------------------------------------------------------------
 # Terminal
 # ---------------------------------------------------------------------------
+
+[terminal]
 
 # Scroll sensitivity multiplier (0.0–1.0). Lower = slower scrolling.
 # Default 0.15, tuned for macOS trackpads. Increase for external mice.
@@ -132,12 +138,24 @@ toggle_bottom_panel = "cmd+shift+j"
 # UI font family (sidebars, menus, dialogs). Empty string = system default.
 font_family = ""
 
-# UI font size in points.
+# UI font size in points (used by the egui font system for loading).
 font_size = 13.0
 
 # Use the native macOS global menu bar instead of the in-window menu bar.
 # Only applies on macOS; ignored on other platforms. Default: true.
 native_menu_bar = true
+
+[conch.ui.font]
+
+# UI chrome font sizes in points. These control the text size of panels,
+# trees, tables, buttons, and labels throughout the application.
+#
+#   small  — compact labels, tab titles, badges
+#   list   — tree node labels, table rows and headers (file explorer, SSH tree)
+#   normal — body text, buttons, text inputs, dialogs
+small = 12.0
+list = 14.0
+normal = 14.0
 
 # ---------------------------------------------------------------------------
 # Conch — Plugin System
