@@ -271,7 +271,7 @@ jobs:
       - name: Build ARM64 .deb
         run: |
           cargo deb -p conch_app --no-build --no-strip \
-            --target aarch64-unknown-linux-gnu --variant=cross
+            --target aarch64-unknown-linux-gnu
           cp target/aarch64-unknown-linux-gnu/debian/*.deb \
             ./conch-v${{ steps.version.outputs.version }}-arm64.deb
 
