@@ -72,13 +72,97 @@
       color: #f8f8f2;
       border-color: #4f5368;
     }
+    #main-area {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
     #terminal-host {
       position: relative;
-      width: 100%;
       flex: 1;
+      min-width: 0;
       min-height: 0;
       background: #282a36;
     }
+    #ssh-panel {
+      width: 260px;
+      min-width: 180px;
+      max-width: 400px;
+      background: #21222c;
+      border-left: 1px solid #3a3d4f;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #c5c8d5;
+    }
+    #ssh-panel.hidden { display: none; }
+    .ssh-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px 6px;
+      border-bottom: 1px solid #3a3d4f;
+    }
+    .ssh-panel-title { font-weight: 600; font-size: 13px; color: #f8f8f2; }
+    .ssh-panel-actions { display: flex; gap: 4px; }
+    .ssh-icon-btn {
+      background: none; border: 1px solid transparent; border-radius: 4px;
+      color: #8b8fa3; cursor: pointer; padding: 2px 6px; font-size: 13px;
+      line-height: 1;
+    }
+    .ssh-icon-btn:hover { background: #3a3d4f; color: #f8f8f2; }
+    .ssh-quick-connect { padding: 6px 10px; }
+    .ssh-quick-connect input {
+      width: 100%; padding: 5px 8px; background: #2b2e3a; border: 1px solid #3a3d4f;
+      border-radius: 4px; color: #f8f8f2; font: 12px "JetBrains Mono", monospace;
+      outline: none;
+    }
+    .ssh-quick-connect input:focus { border-color: #6272a4; }
+    .ssh-quick-connect input::placeholder { color: #6272a4; }
+    .ssh-active-sessions { }
+    .ssh-section-header {
+      padding: 6px 10px 3px; font-size: 10px; text-transform: uppercase;
+      letter-spacing: 0.5px; color: #6272a4;
+    }
+    .ssh-session-node {
+      display: flex; align-items: center; gap: 6px;
+      padding: 3px 10px 3px 14px; cursor: default;
+    }
+    .ssh-session-dot {
+      width: 6px; height: 6px; border-radius: 50%; background: #50fa7b; flex-shrink: 0;
+    }
+    .ssh-session-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ssh-server-list { flex: 1; overflow-y: auto; overflow-x: hidden; padding-bottom: 8px; }
+    .ssh-folder { }
+    .ssh-folder-header {
+      display: flex; align-items: center; gap: 4px;
+      padding: 4px 10px; cursor: pointer; user-select: none;
+    }
+    .ssh-folder-header:hover { background: #2b2e3a; }
+    .ssh-folder-arrow { font-size: 9px; width: 12px; text-align: center; color: #6272a4; }
+    .ssh-folder-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ssh-folder-count { font-size: 10px; color: #6272a4; }
+    .ssh-folder-entries { }
+    .ssh-server-node {
+      display: flex; align-items: center; gap: 6px;
+      padding: 3px 10px 3px 22px; cursor: pointer; user-select: none;
+    }
+    .ssh-server-node:hover { background: #2b2e3a; }
+    .ssh-server-node.dimmed { opacity: 0.6; }
+    .ssh-server-label {
+      flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .ssh-server-detail { font-size: 10px; color: #6272a4; flex-shrink: 0; }
+    .ssh-context-menu {
+      position: fixed; z-index: 2000; background: #2b2e3a; border: 1px solid #4f5368;
+      border-radius: 6px; padding: 4px 0; min-width: 140px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+    .ssh-context-menu-item {
+      padding: 5px 14px; cursor: pointer; font-size: 12px; color: #f8f8f2;
+    }
+    .ssh-context-menu-item:hover { background: #44475a; }
     .terminal-pane {
       position: absolute;
       inset: 0;
@@ -111,13 +195,17 @@
 <body>
   <div id="app">
     <div id="tabbar"></div>
-    <div id="terminal-host"></div>
+    <div id="main-area">
+      <div id="terminal-host"></div>
+      <div id="ssh-panel"></div>
+    </div>
   </div>
   <div id="status"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+  <script src="ssh-panel.js"></script>
   <script>
     const statusEl = document.getElementById('status');
     function showStatus(message) {
@@ -342,7 +430,8 @@
         }
         const dims = tab.fitAddon.proposeDimensions();
         if (dims) {
-          invoke('resize_pty', { tabId: tab.id, cols: dims.cols, rows: dims.rows }).catch(() => {});
+          const cmd = tab.type === 'ssh' ? 'ssh_resize' : 'resize_pty';
+          invoke(cmd, { tabId: tab.id, cols: dims.cols, rows: dims.rows }).catch(() => {});
         }
       }
 
@@ -386,7 +475,8 @@
         updateTabBarVisibility();
 
         if (notifyBackend && tab.spawned) {
-          invoke('close_pty', { tabId }).catch(() => {});
+          const cmd = tab.type === 'ssh' ? 'ssh_disconnect' : 'close_pty';
+          invoke(cmd, { tabId }).catch(() => {});
         }
 
         if (activeTabId === tabId) {
@@ -439,6 +529,7 @@
         const tab = {
           id: tabId,
           label,
+          type: 'local', // 'local' or 'ssh'
           button,
           root,
           term,
@@ -465,8 +556,9 @@
           if (!tab.spawned) {
             return;
           }
-          invoke('write_to_pty', { tabId, data }).catch((e) => {
-            console.error('write_to_pty error:', e);
+          const cmd = tab.type === 'ssh' ? 'ssh_write' : 'write_to_pty';
+          invoke(cmd, { tabId, data }).catch((e) => {
+            console.error(cmd + ' error:', e);
           });
         });
 
@@ -484,6 +576,118 @@
           await closeTab(tabId, { notifyBackend: false, closeWindowWhenLast: false });
         }
       }
+
+      // ---- SSH tab creation ----
+      async function createSshTab(opts) {
+        // opts: { serverId } or { spec, password? }
+        const tabId = nextTabId++;
+        const label = opts.spec || 'SSH';
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'tab-btn';
+        button.textContent = label;
+        button.classList.add('entering');
+
+        const root = document.createElement('div');
+        root.className = 'terminal-pane';
+
+        tabBarEl.appendChild(button);
+        terminalHostEl.appendChild(root);
+
+        const term = new Terminal({
+          theme,
+          fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace',
+          fontSize: 14,
+          cursorBlink: true,
+          allowProposedApi: true,
+        });
+        const fitAddon = new FitAddon.FitAddon();
+        const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+        term.loadAddon(fitAddon);
+        term.loadAddon(webLinksAddon);
+        term.open(root);
+
+        const tab = {
+          id: tabId,
+          label,
+          type: 'ssh',
+          button,
+          root,
+          term,
+          fitAddon,
+          spawned: false,
+          cleanupMouseBridge: setupTmuxRightClickBridge(term, root),
+        };
+        tabs.set(tabId, tab);
+        updateTabBarVisibility();
+
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => button.classList.remove('entering'));
+        });
+
+        button.addEventListener('click', () => activateTab(tabId));
+        term.onTitleChange((title) => {
+          const tabTitle = normalizeTabTitle(title, tab.label);
+          tab.button.textContent = tabTitle;
+          tab.button.title = tabTitle;
+        });
+        term.onData((data) => {
+          if (!tab.spawned) return;
+          invoke('ssh_write', { tabId, data }).catch((e) => {
+            console.error('ssh_write error:', e);
+          });
+        });
+
+        activateTab(tabId);
+        const dims = fitAddon.proposeDimensions();
+        const cols = dims ? dims.cols : 80;
+        const rows = dims ? dims.rows : 24;
+
+        try {
+          if (opts.serverId) {
+            await invoke('ssh_connect', {
+              tabId, serverId: opts.serverId, cols, rows, password: opts.password || null,
+            });
+          } else if (opts.spec) {
+            await invoke('ssh_quick_connect', {
+              tabId, spec: opts.spec, cols, rows, password: opts.password || null,
+            });
+          }
+          tab.spawned = true;
+          tab.label = button.textContent || label;
+          fitAndResizeTab(tab);
+          // Refresh the SSH panel session list
+          if (window.sshPanel) window.sshPanel.refreshSessions();
+        } catch (e) {
+          term.writeln('\x1b[31mSSH connection failed: ' + e + '\x1b[0m');
+          term.writeln('\x1b[90mPress any key to close this tab.\x1b[0m');
+          term.onData(() => {
+            closeTab(tabId, { notifyBackend: false });
+          });
+        }
+      }
+
+      // ---- SSH panel init ----
+      const sshPanelEl = document.getElementById('ssh-panel');
+      if (window.sshPanel) {
+        window.sshPanel.init({
+          invoke,
+          listen: listenOnCurrentWindow,
+          createSshTab,
+          panelEl: sshPanelEl,
+        });
+      }
+
+      // Toggle SSH panel with Cmd+Shift+S
+      document.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 's') {
+          e.preventDefault();
+          sshPanelEl.classList.toggle('hidden');
+          // Refit the active terminal since layout changed
+          setTimeout(() => fitAndResizeTab(currentTab()), 50);
+        }
+      });
 
       await listenOnCurrentWindow('pty-output', (event) => {
         const payload = event.payload || {};
@@ -512,7 +716,9 @@
         if (typeof tabId !== 'number') {
           return;
         }
-        closeTab(tabId, { notifyBackend: false }).catch((e) => {
+        closeTab(tabId, { notifyBackend: false }).then(() => {
+          if (window.sshPanel) window.sshPanel.refreshSessions();
+        }).catch((e) => {
           console.error('closeTab after pty-exit failed:', e);
         });
       });
