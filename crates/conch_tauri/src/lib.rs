@@ -642,12 +642,25 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
                 let _ = win.set_size(tauri::LogicalSize::new(initial_width, initial_height));
             }
 
-            // Initialize the Java plugin manager (JVM) if Java plugins are enabled.
-            // Plugins are NOT auto-loaded — use the Plugin Manager to enable them.
-            if plugins_config.enabled && plugins_config.java {
+            // Initialize plugin system and restore previously enabled plugins.
+            if plugins_config.enabled {
                 let handle = app.handle().clone();
                 let mut ps = plugin_state.lock();
-                ps.init_java_manager(&handle);
+                if plugins_config.java {
+                    ps.init_java_manager(&handle);
+                }
+                // Restore plugins that were enabled in the previous session.
+                ps.restore_plugins(&handle);
+
+                // Rebuild the menu to include plugin-registered menu items.
+                let plugin_items = ps.menu_items.lock().clone();
+                drop(ps);
+                if !plugin_items.is_empty() {
+                    let menu = build_app_menu_with_plugins(&app.handle(), &kb_config, &plugin_items)
+                        .map_err(|e| anyhow::anyhow!("Menu rebuild failed: {e}"))?;
+                    app.handle().set_menu(menu)
+                        .map_err(|e| anyhow::anyhow!("Set menu failed: {e}"))?;
+                }
             }
 
             // Forward transfer progress events to the frontend.

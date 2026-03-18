@@ -63,6 +63,95 @@ impl PluginState {
         plugin_search_paths(&self.plugins_config.search_paths)
     }
 
+    /// Get names of all currently loaded plugins.
+    fn loaded_plugin_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.running_lua.iter().map(|p| p.meta.name.clone()).collect();
+        if let Some(ref mgr) = self.java_mgr {
+            for meta in mgr.loaded_plugins() {
+                names.push(meta.name.clone());
+            }
+        }
+        names
+    }
+
+    /// Save the list of currently enabled plugins to state.toml.
+    fn persist_enabled_plugins(&self) {
+        let names = self.loaded_plugin_names();
+        let mut state = conch_core::config::load_persistent_state().unwrap_or_default();
+        state.loaded_plugins = names;
+        let _ = conch_core::config::save_persistent_state(&state);
+    }
+
+    /// Auto-enable plugins that were enabled in the previous session.
+    pub fn restore_plugins(&mut self, app_handle: &tauri::AppHandle) {
+        let state = conch_core::config::load_persistent_state().unwrap_or_default();
+        if state.loaded_plugins.is_empty() {
+            return;
+        }
+
+        log::info!("Restoring {} plugins from previous session", state.loaded_plugins.len());
+
+        // Scan for all available plugins.
+        let search_paths = self.search_paths();
+        let mut lua_plugins = Vec::new();
+        let mut jar_paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+
+        for dir in &search_paths {
+            if !dir.exists() { continue; }
+            for p in runner::discover(dir) {
+                lua_plugins.push(p);
+            }
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().map_or(false, |e| e == "jar") {
+                        let name = path.file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        jar_paths.push((name, path));
+                    }
+                }
+            }
+        }
+
+        for saved_name in &state.loaded_plugins {
+            // Try Lua first.
+            if let Some(plugin) = lua_plugins.iter().find(|p| &p.meta.name == saved_name) {
+                let name = plugin.meta.name.clone();
+                let host_api: Arc<dyn conch_plugin::HostApi> = Arc::new(TauriHostApi {
+                    name: name.clone(),
+                    app_handle: app_handle.clone(),
+                    bus: Arc::clone(&self.bus),
+                    panels: Arc::clone(&self.panels),
+                    menu_items: Arc::clone(&self.menu_items),
+                });
+                let mailbox_rx = self.bus.register_plugin(&name);
+                let Some(mailbox_tx) = self.bus.sender_for(&name) else { continue };
+                match runner::spawn_lua_plugin(plugin, host_api, mailbox_tx, mailbox_rx) {
+                    Ok(running) => {
+                        log::info!("Restored Lua plugin '{name}'");
+                        self.running_lua.push(running);
+                    }
+                    Err(e) => log::error!("Failed to restore Lua plugin '{name}': {e}"),
+                }
+                continue;
+            }
+
+            // Try Java.
+            if let Some((_, jar_path)) = jar_paths.iter().find(|(n, _)| n == saved_name) {
+                if let Some(ref mut mgr) = self.java_mgr {
+                    match mgr.load_plugin(jar_path) {
+                        Ok(meta) => log::info!("Restored Java plugin '{}' v{}", meta.name, meta.version),
+                        Err(e) => log::error!("Failed to restore Java plugin '{saved_name}': {e}"),
+                    }
+                }
+                continue;
+            }
+
+            log::warn!("Previously enabled plugin '{saved_name}' not found in search paths");
+        }
+    }
+
     /// Initialize the Java plugin manager (JVM) without loading any plugins.
     /// Plugins are loaded on demand via the Plugin Manager UI.
     pub fn init_java_manager(&mut self, app_handle: &tauri::AppHandle) {
@@ -242,12 +331,15 @@ pub(crate) fn enable_plugin(
         let running = runner::spawn_lua_plugin(plugin, host_api, mailbox_tx, mailbox_rx)
             .map_err(|e| format!("Failed to start: {e}"))?;
         ps.running_lua.push(running);
+        ps.persist_enabled_plugins();
         Ok(())
     } else if source == "Java" {
         if let Some(ref mut mgr) = ps.java_mgr {
             mgr.load_plugin(std::path::Path::new(&path))
                 .map(|_| ())
-                .map_err(|e| format!("Failed to load JAR: {e}"))
+                .map_err(|e| format!("Failed to load JAR: {e}"))?;
+            ps.persist_enabled_plugins();
+            Ok(())
         } else {
             Err("Java plugin manager not initialized".into())
         }
@@ -271,13 +363,16 @@ pub(crate) fn disable_plugin(
             let _ = plugin.sender.blocking_send(conch_plugin::bus::PluginMail::Shutdown);
             ps.running_lua.remove(idx);
             ps.bus.unregister_plugin(&name);
+            ps.persist_enabled_plugins();
             Ok(())
         } else {
             Err(format!("Plugin '{name}' is not running"))
         }
     } else if source == "Java" {
         if let Some(ref mut mgr) = ps.java_mgr {
-            mgr.unload_plugin(&name).map_err(|e| format!("Failed to unload: {e}"))
+            mgr.unload_plugin(&name).map_err(|e| format!("Failed to unload: {e}"))?;
+            ps.persist_enabled_plugins();
+            Ok(())
         } else {
             Err("Java plugin manager not initialized".into())
         }
