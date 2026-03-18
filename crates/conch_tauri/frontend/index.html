@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Conch</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #282a36; }
+    #terminal { width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+  <script>
+    const { invoke } = window.__TAURI__.core;
+    const { listen } = window.__TAURI__.event;
+
+    // Dracula-inspired theme
+    const theme = {
+      background: '#282a36',
+      foreground: '#f8f8f2',
+      cursor: '#f8f8f2',
+      cursorAccent: '#282a36',
+      selectionBackground: '#44475a',
+      selectionForeground: '#f8f8f2',
+      black: '#21222c',
+      red: '#ff5555',
+      green: '#50fa7b',
+      yellow: '#f1fa8c',
+      blue: '#bd93f9',
+      magenta: '#ff79c6',
+      cyan: '#8be9fd',
+      white: '#f8f8f2',
+      brightBlack: '#6272a4',
+      brightRed: '#ff6e6e',
+      brightGreen: '#69ff94',
+      brightYellow: '#ffffa5',
+      brightBlue: '#d6acff',
+      brightMagenta: '#ff92df',
+      brightCyan: '#a4ffff',
+      brightWhite: '#ffffff',
+    };
+
+    const term = new Terminal({
+      theme,
+      fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace',
+      fontSize: 14,
+      cursorBlink: true,
+      allowProposedApi: true,
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+    term.loadAddon(fitAddon);
+    term.loadAddon(webLinksAddon);
+
+    term.open(document.getElementById('terminal'));
+    fitAddon.fit();
+
+    // Spawn shell with initial dimensions
+    async function init() {
+      const dims = fitAddon.proposeDimensions();
+      const cols = dims ? dims.cols : 80;
+      const rows = dims ? dims.rows : 24;
+
+      try {
+        await invoke('spawn_shell', { cols, rows });
+      } catch (e) {
+        term.writeln('\x1b[31mFailed to spawn shell: ' + e + '\x1b[0m');
+      }
+    }
+
+    // Forward keyboard input to PTY
+    term.onData((data) => {
+      invoke('write_to_pty', { data }).catch((e) => {
+        console.error('write_to_pty error:', e);
+      });
+    });
+
+    // Receive PTY output
+    listen('pty-output', (event) => {
+      term.write(event.payload);
+    });
+
+    // Handle shell exit
+    listen('pty-exit', () => {
+      term.writeln('\r\n\x1b[90m[Process exited]\x1b[0m');
+    });
+
+    // Handle window resize
+    const resizeObserver = new ResizeObserver(() => {
+      fitAddon.fit();
+      const dims = fitAddon.proposeDimensions();
+      if (dims) {
+        invoke('resize_pty', { cols: dims.cols, rows: dims.rows }).catch(() => {});
+      }
+    });
+    resizeObserver.observe(document.getElementById('terminal'));
+
+    init();
+  </script>
+</body>
+</html>

@@ -323,6 +323,24 @@ fn main() -> eframe::Result<()> {
         log::error!("Failed to load config.toml, using defaults: {e:#}");
         config::UserConfig::default()
     });
+
+    // ── Experimental Tauri UI ──
+    #[cfg(feature = "tauri-ui")]
+    if user_config.conch.experimental.tauri_ui {
+        log::info!("Launching experimental Tauri UI");
+        conch_tauri::run(user_config).expect("Tauri UI failed");
+        return Ok(());
+    }
+
+    #[cfg(not(feature = "tauri-ui"))]
+    if user_config.conch.experimental.tauri_ui {
+        log::warn!(
+            "conch.experimental.tauri_ui is enabled in config but the binary was compiled \
+             without the 'tauri-ui' feature. Falling back to egui UI. \
+             Rebuild with: cargo build --features tauri-ui"
+        );
+    }
+
     let persistent = config::load_persistent_state().unwrap_or_default();
 
     // Use persisted window size if available.

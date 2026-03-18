@@ -6,6 +6,7 @@ members = [
     "crates/conch_plugin_sdk",
     "crates/conch_plugin",
     "crates/conch_app",
+    "crates/conch_tauri",
     "plugins/conch-ssh",
     "plugins/test-panel",
     "plugins/test-panel-2",
@@ -24,6 +25,7 @@ conch_core = { path = "crates/conch_core" }
 conch_pty = { path = "crates/conch_pty" }
 conch_plugin_sdk = { path = "crates/conch_plugin_sdk" }
 conch_plugin = { path = "crates/conch_plugin" }
+conch_tauri = { path = "crates/conch_tauri" }
 
 # Serialization (shared)
 serde_json = "1"

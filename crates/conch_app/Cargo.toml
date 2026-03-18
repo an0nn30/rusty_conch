@@ -46,6 +46,13 @@ font-kit = "0.14"
 alacritty_terminal = "0.25"
 rfd = "0.17.2"
 
+# Experimental Tauri UI (opt-in)
+conch_tauri = { workspace = true, optional = true }
+
+[features]
+default = []
+tauri-ui = ["dep:conch_tauri"]
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
