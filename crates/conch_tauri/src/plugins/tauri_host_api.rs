@@ -241,19 +241,28 @@ impl HostApi for TauriHostApi {
     }
 
     fn show_form(&self, json: &str) -> Option<String> {
-        // Blocking dialog: emit event, wait for response via oneshot channel.
-        // For now, return None (cancel). Phase 5 will wire up the frontend dialog.
-        log::debug!("[plugin:{}] show_form (stub): {json}", self.name);
+        // TODO: Wire up frontend dialog overlay for full form support.
+        // For now, emit a notification that the form was requested.
+        log::info!("[plugin:{}] show_form requested (dialogs not yet wired to frontend)", self.name);
+        let _ = self.app_handle.emit("plugin-notification", serde_json::json!({
+            "plugin": self.name,
+            "json": serde_json::json!({
+                "title": "Form Dialog (Not Yet Supported)",
+                "body": "Plugin form dialogs are not yet wired to the Tauri frontend. The plugin's form request was cancelled.",
+                "level": "warn",
+                "duration_ms": 5000,
+            }).to_string(),
+        }));
         None
     }
 
     fn show_confirm(&self, msg: &str) -> bool {
-        log::debug!("[plugin:{}] show_confirm (stub): {msg}", self.name);
+        log::info!("[plugin:{}] show_confirm: {msg}", self.name);
         false
     }
 
     fn show_prompt(&self, msg: &str, _default_value: &str) -> Option<String> {
-        log::debug!("[plugin:{}] show_prompt (stub): {msg}", self.name);
+        log::info!("[plugin:{}] show_prompt: {msg}", self.name);
         None
     }
 
