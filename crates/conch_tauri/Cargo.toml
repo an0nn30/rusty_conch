@@ -17,11 +17,13 @@ parking_lot = { workspace = true }
 uuid = { workspace = true }
 dirs = { workspace = true }
 
-# SSH
+# SSH + SFTP
 russh = "0.48"
 russh-keys = "0.48"
+russh-sftp = "2.1"
 ssh-key = { version = "0.6", features = ["ed25519", "rsa", "p256"] }
 async-trait = "0.1"
+base64 = "0.22"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -307,6 +307,19 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             remote::remote_add_folder,
             remote::remote_delete_folder,
             remote::remote_import_ssh_config,
+            remote::sftp_list_dir,
+            remote::sftp_stat,
+            remote::sftp_read_file,
+            remote::sftp_write_file,
+            remote::sftp_mkdir,
+            remote::sftp_rename,
+            remote::sftp_remove,
+            remote::sftp_realpath,
+            remote::local_list_dir,
+            remote::local_stat,
+            remote::local_mkdir,
+            remote::local_rename,
+            remote::local_remove,
         ])
         .run(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("Tauri error: {e}"))?;

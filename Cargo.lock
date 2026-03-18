@@ -1221,6 +1221,7 @@ version = "1.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "conch_core",
  "dirs",
  "log",
@@ -1228,6 +1229,7 @@ dependencies = [
  "portable-pty",
  "russh",
  "russh-keys",
+ "russh-sftp",
  "serde",
  "serde_json",
  "ssh-key",

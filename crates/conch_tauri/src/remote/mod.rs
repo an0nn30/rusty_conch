@@ -6,6 +6,8 @@
 
 pub(crate) mod config;
 mod known_hosts;
+pub(crate) mod local_fs;
+pub(crate) mod sftp;
 pub(crate) mod ssh;
 
 use std::collections::HashMap;
@@ -28,7 +30,7 @@ use crate::{PtyExitEvent, PtyOutputEvent};
 /// A live SSH session tracked by the backend.
 pub(crate) struct SshSession {
     pub input_tx: mpsc::UnboundedSender<ChannelInput>,
-    pub ssh_handle: russh::client::Handle<SshHandler>,
+    pub ssh_handle: Arc<russh::client::Handle<SshHandler>>,
     pub host: String,
     pub user: String,
     pub port: u16,
@@ -164,7 +166,7 @@ pub(crate) async fn ssh_connect(
             key_clone.clone(),
             SshSession {
                 input_tx,
-                ssh_handle,
+                ssh_handle: Arc::new(ssh_handle),
                 host: server.host.clone(),
                 user: server.user.clone(),
                 port: server.port,
@@ -377,6 +379,170 @@ pub(crate) fn remote_import_ssh_config(
     let mut state = remote.lock();
     state.ssh_config_entries = config::parse_ssh_config();
     state.ssh_config_entries.clone()
+}
+
+// ---------------------------------------------------------------------------
+// SFTP commands
+// ---------------------------------------------------------------------------
+
+/// Helper to get the SSH handle for a session by window/tab.
+fn get_ssh_handle(
+    state: &RemoteState,
+    window_label: &str,
+    tab_id: u32,
+) -> Result<Arc<russh::client::Handle<SshHandler>>, String> {
+    let key = session_key(window_label, tab_id);
+    state
+        .sessions
+        .get(&key)
+        .map(|s| Arc::clone(&s.ssh_handle))
+        .ok_or_else(|| format!("No SSH session for {key}"))
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_list_dir(
+    window: tauri::WebviewWindow,
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    tab_id: u32,
+    path: String,
+) -> Result<Vec<sftp::FileEntry>, String> {
+    let ssh = {
+        let state = remote.lock();
+        get_ssh_handle(&state, window.label(), tab_id)?
+    };
+    sftp::list_dir(&ssh, &path).await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_stat(
+    window: tauri::WebviewWindow,
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    tab_id: u32,
+    path: String,
+) -> Result<sftp::FileEntry, String> {
+    let ssh = {
+        let state = remote.lock();
+        get_ssh_handle(&state, window.label(), tab_id)?
+    };
+    sftp::stat(&ssh, &path).await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_read_file(
+    window: tauri::WebviewWindow,
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    tab_id: u32,
+    path: String,
+    offset: u64,
+    length: u64,
+) -> Result<sftp::ReadFileResult, String> {
+    let ssh = {
+        let state = remote.lock();
+        get_ssh_handle(&state, window.label(), tab_id)?
+    };
+    sftp::read_file(&ssh, &path, offset, length as usize).await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_write_file(
+    window: tauri::WebviewWindow,
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    tab_id: u32,
+    path: String,
+    data: String,
+) -> Result<u64, String> {
+    let ssh = {
+        let state = remote.lock();
+        get_ssh_handle(&state, window.label(), tab_id)?
+    };
+    sftp::write_file(&ssh, &path, &data).await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_mkdir(
+    window: tauri::WebviewWindow,
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    tab_id: u32,
+    path: String,
+) -> Result<(), String> {
+    let ssh = {
+        let state = remote.lock();
+        get_ssh_handle(&state, window.label(), tab_id)?
+    };
+    sftp::mkdir(&ssh, &path).await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_rename(
+    window: tauri::WebviewWindow,
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    tab_id: u32,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    let ssh = {
+        let state = remote.lock();
+        get_ssh_handle(&state, window.label(), tab_id)?
+    };
+    sftp::rename(&ssh, &from, &to).await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_remove(
+    window: tauri::WebviewWindow,
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    tab_id: u32,
+    path: String,
+    is_dir: bool,
+) -> Result<(), String> {
+    let ssh = {
+        let state = remote.lock();
+        get_ssh_handle(&state, window.label(), tab_id)?
+    };
+    sftp::remove(&ssh, &path, is_dir).await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_realpath(
+    window: tauri::WebviewWindow,
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    tab_id: u32,
+    path: String,
+) -> Result<String, String> {
+    let ssh = {
+        let state = remote.lock();
+        get_ssh_handle(&state, window.label(), tab_id)?
+    };
+    sftp::realpath(&ssh, &path).await
+}
+
+// ---------------------------------------------------------------------------
+// Local filesystem commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn local_list_dir(path: String) -> Result<Vec<sftp::FileEntry>, String> {
+    local_fs::list_dir(&path)
+}
+
+#[tauri::command]
+pub(crate) fn local_stat(path: String) -> Result<sftp::FileEntry, String> {
+    local_fs::stat(&path)
+}
+
+#[tauri::command]
+pub(crate) fn local_mkdir(path: String) -> Result<(), String> {
+    local_fs::mkdir(&path)
+}
+
+#[tauri::command]
+pub(crate) fn local_rename(from: String, to: String) -> Result<(), String> {
+    local_fs::rename(&from, &to)
+}
+
+#[tauri::command]
+pub(crate) fn local_remove(path: String, is_dir: bool) -> Result<(), String> {
+    local_fs::remove(&path, is_dir)
 }
 
 // ---------------------------------------------------------------------------
