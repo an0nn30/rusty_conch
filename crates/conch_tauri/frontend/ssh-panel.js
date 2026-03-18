@@ -16,6 +16,8 @@
   // State
   let serverData = { folders: [], ungrouped: [], ssh_config: [] };
   let panelWasHiddenBeforeQuickConnect = false;
+  let searchQuery = '';
+  let searchSelectedIndex = 0;
 
   function init(opts) {
     invoke = opts.invoke;
@@ -48,18 +50,60 @@
     sessionListEl = panelEl.querySelector('#ssh-active-sessions');
     tunnelsSectionEl = panelEl.querySelector('#ssh-tunnels-section');
 
-    // Quick connect input
+    // Quick connect input — filters server list + arrow key navigation
+    quickConnectEl.addEventListener('input', () => {
+      searchQuery = quickConnectEl.value.trim().toLowerCase();
+      searchSelectedIndex = 0;
+      renderServerList();
+    });
+
     quickConnectEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
-        const spec = quickConnectEl.value.trim();
-        if (spec) {
-          quickConnectEl.value = '';
-          quickConnectEl.blur();
-          createSshTabFn({ spec });
+        e.preventDefault();
+        const query = quickConnectEl.value.trim();
+        if (!query) return;
+
+        const matches = getFilteredServers(query.toLowerCase());
+        const idx = searchSelectedIndex;
+
+        quickConnectEl.value = '';
+        searchQuery = '';
+        searchSelectedIndex = 0;
+        quickConnectEl.blur();
+        renderServerList();
+
+        if (matches.length > 0) {
+          const selected = matches[Math.min(idx, matches.length - 1)];
+          createSshTabFn({ serverId: selected.id });
+        } else {
+          // No match — treat as user@host:port quick connect
+          createSshTabFn({ spec: query });
         }
+        return;
       }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const matches = getFilteredServers(searchQuery);
+        if (matches.length > 0) {
+          searchSelectedIndex = Math.min(searchSelectedIndex + 1, matches.length - 1);
+          renderServerList();
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        searchSelectedIndex = Math.max(searchSelectedIndex - 1, 0);
+        renderServerList();
+        return;
+      }
+
       if (e.key === 'Escape') {
         quickConnectEl.value = '';
+        searchQuery = '';
+        searchSelectedIndex = 0;
+        renderServerList();
         quickConnectEl.blur();
         if (panelWasHiddenBeforeQuickConnect) {
           hidePanel();
@@ -153,22 +197,62 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Server filtering
+  // ---------------------------------------------------------------------------
+
+  function getAllServers() {
+    const all = [];
+    for (const f of serverData.folders) {
+      for (const s of f.entries) all.push(s);
+    }
+    for (const s of serverData.ungrouped) all.push(s);
+    for (const s of serverData.ssh_config) all.push(s);
+    return all;
+  }
+
+  function serverMatchesQuery(server, query) {
+    if (!query) return true;
+    const hay = `${server.label} ${server.host} ${server.user}@${server.host}`.toLowerCase();
+    return query.split(/\s+/).every((term) => hay.includes(term));
+  }
+
+  function getFilteredServers(query) {
+    if (!query) return [];
+    return getAllServers().filter((s) => serverMatchesQuery(s, query));
+  }
+
+  // ---------------------------------------------------------------------------
   // Server tree rendering
   // ---------------------------------------------------------------------------
 
   function renderServerList() {
     const frag = document.createDocumentFragment();
 
-    for (const folder of serverData.folders) {
-      frag.appendChild(createFolderNode(folder));
-    }
-    for (const server of serverData.ungrouped) {
-      frag.appendChild(createServerNode(server));
-    }
-    if (serverData.ssh_config.length > 0) {
-      frag.appendChild(makeSectionHeader('~/.ssh/config'));
-      for (const server of serverData.ssh_config) {
-        frag.appendChild(createServerNode(server, true));
+    if (searchQuery) {
+      // Flat filtered list
+      const matches = getFilteredServers(searchQuery);
+      for (let i = 0; i < matches.length; i++) {
+        frag.appendChild(createServerNode(matches[i], false, null, i === searchSelectedIndex));
+      }
+      if (matches.length === 0) {
+        const hint = document.createElement('div');
+        hint.className = 'ssh-search-hint';
+        hint.textContent = 'No matches \u2014 Enter to quick-connect';
+        frag.appendChild(hint);
+      }
+    } else {
+      // Normal tree view
+      for (const folder of serverData.folders) {
+        frag.appendChild(createFolderNode(folder));
+      }
+      for (const server of serverData.ungrouped) {
+        frag.appendChild(createServerNode(server));
+      }
+      if (serverData.ssh_config.length > 0) {
+        frag.appendChild(makeSectionHeader('~/.ssh/config'));
+        for (const server of serverData.ssh_config) {
+          frag.appendChild(createServerNode(server, true));
+        }
       }
     }
 
@@ -220,9 +304,9 @@
     return el;
   }
 
-  function createServerNode(server, dimmed, folderId) {
+  function createServerNode(server, dimmed, folderId, highlighted) {
     const el = document.createElement('div');
-    el.className = 'ssh-server-node' + (dimmed ? ' dimmed' : '');
+    el.className = 'ssh-server-node' + (dimmed ? ' dimmed' : '') + (highlighted ? ' highlighted' : '');
     el.title = `${server.user}@${server.host}:${server.port}`;
 
     const label = server.label || `${server.user}@${server.host}`;
