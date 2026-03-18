@@ -149,7 +149,7 @@ pub(crate) async fn connect_and_open_shell(
     let handler = SshHandler {
         host: server.host.clone(),
         port: server.port,
-        prompt_tx,
+        prompt_tx: prompt_tx.clone(),
     };
 
     // Determine effective proxy.
@@ -169,11 +169,27 @@ pub(crate) async fn connect_and_open_shell(
 
     // Authenticate.
     let authenticated = if server.auth_method == "password" {
-        let pw = password.as_deref().unwrap_or("");
-        session
-            .authenticate_password(&server.user, pw)
-            .await
-            .map_err(|e| format!("Auth failed: {e}"))?
+        // If password was provided, use it directly. Otherwise prompt the frontend.
+        let pw = match &password {
+            Some(pw) => Some(pw.clone()),
+            None => {
+                let msg = format!("Password for {}@{}", server.user, server.host);
+                let (tx, rx) = oneshot::channel();
+                let _ = prompt_tx.send(AuthPrompt::PasswordPrompt {
+                    message: msg,
+                    reply: tx,
+                });
+                rx.await.unwrap_or(None)
+            }
+        };
+
+        match pw {
+            Some(pw) => session
+                .authenticate_password(&server.user, &pw)
+                .await
+                .map_err(|e| format!("Auth failed: {e}"))?,
+            None => return Err("Password entry cancelled".to_string()),
+        }
     } else {
         try_key_auth(&mut session, &server.user, server.key_path.as_deref()).await?
     };

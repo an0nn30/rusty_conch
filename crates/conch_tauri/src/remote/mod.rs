@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use tokio::sync::mpsc;
 
@@ -22,6 +22,40 @@ use config::{ServerEntry, SshConfig};
 use ssh::{AuthPrompt, ChannelInput, SshHandler};
 
 use crate::{PtyExitEvent, PtyOutputEvent};
+
+// ---------------------------------------------------------------------------
+// Auth prompt events — frontend receives these, responds via commands
+// ---------------------------------------------------------------------------
+
+/// Emitted to the frontend when the SSH handler needs host key confirmation.
+#[derive(Clone, Serialize)]
+struct HostKeyPromptEvent {
+    prompt_id: String,
+    message: String,
+    detail: String,
+}
+
+/// Emitted to the frontend when the SSH handler needs a password.
+#[derive(Clone, Serialize)]
+struct PasswordPromptEvent {
+    prompt_id: String,
+    message: String,
+}
+
+/// Pending auth prompts waiting for frontend responses.
+struct PendingPrompts {
+    host_key: HashMap<String, tokio::sync::oneshot::Sender<bool>>,
+    password: HashMap<String, tokio::sync::oneshot::Sender<Option<String>>>,
+}
+
+impl PendingPrompts {
+    fn new() -> Self {
+        Self {
+            host_key: HashMap::new(),
+            password: HashMap::new(),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -44,6 +78,8 @@ pub(crate) struct RemoteState {
     pub config: SshConfig,
     /// Hosts imported from `~/.ssh/config`.
     pub ssh_config_entries: Vec<ServerEntry>,
+    /// Pending auth prompts waiting for frontend responses.
+    pending_prompts: PendingPrompts,
 }
 
 impl RemoteState {
@@ -54,6 +90,7 @@ impl RemoteState {
             sessions: HashMap::new(),
             config,
             ssh_config_entries,
+            pending_prompts: PendingPrompts::new(),
         }
     }
 }
@@ -76,6 +113,7 @@ pub(crate) async fn ssh_connect(
     server_id: String,
     cols: u16,
     rows: u16,
+    password: Option<String>,
 ) -> Result<(), String> {
     let window_label = window.label().to_string();
     let key = session_key(&window_label, tab_id);
@@ -102,25 +140,25 @@ pub(crate) async fn ssh_connect(
     // Set up the auth prompt bridge.
     let (prompt_tx, mut prompt_rx) = mpsc::unbounded_channel::<AuthPrompt>();
 
-    // Spawn the connection on a background task.
     let app_handle = app.clone();
     let server_clone = server.clone();
     let key_clone = key.clone();
     let remote_clone = Arc::clone(&*remote);
 
-    // Bridge auth prompts to the frontend via Tauri events + commands.
-    // For now, use a simple approach: spawn the connection, service prompts inline.
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
 
     tokio::spawn(async move {
         let result =
-            ssh::connect_and_open_shell(&server_clone, None, prompt_tx).await;
+            ssh::connect_and_open_shell(&server_clone, password, prompt_tx).await;
         let _ = result_tx.send(result);
     });
 
-    // Service auth prompts while waiting for the connection result.
-    // In the future this will emit Tauri events and await responses,
-    // but for key-based auth with known hosts this loop completes immediately.
+    // Bridge auth prompts to the frontend via Tauri events.
+    // When the SSH handler needs user interaction, it sends an AuthPrompt.
+    // We emit a Tauri event and store the reply channel so the frontend
+    // can respond via `auth_respond_host_key` / `auth_respond_password`.
+    let prompt_app = app.clone();
+    let prompt_remote = Arc::clone(&*remote);
     let connection_result: Result<_, String> = tokio::spawn(async move {
         let mut result_rx = result_rx;
         loop {
@@ -131,13 +169,25 @@ pub(crate) async fn ssh_connect(
                 prompt = prompt_rx.recv() => {
                     match prompt {
                         Some(AuthPrompt::HostKeyConfirm { reply, message, detail }) => {
-                            // TODO: proper frontend dialog
-                            log::info!("Host key prompt: {message} — {detail}");
-                            let _ = reply.send(true);
+                            let prompt_id = uuid::Uuid::new_v4().to_string();
+                            prompt_remote.lock().pending_prompts.host_key.insert(
+                                prompt_id.clone(), reply,
+                            );
+                            let _ = prompt_app.emit("ssh-host-key-prompt", HostKeyPromptEvent {
+                                prompt_id,
+                                message,
+                                detail,
+                            });
                         }
                         Some(AuthPrompt::PasswordPrompt { reply, message }) => {
-                            log::info!("Password prompt: {message}");
-                            let _ = reply.send(None);
+                            let prompt_id = uuid::Uuid::new_v4().to_string();
+                            prompt_remote.lock().pending_prompts.password.insert(
+                                prompt_id.clone(), reply,
+                            );
+                            let _ = prompt_app.emit("ssh-password-prompt", PasswordPromptEvent {
+                                prompt_id,
+                                message,
+                            });
                         }
                         None => {
                             continue;
@@ -227,8 +277,15 @@ pub(crate) async fn ssh_quick_connect(
     spec: String,
     cols: u16,
     rows: u16,
+    password: Option<String>,
 ) -> Result<(), String> {
     let (user, host, port) = parse_quick_connect(&spec);
+
+    let auth_method = if password.is_some() {
+        "password".to_string()
+    } else {
+        "key".to_string()
+    };
 
     let entry = ServerEntry {
         id: uuid::Uuid::new_v4().to_string(),
@@ -236,13 +293,12 @@ pub(crate) async fn ssh_quick_connect(
         host,
         port,
         user,
-        auth_method: "key".to_string(),
+        auth_method,
         key_path: None,
         proxy_command: None,
         proxy_jump: None,
     };
 
-    // Add to config temporarily.
     let server_id = entry.id.clone();
     {
         let mut state = remote.lock();
@@ -250,7 +306,7 @@ pub(crate) async fn ssh_quick_connect(
         config::save_config(&state.config);
     }
 
-    ssh_connect(window, app, remote, tab_id, server_id, cols, rows).await
+    ssh_connect(window, app, remote, tab_id, server_id, cols, rows, password).await
 }
 
 /// Write data to an SSH session.
@@ -379,6 +435,137 @@ pub(crate) fn remote_import_ssh_config(
     let mut state = remote.lock();
     state.ssh_config_entries = config::parse_ssh_config();
     state.ssh_config_entries.clone()
+}
+
+// ---------------------------------------------------------------------------
+// Auth prompt responses from frontend
+// ---------------------------------------------------------------------------
+
+/// Frontend responds to a host key confirmation prompt.
+#[tauri::command]
+pub(crate) fn auth_respond_host_key(
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    prompt_id: String,
+    accepted: bool,
+) {
+    let mut state = remote.lock();
+    if let Some(reply) = state.pending_prompts.host_key.remove(&prompt_id) {
+        let _ = reply.send(accepted);
+    }
+}
+
+/// Frontend responds to a password prompt.
+#[tauri::command]
+pub(crate) fn auth_respond_password(
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    prompt_id: String,
+    password: Option<String>,
+) {
+    let mut state = remote.lock();
+    if let Some(reply) = state.pending_prompts.password.remove(&prompt_id) {
+        let _ = reply.send(password);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Active sessions query
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub(crate) struct ActiveSession {
+    key: String,
+    host: String,
+    user: String,
+    port: u16,
+}
+
+/// List all active SSH sessions.
+#[tauri::command]
+pub(crate) fn remote_get_sessions(
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+) -> Vec<ActiveSession> {
+    let state = remote.lock();
+    state
+        .sessions
+        .iter()
+        .map(|(key, session)| ActiveSession {
+            key: key.clone(),
+            host: session.host.clone(),
+            user: session.user.clone(),
+            port: session.port,
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Additional server config commands
+// ---------------------------------------------------------------------------
+
+/// Rename a folder.
+#[tauri::command]
+pub(crate) fn remote_rename_folder(
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    folder_id: String,
+    new_name: String,
+) {
+    let mut state = remote.lock();
+    if let Some(folder) = state.config.folders.iter_mut().find(|f| f.id == folder_id) {
+        folder.name = new_name;
+    }
+    config::save_config(&state.config);
+}
+
+/// Toggle folder expanded/collapsed state.
+#[tauri::command]
+pub(crate) fn remote_set_folder_expanded(
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    folder_id: String,
+    expanded: bool,
+) {
+    let mut state = remote.lock();
+    state.config.set_folder_expanded(&folder_id, expanded);
+    config::save_config(&state.config);
+}
+
+/// Move a server to a different folder (or ungrouped if folder_id is None).
+#[tauri::command]
+pub(crate) fn remote_move_server(
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    server_id: String,
+    folder_id: Option<String>,
+) {
+    let mut state = remote.lock();
+    // Find and remove the server from its current location.
+    let entry = state.config.find_server(&server_id).cloned();
+    if let Some(entry) = entry {
+        state.config.remove_server(&server_id);
+        if let Some(fid) = folder_id {
+            state.config.add_server_to_folder(entry, &fid);
+        } else {
+            state.config.add_server(entry);
+        }
+        config::save_config(&state.config);
+    }
+}
+
+/// Duplicate a server entry.
+#[tauri::command]
+pub(crate) fn remote_duplicate_server(
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    server_id: String,
+) -> Option<ServerEntry> {
+    let mut state = remote.lock();
+    let entry = state.config.find_server(&server_id).cloned();
+    if let Some(mut dup) = entry {
+        dup.id = uuid::Uuid::new_v4().to_string();
+        dup.label = format!("{} (copy)", dup.label);
+        let result = dup.clone();
+        state.config.add_server(dup);
+        config::save_config(&state.config);
+        Some(result)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
