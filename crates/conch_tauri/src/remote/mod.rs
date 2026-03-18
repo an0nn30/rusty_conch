@@ -838,19 +838,21 @@ pub(crate) fn local_remove(path: String, is_dir: bool) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub(crate) fn transfer_download(
+pub(crate) async fn transfer_download(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
     tab_id: u32,
     remote_path: String,
     local_path: String,
 ) -> Result<String, String> {
-    let state = remote.lock();
-    let ssh = get_ssh_handle(&state, window.label(), tab_id)?;
-    let transfer_id = uuid::Uuid::new_v4().to_string();
-    let progress_tx = state.transfer_progress_tx.clone();
-    let registry = Arc::clone(&state.transfers);
-    drop(state);
+    let (ssh, transfer_id, progress_tx, registry) = {
+        let state = remote.lock();
+        let ssh = get_ssh_handle(&state, window.label(), tab_id)?;
+        let tid = uuid::Uuid::new_v4().to_string();
+        let ptx = state.transfer_progress_tx.clone();
+        let reg = Arc::clone(&state.transfers);
+        (ssh, tid, ptx, reg)
+    };
 
     Ok(transfer::start_download(
         transfer_id,
@@ -863,19 +865,21 @@ pub(crate) fn transfer_download(
 }
 
 #[tauri::command]
-pub(crate) fn transfer_upload(
+pub(crate) async fn transfer_upload(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
     tab_id: u32,
     local_path: String,
     remote_path: String,
 ) -> Result<String, String> {
-    let state = remote.lock();
-    let ssh = get_ssh_handle(&state, window.label(), tab_id)?;
-    let transfer_id = uuid::Uuid::new_v4().to_string();
-    let progress_tx = state.transfer_progress_tx.clone();
-    let registry = Arc::clone(&state.transfers);
-    drop(state);
+    let (ssh, transfer_id, progress_tx, registry) = {
+        let state = remote.lock();
+        let ssh = get_ssh_handle(&state, window.label(), tab_id)?;
+        let tid = uuid::Uuid::new_v4().to_string();
+        let ptx = state.transfer_progress_tx.clone();
+        let reg = Arc::clone(&state.transfers);
+        (ssh, tid, ptx, reg)
+    };
 
     Ok(transfer::start_upload(
         transfer_id,
