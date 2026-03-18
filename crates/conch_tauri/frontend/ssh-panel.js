@@ -322,13 +322,9 @@
     else if (status === 'connecting') dotClass = 'connecting';
     else if (status && status.startsWith('error')) dotClass = 'error';
 
-    const remote = `${tunnel.remote_host}:${tunnel.remote_port}`;
-    const desc = `:${tunnel.local_port} \u2192 ${remote}`;
-
     el.innerHTML =
       `<span class="tunnel-dot ${dotClass}"></span>` +
-      `<span class="ssh-tunnel-label">${esc(tunnel.label)}</span>` +
-      `<span class="ssh-tunnel-detail">${esc(desc)}</span>`;
+      `<span class="ssh-tunnel-label">${esc(tunnel.label)}</span>`;
 
     // Click to toggle start/stop
     el.addEventListener('click', async () => {
