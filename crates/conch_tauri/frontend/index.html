@@ -669,6 +669,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.8.0/lib/addon-unicode11.min.js"></script>
   <script src="utils.js"></script>
   <script src="toast.js"></script>
   <script src="plugin-manager.js"></script>
@@ -736,7 +737,9 @@
       const currentWindowLabel = await invoke('current_window_label');
 
       // Load terminal config (font, cursor, scroll)
-      let termFontFamily = '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace';
+      // Font fallback chain with good Unicode box-drawing/braille coverage.
+      const FONT_FALLBACKS = ', "Menlo", "DejaVu Sans Mono", "Consolas", "Liberation Mono", monospace';
+      let termFontFamily = '"JetBrains Mono", "Fira Code", "Cascadia Code"' + FONT_FALLBACKS;
       let termFontSize = 14;
       let termCursorStyle = 'block';
       let termCursorBlink = true;
@@ -744,7 +747,7 @@
       try {
         const tc = await invoke('get_terminal_config');
         if (tc.font_family) {
-          termFontFamily = '"' + tc.font_family + '", "Fira Code", "Cascadia Code", monospace';
+          termFontFamily = '"' + tc.font_family + '", "Fira Code", "Cascadia Code"' + FONT_FALLBACKS;
         }
         if (tc.font_size > 0) termFontSize = tc.font_size;
         if (tc.cursor_style) termCursorStyle = tc.cursor_style;
@@ -1053,6 +1056,10 @@
         const webLinksAddon = new WebLinksAddon.WebLinksAddon();
         term.loadAddon(fitAddon);
         term.loadAddon(webLinksAddon);
+        if (typeof Unicode11Addon !== 'undefined') {
+          term.loadAddon(new Unicode11Addon.Unicode11Addon());
+          term.unicode.activeVersion = '11';
+        }
         term.open(root);
 
         const tab = {
@@ -1137,6 +1144,10 @@
         const webLinksAddon = new WebLinksAddon.WebLinksAddon();
         term.loadAddon(fitAddon);
         term.loadAddon(webLinksAddon);
+        if (typeof Unicode11Addon !== 'undefined') {
+          term.loadAddon(new Unicode11Addon.Unicode11Addon());
+          term.unicode.activeVersion = '11';
+        }
         term.open(root);
 
         const tab = {
