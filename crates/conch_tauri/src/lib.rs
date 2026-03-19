@@ -293,9 +293,11 @@ fn build_app_menu_with_plugins<R: tauri::Runtime>(
 /// Return general app config the frontend needs.
 #[tauri::command]
 fn get_app_config(state: tauri::State<'_, TauriState>) -> serde_json::Value {
+    let dec = format!("{:?}", state.config.window.decorations).to_lowercase();
     serde_json::json!({
         "appearance_mode": format!("{:?}", state.config.colors.appearance_mode).to_lowercase(),
         "zen_mode_shortcut": state.config.conch.keyboard.zen_mode,
+        "decorations": dec,
     })
 }
 
