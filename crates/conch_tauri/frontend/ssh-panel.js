@@ -887,14 +887,84 @@
 
   function handleHostKeyPrompt(event) {
     const { prompt_id, message, detail } = event.payload;
-    const accepted = confirm(message + '\n\n' + detail + '\n\nAccept and save?');
-    invoke('auth_respond_host_key', { promptId: prompt_id, accepted }).catch(() => {});
+
+    const overlay = document.createElement('div');
+    overlay.className = 'ssh-overlay';
+    overlay.style.zIndex = '5000';
+    overlay.innerHTML = `
+      <div class="ssh-form" style="max-width:520px">
+        <div class="ssh-form-title">SSH Host Key Verification</div>
+        <div class="ssh-form-body">
+          <div class="ssh-auth-message">${esc(message)}</div>
+          <pre class="ssh-auth-detail">${esc(detail)}</pre>
+          <div class="ssh-auth-question">Do you want to continue connecting and save this key?</div>
+        </div>
+        <div class="ssh-form-buttons">
+          <button class="ssh-form-btn" id="hk-reject">Reject</button>
+          <button class="ssh-form-btn primary" id="hk-accept">Accept & Save</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const respond = (accepted) => {
+      overlay.remove();
+      invoke('auth_respond_host_key', { promptId: prompt_id, accepted }).catch(() => {});
+    };
+
+    overlay.querySelector('#hk-reject').addEventListener('click', () => respond(false));
+    overlay.querySelector('#hk-accept').addEventListener('click', () => respond(true));
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) respond(false); });
+    const onKey = (e) => {
+      if (e.key === 'Escape') { respond(false); document.removeEventListener('keydown', onKey); }
+      if (e.key === 'Enter') { respond(true); document.removeEventListener('keydown', onKey); }
+    };
+    document.addEventListener('keydown', onKey);
   }
 
   function handlePasswordPrompt(event) {
     const { prompt_id, message } = event.payload;
-    const password = prompt(message);
-    invoke('auth_respond_password', { promptId: prompt_id, password: password || null }).catch(() => {});
+
+    const overlay = document.createElement('div');
+    overlay.className = 'ssh-overlay';
+    overlay.style.zIndex = '5000';
+    overlay.innerHTML = `
+      <div class="ssh-form ssh-form-small">
+        <div class="ssh-form-title">SSH Authentication</div>
+        <div class="ssh-form-body">
+          <div class="ssh-auth-message">${esc(message)}</div>
+          <label class="ssh-form-label">Password
+            <input type="password" id="pw-input" spellcheck="false" autocomplete="off" />
+          </label>
+        </div>
+        <div class="ssh-form-buttons">
+          <button class="ssh-form-btn" id="pw-cancel">Cancel</button>
+          <button class="ssh-form-btn primary" id="pw-connect">Connect</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+    setTimeout(() => overlay.querySelector('#pw-input').focus(), 50);
+
+    const respond = (password) => {
+      overlay.remove();
+      invoke('auth_respond_password', { promptId: prompt_id, password }).catch(() => {});
+    };
+
+    overlay.querySelector('#pw-cancel').addEventListener('click', () => respond(null));
+    overlay.querySelector('#pw-connect').addEventListener('click', () => {
+      respond(overlay.querySelector('#pw-input').value || null);
+    });
+    overlay.querySelector('#pw-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') respond(overlay.querySelector('#pw-input').value || null);
+    });
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) respond(null); });
+    const onKey = (e) => {
+      if (e.key === 'Escape') { respond(null); document.removeEventListener('keydown', onKey); }
+    };
+    document.addEventListener('keydown', onKey);
   }
 
   // ---------------------------------------------------------------------------
