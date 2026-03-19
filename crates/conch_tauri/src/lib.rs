@@ -188,6 +188,10 @@ fn rebuild_menu(
 
     let plugin_items = plugin_state.lock().menu_items.lock().clone();
 
+    // On Windows the custom titlebar handles menus; skip native menu.
+    if cfg!(target_os = "windows") {
+        return Ok(());
+    }
     let menu = build_app_menu_with_plugins(&app, &kb, &plugin_items)
         .map_err(|e| format!("Menu build failed: {e}"))?;
     app.set_menu(menu)
@@ -309,6 +313,7 @@ fn get_app_config(state: tauri::State<'_, TauriState>) -> serde_json::Value {
         "appearance_mode": format!("{:?}", state.config.colors.appearance_mode).to_lowercase(),
         "zen_mode_shortcut": state.config.conch.keyboard.zen_mode,
         "decorations": dec,
+        "platform": std::env::consts::OS,
     })
 }
 
@@ -637,6 +642,23 @@ pub(crate) fn emit_menu_action_to_focused_window<R: tauri::Runtime>(app: &tauri:
     }
 }
 
+/// Tauri command to open a new window (used by custom titlebar menu).
+///
+/// Window creation must happen on the main thread.  Tauri commands run on a
+/// thread-pool, so we dispatch via `run_on_main_thread` to avoid a deadlock
+/// (the builder's `build()` posts to the main thread and waits, but the main
+/// thread may be blocked waiting for this command to finish).
+#[tauri::command]
+async fn open_new_window(app: tauri::AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        if let Err(e) = create_new_window(&handle) {
+            log::error!("Failed to create new window: {e}");
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
 pub(crate) fn create_new_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
     let label = loop {
         let id = NEXT_WINDOW_ID.fetch_add(1, Ordering::Relaxed);
@@ -659,22 +681,21 @@ pub(crate) fn create_new_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) ->
     };
 
     let user_cfg = config::load_user_config().unwrap_or_default();
-    let dec = !matches!(
+    let user_wants_dec = !matches!(
         user_cfg.window.decorations,
         conch_core::config::WindowDecorations::None
             | conch_core::config::WindowDecorations::Buttonless
     );
-
+    let dec = if cfg!(target_os = "windows") { false } else { user_wants_dec };
     let theme = appearance_to_theme(&user_cfg.colors.appearance_mode);
 
-    let mut builder =
-        WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
-            .title("Conch")
-            .inner_size(w, h)
-            .resizable(true)
-            .decorations(dec);
-    builder = builder.theme(theme);
-    builder.build()?;
+    WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
+        .title("Conch")
+        .inner_size(w, h)
+        .resizable(true)
+        .decorations(dec)
+        .theme(theme)
+        .build()?;
     Ok(())
 }
 
@@ -701,11 +722,19 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
     } else {
         cfg_h.max(400.0)
     };
-    let use_decorations = !matches!(
+    let user_wants_decorations = !matches!(
         config.window.decorations,
         conch_core::config::WindowDecorations::None
             | conch_core::config::WindowDecorations::Buttonless
     );
+    // On Windows we always disable native decorations so we can render a
+    // VS Code-style custom titlebar with inline menus.  On other platforms
+    // we respect the user's decoration setting.
+    let use_decorations = if cfg!(target_os = "windows") {
+        false
+    } else {
+        user_wants_decorations
+    };
     let window_theme = appearance_to_theme(&config.colors.appearance_mode);
 
     tauri::Builder::default()
@@ -722,9 +751,16 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
                 .unwrap_or_default();
             let menu = build_app_menu(&app.handle(), &kb_config)
                 .map_err(|e| anyhow::anyhow!("Failed to build app menu: {e}"))?;
-            app.handle()
-                .set_menu(menu)
-                .map_err(|e| anyhow::anyhow!("Failed to set app menu: {e}"))?;
+
+            if cfg!(target_os = "windows") {
+                // On Windows we use a custom titlebar with JS-driven menus
+                // and accelerators.  Don't attach the native menu — it can
+                // steal focus and interfere with shortcut handling.
+            } else {
+                app.handle()
+                    .set_menu(menu)
+                    .map_err(|e| anyhow::anyhow!("Failed to set app menu: {e}"))?;
+            }
 
             // Apply persisted window size, decorations, and theme.
             if let Some(win) = app.get_webview_window("main") {
@@ -746,23 +782,25 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
 
                 // Rebuild the menu after a short delay to let plugin threads
                 // run setup() and register their menu items.
-                let menu_handle = app.handle().clone();
-                let menu_kb = kb_config.clone();
-                let menu_ps = Arc::clone(&plugin_state);
-                std::thread::Builder::new()
-                    .name("plugin-menu-rebuild".into())
-                    .spawn(move || {
-                        // Give plugin threads time to call setup() and register menu items.
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        let plugin_items = menu_ps.lock().menu_items.lock().clone();
-                        if !plugin_items.is_empty() {
-                            match build_app_menu_with_plugins(&menu_handle, &menu_kb, &plugin_items) {
-                                Ok(menu) => { let _ = menu_handle.set_menu(menu); }
-                                Err(e) => log::error!("Menu rebuild after plugin restore failed: {e}"),
+                // On Windows, skip native menu rebuild (custom titlebar handles it).
+                if !cfg!(target_os = "windows") {
+                    let menu_handle = app.handle().clone();
+                    let menu_kb = kb_config.clone();
+                    let menu_ps = Arc::clone(&plugin_state);
+                    std::thread::Builder::new()
+                        .name("plugin-menu-rebuild".into())
+                        .spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                            let plugin_items = menu_ps.lock().menu_items.lock().clone();
+                            if !plugin_items.is_empty() {
+                                match build_app_menu_with_plugins(&menu_handle, &menu_kb, &plugin_items) {
+                                    Ok(menu) => { let _ = menu_handle.set_menu(menu); }
+                                    Err(e) => log::error!("Menu rebuild after plugin restore failed: {e}"),
+                                }
                             }
-                        }
-                    })
-                    .ok();
+                        })
+                        .ok();
+                }
             }
 
             // Start config/theme file watcher for hot-reload.
@@ -883,6 +921,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             get_terminal_config,
             get_app_config,
             get_home_dir,
+            open_new_window,
             rebuild_menu,
             remote::ssh_connect,
             remote::ssh_quick_connect,

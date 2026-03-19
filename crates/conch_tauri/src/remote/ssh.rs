@@ -240,14 +240,19 @@ async fn connect_via_proxy(
         .map_err(|e| format!("Failed to spawn ProxyCommand: {e}"))?;
 
     #[cfg(windows)]
-    let child = Command::new("cmd")
-        .arg("/C")
-        .arg(&expanded)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn ProxyCommand: {e}"))?;
+    let child = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        Command::new("cmd")
+            .arg("/C")
+            .arg(&expanded)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("Failed to spawn ProxyCommand: {e}"))?
+    };
 
     let stdin = child.stdin.unwrap();
     let stdout = child.stdout.unwrap();
