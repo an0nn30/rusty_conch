@@ -615,8 +615,8 @@
       });
     });
 
-    const onKey = (e) => { if (e.key === 'Escape') { dismiss(null); document.removeEventListener('keydown', onKey); } };
-    document.addEventListener('keydown', onKey);
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); dismiss(null); document.removeEventListener('keydown', onKey, true); } };
+    document.addEventListener('keydown', onKey, true);
   }
 
   function handlePromptDialog(event) {
@@ -637,8 +637,8 @@
     overlay.querySelector('#pd-ok').addEventListener('click', () => dismiss(overlay.querySelector('#pd-input').value));
     overlay.querySelector('#pd-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') dismiss(overlay.querySelector('#pd-input').value); });
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) dismiss(null); });
-    const onKey = (e) => { if (e.key === 'Escape') { dismiss(null); document.removeEventListener('keydown', onKey); } };
-    document.addEventListener('keydown', onKey);
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); dismiss(null); document.removeEventListener('keydown', onKey, true); } };
+    document.addEventListener('keydown', onKey, true);
   }
 
   function handleConfirmDialog(event) {
@@ -657,8 +657,8 @@
     overlay.querySelector('#cd-no').addEventListener('click', () => dismiss(false));
     overlay.querySelector('#cd-yes').addEventListener('click', () => dismiss(true));
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) dismiss(false); });
-    const onKey = (e) => { if (e.key === 'Escape') { dismiss(false); document.removeEventListener('keydown', onKey); } };
-    document.addEventListener('keydown', onKey);
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); dismiss(false); document.removeEventListener('keydown', onKey, true); } };
+    document.addEventListener('keydown', onKey, true);
   }
 
   /// Map a plugin icon name to an <img> tag using the PNG icon set.

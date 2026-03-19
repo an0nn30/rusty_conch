@@ -1482,6 +1482,35 @@
         }
       });
 
+      // Global Escape handler — close overlays or refocus terminal.
+      // Uses capture phase so it fires before xterm.js swallows the event.
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+
+        // Check for open overlays (dialogs, forms, context menus).
+        const overlay = document.querySelector('.ssh-overlay');
+        if (overlay) {
+          // The overlay's own Escape handler will handle dismissal.
+          // But if it didn't (e.g., event didn't reach it), remove it.
+          // We don't remove here — let the overlay's handler do it.
+          return;
+        }
+
+        // Close any open context menus.
+        const ctxMenu = document.querySelector('.ssh-context-menu');
+        if (ctxMenu) {
+          ctxMenu.remove();
+          e.preventDefault();
+          return;
+        }
+
+        // No overlays open — refocus the active terminal.
+        const tab = currentTab();
+        if (tab) {
+          tab.term.focus();
+        }
+      }, true); // capture phase
+
       // Tab navigation: Cmd+1-9 to switch tabs.
       document.addEventListener('keydown', (e) => {
         if ((e.metaKey || e.ctrlKey) && e.key >= '1' && e.key <= '9') {
