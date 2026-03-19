@@ -2,7 +2,7 @@
 name = "conch_plugin_sdk"
 version.workspace = true
 edition.workspace = true
-description = "C ABI SDK for Conch native plugins"
+description = "Widget and event types shared between Conch and its Lua/Java plugins"
 
 [dependencies]
 serde = { workspace = true }

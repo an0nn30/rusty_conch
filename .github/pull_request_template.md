@@ -13,7 +13,7 @@
 
 ## Testing
 
-- [ ] Builds without errors (`cargo build --release -p conch_app`)
+- [ ] Builds without errors (`cargo build --release -p conch_tauri`)
 - [ ] Tested on macOS / Windows / Linux (circle what applies)
 - [ ] No regressions in existing functionality
 

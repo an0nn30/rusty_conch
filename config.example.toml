@@ -176,8 +176,7 @@ normal = 14.0
 enabled = true
 
 # Per-type toggles (only relevant when enabled = true).
-# All default to true. Set to false to disable a specific type.
-native = true     # Native shared-library plugins (.dylib / .so / .dll)
+# Set to false to disable a specific plugin type.
 lua = true        # Lua script plugins (.lua)
 java = true       # Java JAR plugins (.jar) — disabling skips JVM startup
 

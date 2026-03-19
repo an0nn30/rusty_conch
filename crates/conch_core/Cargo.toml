@@ -2,6 +2,7 @@
 name = "conch_core"
 version.workspace = true
 edition.workspace = true
+description = "Config loading, color schemes, and shared types for Conch"
 
 [dependencies]
 serde = { workspace = true }
