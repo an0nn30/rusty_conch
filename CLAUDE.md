@@ -12,6 +12,7 @@ Code MUST be broken into small, focused modules. When adding new functionality:
 - Each file should have a single responsibility
 - Prefer many small files over few large files
 - New features go in new modules, not appended to existing large files
+- `lib.rs` should delegate to submodules — avoid growing it beyond ~1000 lines
 
 ## Git Workflow (STRICT)
 
@@ -36,64 +37,80 @@ Code MUST be broken into small, focused modules. When adding new functionality:
 
 ## Architecture
 
-### Workspace Structure
+### Workspace (4 crates, no egui, no native plugins)
 ```
 crates/
   conch_core/         — Config loading, color schemes, persistent state
   conch_plugin_sdk/   — Widget/event types shared with Lua and Java plugins
   conch_plugin/       — Plugin host: message bus, Lua runner, Java runtime, HostApi trait
-  conch_tauri/        — The app: Tauri/xterm.js UI, SSH, SFTP, file explorer, tunnels
+  conch_tauri/        — The app: Tauri v2 / xterm.js UI, built-in SSH/SFTP/tunnels
 java-sdk/             — Java Plugin SDK: HostApi, ConchPlugin, Widgets, PluginInfo
 editors/
   vscode/             — VS Code extension for Lua plugin development
 ```
 
-### conch_tauri Module Layout
+### conch_tauri — The App
 ```
 src/
   main.rs             — Entry point, config loading, launches Tauri app
-  lib.rs              — Tauri app setup, menu building, Tauri commands, window management
-  pty_backend.rs      — Local PTY via portable-pty (raw byte I/O, xterm.js handles emulation)
+  lib.rs              — Tauri setup, commands, menu building, window management
+  theme.rs            — Color theme loading (Alacritty .toml → CSS variables)
+  pty_backend.rs      — Local PTY via portable-pty (raw byte I/O for xterm.js)
   ipc.rs              — Unix socket IPC listener (conch msg new-tab/new-window)
   watcher.rs          — File watcher for config/theme hot-reload
-  remote/             — Unified SSH + SFTP + file operations
-    mod.rs            — Session registry, SSH/SFTP/local FS Tauri commands, auth prompt bridge
-    ssh.rs            — SSH connection (russh), auth, proxy, channel I/O loop
-    sftp.rs           — SFTP operations (list, stat, read, write, mkdir, rename, remove)
-    local_fs.rs       — Local filesystem operations (same interface as sftp.rs)
-    config.rs         — Server entries, folders, tunnels, ~/.ssh/config import, persistence
+  remote/             — Built-in SSH + SFTP + file operations (not a plugin)
+    mod.rs            — Session registry, Tauri commands, auth prompt bridge
+    ssh.rs            — SSH connection (russh 0.48), auth, proxy, channel I/O
+    sftp.rs           — SFTP operations via russh-sftp
+    local_fs.rs       — Local filesystem operations (same FileEntry interface)
+    config.rs         — Server entries, folders, tunnels, ~/.ssh/config import
     known_hosts.rs    — OpenSSH known_hosts read/write
     transfer.rs       — Upload/download engine with progress events
     tunnel.rs         — SSH tunnel manager (local port forwarding)
   plugins/            — Plugin integration for Tauri
-    mod.rs            — PluginState, plugin discovery, enable/disable, Tauri commands
-    tauri_host_api.rs — TauriHostApi implementing the HostApi trait for the webview UI
+    mod.rs            — PluginState, discovery, enable/disable, dialog responses
+    tauri_host_api.rs — TauriHostApi implementing the safe HostApi trait
 frontend/
-  index.html          — Main HTML/CSS, xterm.js terminal, tab management, layout
-  ssh-panel.js        — SSH server tree, quick connect, folder/tunnel management
+  index.html          — Main HTML/CSS/JS, xterm.js terminal, layout, all inline styles
+  utils.js            — Shared utilities (esc, attr, formatSize, formatDate)
+  toast.js            — Global toast notification system
+  ssh-panel.js        — SSH server tree, quick connect, tunnels, connection forms
   files-panel.js      — Dual-pane file explorer (local + remote)
   tunnel-manager.js   — SSH tunnel CRUD dialog
   plugin-widgets.js   — Widget JSON → HTML renderer, plugin dialog handlers
   plugin-manager.js   — Plugin discovery/enable/disable dialog
-  toast.js            — Global toast notification system
+  icons/              — PNG icon set (file, folder, server, navigation, etc.)
 ```
 
-### Plugin Architecture (2 tiers)
-- **Java** (Java/Kotlin/Scala): `.jar` files loaded by embedded JVM, communicate via JNI → safe HostApi trait
-- **Lua**: single `.lua` files, communicate via mlua → safe HostApi trait
-- Both tiers share: declarative widget system (JSON), pub/sub event bus, config persistence, dialog APIs
-- Plugin config persistence via `HostApi::get_config`/`set_config` (JSON files per plugin)
-- No native/C ABI plugins — SSH, SFTP, and file browsing are built directly into `conch_tauri`
+### Plugin System (2 tiers — Lua + Java only)
+- **Java** (Java/Kotlin/Scala): `.jar` files loaded by embedded JVM via JNI
+- **Lua** (5.4): single `.lua` files loaded by mlua
+- Both tiers call the safe `HostApi` Rust trait (no C ABI, no vtables, no unsafe)
+- Declarative widget system: plugins return JSON widget trees → rendered as HTML
+- Pub/sub event bus + RPC queries for inter-plugin communication
+- Blocking dialog APIs (form, prompt, confirm) via oneshot channels
+- Plugin config persistence: `~/.config/conch/plugins/{name}/{key}.json`
+- Plugins are NOT auto-loaded — managed via Tools > Plugin Manager
+- Enabled plugins persisted in `state.toml` and restored on restart
+
+### Built-in Features (not plugins)
+SSH sessions, SFTP file browsing, file transfers, SSH tunnels, server
+management, `~/.ssh/config` import, and host key verification are all
+built directly into `conch_tauri/src/remote/`. They were previously
+separate native plugins but were consolidated for reliability.
 
 ### Key Patterns
-- Tauri webview: HTML/CSS/JS frontend, Rust backend communicating via Tauri commands and events
-- xterm.js handles all terminal emulation — the backend provides raw byte streams
-- Plugin bus: pub/sub event system for plugin↔plugin and plugin↔app communication
-- `query_plugin`: direct queries between plugins (JSON over mpsc channels)
-- Panel registry: plugins register panels at locations (Left, Right, Bottom)
-- SSH sessions reuse the same `pty-output`/`pty-exit` events as local PTY tabs
-- Auth prompts use oneshot channels: emit event to frontend, block plugin thread on response
-- Theme colors applied via CSS custom properties, loaded from Alacritty .toml theme files
+- **Tauri v2 webview**: HTML/CSS/JS frontend, Rust backend via commands + events
+- **xterm.js**: handles all terminal emulation; backend provides raw byte streams
+- **CSS custom properties**: all colors derived from Alacritty theme files (`var(--bg)`, etc.)
+- **Shared JS utilities**: `utils.js` provides `esc()`, `attr()`, `formatSize()`, `formatDate()` — no duplicating these across modules
+- **Toast notifications**: all user-facing messages go through `toast.js` — never use `alert()` or `confirm()`
+- **Overlay dialogs**: use the `ssh-overlay` / `ssh-form` CSS pattern with Escape to close
+- **Auth prompts**: oneshot channels — emit event to frontend, block calling thread on response
+- **SSH sessions**: reuse the same `pty-output`/`pty-exit` events as local PTY tabs
+- **Plugin menu items**: stored in shared state, native menu rebuilt dynamically after enable
+- **State persistence**: window size, panel widths, panel visibility, enabled plugins in `state.toml`
+- **Hot-reload**: `watcher.rs` polls config.toml + themes/ every 2s, emits `config-changed` event
 
 ## Style Guide
 
@@ -104,16 +121,20 @@ frontend/
 - `#[serde(default)]` on config structs for backward compatibility
 - Keep `unsafe` blocks minimal and well-commented
 - No unnecessary `clone()` — borrow where possible
+- Factory methods for repeated struct construction (e.g., `PluginState::make_host_api()`)
 
 ### Frontend (JS)
 - Each JS module is a self-contained IIFE exposing a global (e.g., `window.sshPanel`)
-- Use the global `toast.js` system for all notifications — no `alert()`
-- CSS uses custom properties (`var(--bg)`, `var(--fg)`) loaded from the theme
+- Use `window.utils.esc()` / `window.utils.attr()` — never define local copies
+- Use the global `toast.js` system for all notifications — never use `alert()` or `confirm()`
+- CSS uses custom properties (`var(--bg)`, `var(--fg)`, `var(--text-secondary)`) — never hardcode hex colors
 - Overlay dialogs use the `ssh-overlay` / `ssh-form` CSS pattern
+- Escape handlers must use capture phase (`addEventListener(..., true)`) to fire before xterm.js
+- Icons: use PNG assets from `frontend/icons/` via `<img>` tags or `iconHtml()` helper
 
 ### Config
-- User config: `config.toml` (loaded by conch_core)
-- Persistent state: `state.toml` (window size, loaded plugins, layout)
+- User config: `~/.config/conch/config.toml` (loaded by conch_core)
+- Persistent state: `~/.config/conch/state.toml` (window size, plugins, layout)
 - SSH server config: `~/.config/conch/remote/servers.json`
 - Plugin config: `~/.config/conch/plugins/{plugin_name}/{key}.json`
 - Keyboard shortcuts: configurable in `[conch.keyboard]` section
@@ -126,3 +147,4 @@ frontend/
 - Test edge cases: empty input, missing fields, boundary values
 - Plugin SDK: test widget serialization/deserialization
 - Config: test defaults, serde round-trips, backward compat with `serde(default)`
+- Currently 192 tests across the workspace — keep this growing
