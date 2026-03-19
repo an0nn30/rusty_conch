@@ -23,6 +23,15 @@ use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+/// Convert the user's appearance mode to a Tauri window theme.
+fn appearance_to_theme(mode: &conch_core::config::AppearanceMode) -> Option<tauri::Theme> {
+    match mode {
+        conch_core::config::AppearanceMode::Dark => Some(tauri::Theme::Dark),
+        conch_core::config::AppearanceMode::Light => Some(tauri::Theme::Light),
+        conch_core::config::AppearanceMode::System => None,
+    }
+}
+
 const MENU_NEW_TAB_ID: &str = "file.new_tab";
 const MENU_CLOSE_TAB_ID: &str = "file.close_tab";
 const MENU_NEW_WINDOW_ID: &str = "file.new_window";
@@ -655,12 +664,16 @@ pub(crate) fn create_new_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) ->
             | conch_core::config::WindowDecorations::Buttonless
     );
 
-    WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
-        .title("Conch")
-        .inner_size(w, h)
-        .resizable(true)
-        .decorations(dec)
-        .build()?;
+    let theme = appearance_to_theme(&user_cfg.colors.appearance_mode);
+
+    let mut builder =
+        WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
+            .title("Conch")
+            .inner_size(w, h)
+            .resizable(true)
+            .decorations(dec);
+    builder = builder.theme(theme);
+    builder.build()?;
     Ok(())
 }
 
@@ -692,6 +705,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
         conch_core::config::WindowDecorations::None
             | conch_core::config::WindowDecorations::Buttonless
     );
+    let window_theme = appearance_to_theme(&config.colors.appearance_mode);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -711,10 +725,11 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
                 .set_menu(menu)
                 .map_err(|e| anyhow::anyhow!("Failed to set app menu: {e}"))?;
 
-            // Apply persisted window size and decorations.
+            // Apply persisted window size, decorations, and theme.
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.set_size(tauri::LogicalSize::new(initial_width, initial_height));
                 let _ = win.set_decorations(use_decorations);
+                let _ = win.set_theme(window_theme);
             }
 
             // Initialize plugin system and restore previously enabled plugins.
