@@ -139,15 +139,8 @@
     return '.../' + parts.slice(-2).join('/');
   }
 
-  function esc(str) {
-    const el = document.createElement('span');
-    el.textContent = str || '';
-    return el.innerHTML;
-  }
-
-  function attr(str) {
-    return String(str || '').replace(/"/g, '&quot;');
-  }
+  const esc = window.utils.esc;
+  const attr = window.utils.attr;
 
   exports.pluginManager = { init, show };
 })(window);

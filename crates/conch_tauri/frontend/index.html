@@ -13,6 +13,7 @@
       --red: #ff5555; --green: #50fa7b; --yellow: #f1fa8c; --blue: #bd93f9;
       --cyan: #8be9fd; --magenta: #ff79c6;
       --input-bg: #2b2e3a; --hover-bg: #2b2e3a;
+      --text-secondary: #c5c8d5; --text-muted: #8b8fa3;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
@@ -61,7 +62,7 @@
       border-bottom: none;
       border-radius: 0;
       background: var(--input-bg);
-      color: #c5c8d5;
+      color: var(--text-secondary);
       font: 12px/1.1 "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
       text-align: center;
       cursor: pointer;
@@ -114,7 +115,7 @@
       background: var(--panel-bg); border-right: 1px solid var(--tab-border);
       display: flex; flex-direction: column; overflow: hidden;
       font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      color: #c5c8d5;
+      color: var(--text-secondary);
     }
     #files-panel-resize {
       width: 4px; cursor: col-resize; background: transparent; flex-shrink: 0;
@@ -124,7 +125,7 @@
     .fp-pane-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
     .fp-pane { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
     .fp-pane-label {
-      padding: 6px 8px 2px; font-size: 11px; font-weight: 600; color: #8b8fa3;
+      padding: 6px 8px 2px; font-size: 11px; font-weight: 600; color: var(--text-muted);
       text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
     }
     .fp-toolbar {
@@ -132,7 +133,7 @@
     }
     .fp-tb-btn {
       background: none; border: 1px solid transparent; border-radius: 3px;
-      color: #8b8fa3; cursor: pointer; padding: 2px 5px; font-size: 11px; line-height: 1;
+      color: var(--text-muted); cursor: pointer; padding: 2px 5px; font-size: 11px; line-height: 1;
     }
     .fp-tb-btn:hover:not(:disabled) { background: var(--tab-border); color: var(--fg); }
     .fp-tb-btn:disabled { opacity: 0.3; cursor: default; }
@@ -162,8 +163,8 @@
     .fp-icon { vertical-align: middle; }
     .fp-cell-name img, .fp-cell-name svg { vertical-align: middle; margin-right: 3px; }
     .fp-cell-ext { width: 45px; color: var(--dim-fg); }
-    .fp-cell-size { width: 65px; text-align: right; color: #8b8fa3; font-family: "JetBrains Mono", monospace; font-size: 10px; }
-    .fp-cell-mod { width: 110px; color: #8b8fa3; font-size: 10px; }
+    .fp-cell-size { width: 65px; text-align: right; color: var(--text-muted); font-family: "JetBrains Mono", monospace; font-size: 10px; }
+    .fp-cell-mod { width: 110px; color: var(--text-muted); font-size: 10px; }
     .fp-th-ext { width: 45px; }
     .fp-th-size { width: 65px; }
     .fp-th-mod { width: 110px; }
@@ -175,7 +176,7 @@
     }
     .fp-transfer-btn {
       padding: 3px 12px; border: 1px solid var(--tab-border); border-radius: 4px;
-      background: var(--input-bg); color: #c5c8d5; cursor: pointer; font-size: 11px;
+      background: var(--input-bg); color: var(--text-secondary); cursor: pointer; font-size: 11px;
     }
     .fp-transfer-btn:hover { background: var(--tab-border); color: var(--fg); }
     .fp-transfer-pct { margin-left: 6px; color: var(--green); font-weight: 600; font-size: 10px; }
@@ -220,7 +221,7 @@
     }
     .fp-pt-details {
       display: flex; justify-content: space-between;
-      font-size: 10px; color: #8b8fa3;
+      font-size: 10px; color: var(--text-muted);
     }
     /* -- Global toast system -- */
     #toast-container {
@@ -247,7 +248,7 @@
     }
     .conch-toast-close:hover { color: var(--fg); }
     .conch-toast-body {
-      margin-top: 4px; font-size: 11px; color: #8b8fa3;
+      margin-top: 4px; font-size: 11px; color: var(--text-muted);
       word-break: break-word; white-space: pre-wrap;
     }
     .conch-toast-success { border-color: var(--green); }
@@ -264,16 +265,16 @@
     .pw-vertical { display: flex; flex-direction: column; gap: 4px; }
     .pw-scroll-area { overflow-y: auto; }
     .pw-heading { font-size: 14px; font-weight: 600; color: var(--fg); margin: 4px 0 2px; }
-    .pw-label { font-size: 12px; color: #c5c8d5; }
-    .pw-style-secondary { color: #8b8fa3; }
+    .pw-label { font-size: 12px; color: var(--text-secondary); }
+    .pw-style-secondary { color: var(--text-muted); }
     .pw-style-muted { color: var(--dim-fg); }
     .pw-style-accent { color: #bd93f9; }
     .pw-style-warn { color: #f1fa8c; }
     .pw-style-error { color: var(--red); }
     .pw-text { font: 12px/1.4 "JetBrains Mono", monospace; color: var(--fg); margin: 0; white-space: pre-wrap; word-break: break-word; }
-    .pw-scroll-text { font: 11px/1.3 "JetBrains Mono", monospace; color: #c5c8d5; overflow-y: auto; margin: 0; padding: 4px; background: #1a1b26; border-radius: 3px; }
+    .pw-scroll-text { font: 11px/1.3 "JetBrains Mono", monospace; color: var(--text-secondary); overflow-y: auto; margin: 0; padding: 4px; background: #1a1b26; border-radius: 3px; }
     .pw-kv { display: flex; gap: 8px; font-size: 12px; }
-    .pw-kv-key { color: #8b8fa3; flex-shrink: 0; }
+    .pw-kv-key { color: var(--text-muted); flex-shrink: 0; }
     .pw-kv-value { color: var(--fg); word-break: break-word; }
     .pw-separator { border: none; border-top: 1px solid var(--tab-border); margin: 4px 0; }
     .pw-spacer { }
@@ -285,10 +286,10 @@
     .pw-badge-error { background: #4a2828; color: var(--red); }
     .pw-progress { position: relative; height: 6px; background: var(--tab-border); border-radius: 3px; overflow: hidden; }
     .pw-progress-bar { height: 100%; background: var(--green); border-radius: 3px; transition: width 150ms; }
-    .pw-progress-label { position: absolute; right: 4px; top: -1px; font-size: 9px; color: #8b8fa3; }
+    .pw-progress-label { position: absolute; right: 4px; top: -1px; font-size: 9px; color: var(--text-muted); }
     .pw-button {
       padding: 4px 12px; border: 1px solid var(--active-highlight); border-radius: 4px;
-      background: var(--input-bg); color: #c5c8d5; cursor: pointer; font-size: 12px;
+      background: var(--input-bg); color: var(--text-secondary); cursor: pointer; font-size: 12px;
     }
     .pw-button:hover:not(:disabled) { background: var(--tab-border); color: var(--fg); }
     .pw-button:disabled { opacity: 0.4; cursor: default; }
@@ -299,9 +300,9 @@
     }
     .pw-text-input:focus, .pw-text-edit:focus, .pw-combo-box:focus { border-color: var(--dim-fg); }
     .pw-text-edit { resize: vertical; min-height: 40px; }
-    .pw-checkbox { font-size: 12px; color: #c5c8d5; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+    .pw-checkbox { font-size: 12px; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 4px; }
     .pw-toolbar { display: flex; align-items: center; gap: 3px; padding: 3px 0; }
-    .pw-toolbar-btn { padding: 2px 6px; border: 1px solid transparent; border-radius: 3px; background: none; color: #8b8fa3; cursor: pointer; font-size: 11px; }
+    .pw-toolbar-btn { padding: 2px 6px; border: 1px solid transparent; border-radius: 3px; background: none; color: var(--text-muted); cursor: pointer; font-size: 11px; }
     .pw-toolbar-btn:hover:not(:disabled) { background: var(--tab-border); color: var(--fg); }
     .pw-toolbar-sep { width: 1px; height: 14px; background: var(--tab-border); }
     .pw-toolbar-spacer { flex: 1; }
@@ -323,7 +324,7 @@
     .pw-table-row:hover td { background: var(--input-bg); }
     .pw-table-row.selected td { background: var(--active-highlight); }
     .pw-tabs-bar { display: flex; gap: 0; border-bottom: 1px solid var(--tab-border); }
-    .pw-tab-btn { padding: 4px 12px; border: none; border-bottom: 2px solid transparent; background: none; color: #8b8fa3; cursor: pointer; font-size: 11px; }
+    .pw-tab-btn { padding: 4px 12px; border: none; border-bottom: 2px solid transparent; background: none; color: var(--text-muted); cursor: pointer; font-size: 11px; }
     .pw-tab-btn:hover { color: var(--fg); }
     .pw-tab-btn.active { color: var(--fg); border-bottom-color: #bd93f9; }
     .pw-tabs-content { padding: 6px 0; }
@@ -334,7 +335,7 @@
     /* -- Plugin Manager -- */
     .plugin-manager-dialog { width: 720px; max-width: 95vw; }
     .pm-body { max-height: 50vh; overflow-y: auto; }
-    .pm-table { width: 100%; border-collapse: collapse; font-size: 12px; color: #c5c8d5; }
+    .pm-table { width: 100%; border-collapse: collapse; font-size: 12px; color: var(--text-secondary); }
     .pm-table thead { position: sticky; top: 0; z-index: 1; }
     .pm-table th {
       padding: 6px 10px; text-align: left; font-weight: 500; font-size: 10px;
@@ -391,7 +392,7 @@
       flex-direction: column;
       overflow: hidden;
       font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      color: #c5c8d5;
+      color: var(--text-secondary);
     }
     .ssh-panel-header {
       display: flex;
@@ -404,7 +405,7 @@
     .ssh-panel-actions { display: flex; gap: 4px; }
     .ssh-icon-btn {
       background: none; border: 1px solid transparent; border-radius: 4px;
-      color: #8b8fa3; cursor: pointer; padding: 2px 6px; font-size: 13px;
+      color: var(--text-muted); cursor: pointer; padding: 2px 6px; font-size: 13px;
       line-height: 1;
     }
     .ssh-icon-btn:hover { background: var(--tab-border); color: var(--fg); }
@@ -449,7 +450,7 @@
     .ssh-tunnel-btn {
       margin-left: auto; flex-shrink: 0;
       padding: 1px 8px; border: 1px solid var(--active-highlight); border-radius: 3px;
-      background: transparent; color: #c5c8d5; cursor: pointer;
+      background: transparent; color: var(--text-secondary); cursor: pointer;
       font-size: 10px; line-height: 1.5; white-space: nowrap;
       transition: background 100ms, border-color 100ms;
     }
@@ -523,7 +524,7 @@
     .ssh-form-row { display: flex; gap: 10px; }
     .ssh-form-label {
       display: flex; flex-direction: column; gap: 3px;
-      font-size: 11px; color: #8b8fa3; font-weight: 500;
+      font-size: 11px; color: var(--text-muted); font-weight: 500;
     }
     .ssh-form-label input,
     .ssh-form-label select {
@@ -548,7 +549,7 @@
     }
     .ssh-form-advanced summary {
       padding: 6px 10px; cursor: pointer; font-size: 11px;
-      color: #8b8fa3; user-select: none;
+      color: var(--text-muted); user-select: none;
     }
     .ssh-form-advanced summary:hover { color: var(--fg); }
     .ssh-form-advanced[open] summary { border-bottom: 1px solid var(--tab-border); margin-bottom: 8px; }
@@ -561,7 +562,7 @@
     }
     .ssh-form-btn {
       padding: 6px 16px; border: 1px solid var(--tab-border); border-radius: 5px;
-      background: var(--input-bg); color: #c5c8d5; cursor: pointer;
+      background: var(--input-bg); color: var(--text-secondary); cursor: pointer;
       font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
     .ssh-form-btn:hover { background: var(--tab-border); color: var(--fg); }
@@ -573,7 +574,7 @@
     .tunnel-table-wrap { min-height: 60px; }
     .tunnel-table {
       width: 100%; border-collapse: collapse;
-      font-size: 12px; color: #c5c8d5;
+      font-size: 12px; color: var(--text-secondary);
     }
     .tunnel-table thead { position: sticky; top: 0; z-index: 1; }
     .tunnel-table th {
@@ -600,7 +601,7 @@
     .tunnel-actions { white-space: nowrap; text-align: right; width: 1%; }
     .tunnel-action-btn {
       padding: 3px 10px; margin-left: 4px; border: 1px solid var(--tab-border);
-      border-radius: 4px; background: var(--input-bg); color: #c5c8d5;
+      border-radius: 4px; background: var(--input-bg); color: var(--text-secondary);
       cursor: pointer; font-size: 11px;
     }
     .tunnel-action-btn:hover { background: var(--tab-border); color: var(--fg); }
@@ -668,6 +669,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+  <script src="utils.js"></script>
   <script src="toast.js"></script>
   <script src="plugin-manager.js"></script>
   <script src="plugin-widgets.js"></script>

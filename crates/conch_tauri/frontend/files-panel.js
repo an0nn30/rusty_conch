@@ -592,35 +592,16 @@
   // Helpers
   // ---------------------------------------------------------------------------
 
-  function formatSize(bytes) {
-    if (bytes == null) return '';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-  }
-
-  function formatDate(epoch) {
-    if (!epoch) return '';
-    const d = new Date(epoch * 1000);
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  }
+  const formatSize = window.utils.formatSize;
+  const formatDate = window.utils.formatDate;
 
   function extOf(name) {
     const i = name.lastIndexOf('.');
     return i > 0 ? name.slice(i + 1).toLowerCase() : '';
   }
 
-  function esc(str) {
-    const el = document.createElement('span');
-    el.textContent = str;
-    return el.innerHTML;
-  }
-
-  function attr(str) {
-    return String(str || '').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
+  const esc = window.utils.esc;
+  const attr = window.utils.attr;
 
   exports.filesPanel = { init, togglePanel, isHidden, onTabChanged };
 })(window);

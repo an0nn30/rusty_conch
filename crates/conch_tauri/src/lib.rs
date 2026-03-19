@@ -8,6 +8,7 @@ mod ipc;
 mod pty_backend;
 pub(crate) mod plugins;
 pub(crate) mod remote;
+pub(crate) mod theme;
 mod watcher;
 
 use std::collections::HashMap;
@@ -312,91 +313,9 @@ fn get_home_dir() -> String {
 // Theme colors
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
-struct ThemeColors {
-    // Primary
-    background: String,
-    foreground: String,
-    // Cursor
-    cursor_text: String,
-    cursor_color: String,
-    // Selection
-    selection_text: String,
-    selection_bg: String,
-    // Normal ANSI
-    black: String, red: String, green: String, yellow: String,
-    blue: String, magenta: String, cyan: String, white: String,
-    // Bright ANSI
-    bright_black: String, bright_red: String, bright_green: String, bright_yellow: String,
-    bright_blue: String, bright_magenta: String, bright_cyan: String, bright_white: String,
-    // Derived UI colors
-    dim_fg: String,
-    panel_bg: String,
-    tab_bar_bg: String,
-    tab_border: String,
-    active_highlight: String,
-}
-
-fn darken(hex: &str, amount: i32) -> String {
-    let hex = hex.trim_start_matches('#');
-    if hex.len() < 6 { return format!("#{hex}"); }
-    let r = i32::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-    let g = i32::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-    let b = i32::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-    format!("#{:02x}{:02x}{:02x}",
-        (r - amount).clamp(0, 255),
-        (g - amount).clamp(0, 255),
-        (b - amount).clamp(0, 255))
-}
-
-fn lighten(hex: &str, amount: i32) -> String {
-    darken(hex, -amount)
-}
-
 #[tauri::command]
-fn get_theme_colors(state: tauri::State<'_, TauriState>) -> ThemeColors {
-    // appearance_mode: dark (default), light, system — affects window chrome.
-    // For now we always use the configured theme; system mode detection
-    // would require platform APIs. Logged for awareness.
-    let mode = &state.config.colors.appearance_mode;
-    log::debug!("Appearance mode: {:?}", mode);
-
-    let scheme = conch_core::color_scheme::resolve_theme(&state.config.colors.theme);
-
-    let bg = &scheme.primary.background;
-    let fg = &scheme.primary.foreground;
-    let cursor = scheme.cursor.as_ref();
-    let selection = scheme.selection.as_ref();
-
-    ThemeColors {
-        background: bg.clone(),
-        foreground: fg.clone(),
-        cursor_text: cursor.map(|c| c.text.clone()).unwrap_or_else(|| bg.clone()),
-        cursor_color: cursor.map(|c| c.cursor.clone()).unwrap_or_else(|| fg.clone()),
-        selection_text: selection.map(|s| s.text.clone()).unwrap_or_else(|| fg.clone()),
-        selection_bg: selection.map(|s| s.background.clone()).unwrap_or_else(|| lighten(bg, 30)),
-        black: scheme.normal.black.clone(),
-        red: scheme.normal.red.clone(),
-        green: scheme.normal.green.clone(),
-        yellow: scheme.normal.yellow.clone(),
-        blue: scheme.normal.blue.clone(),
-        magenta: scheme.normal.magenta.clone(),
-        cyan: scheme.normal.cyan.clone(),
-        white: scheme.normal.white.clone(),
-        bright_black: scheme.bright.black.clone(),
-        bright_red: scheme.bright.red.clone(),
-        bright_green: scheme.bright.green.clone(),
-        bright_yellow: scheme.bright.yellow.clone(),
-        bright_blue: scheme.bright.blue.clone(),
-        bright_magenta: scheme.bright.magenta.clone(),
-        bright_cyan: scheme.bright.cyan.clone(),
-        bright_white: scheme.bright.white.clone(),
-        dim_fg: scheme.primary.dim_foreground.clone().unwrap_or_else(|| lighten(bg, 60)),
-        panel_bg: darken(bg, 8),
-        tab_bar_bg: darken(bg, 14),
-        tab_border: lighten(bg, 18),
-        active_highlight: lighten(bg, 28),
-    }
+fn get_theme_colors(state: tauri::State<'_, TauriState>) -> theme::ThemeColors {
+    theme::resolve_theme_colors(&state.config)
 }
 
 // ---------------------------------------------------------------------------

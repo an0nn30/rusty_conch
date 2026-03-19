@@ -82,6 +82,18 @@ impl PluginState {
         plugin_search_paths(&self.plugins_config.search_paths)
     }
 
+    /// Create a TauriHostApi instance for a plugin.
+    fn make_host_api(&self, name: &str, app_handle: &tauri::AppHandle) -> Arc<dyn conch_plugin::HostApi> {
+        Arc::new(TauriHostApi {
+            name: name.to_string(),
+            app_handle: app_handle.clone(),
+            bus: Arc::clone(&self.bus),
+            panels: Arc::clone(&self.panels),
+            menu_items: Arc::clone(&self.menu_items),
+            pending_dialogs: Arc::clone(&self.pending_dialogs),
+        })
+    }
+
     /// Get names of all currently loaded plugins.
     fn loaded_plugin_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.running_lua.iter().map(|p| p.meta.name.clone()).collect();
@@ -137,14 +149,7 @@ impl PluginState {
             // Try Lua first.
             if let Some(plugin) = lua_plugins.iter().find(|p| &p.meta.name == saved_name) {
                 let name = plugin.meta.name.clone();
-                let host_api: Arc<dyn conch_plugin::HostApi> = Arc::new(TauriHostApi {
-                    name: name.clone(),
-                    app_handle: app_handle.clone(),
-                    bus: Arc::clone(&self.bus),
-                    panels: Arc::clone(&self.panels),
-                    menu_items: Arc::clone(&self.menu_items),
-                    pending_dialogs: Arc::clone(&self.pending_dialogs),
-                });
+                let host_api = self.make_host_api(&name, app_handle);
                 let mailbox_rx = self.bus.register_plugin(&name);
                 let Some(mailbox_tx) = self.bus.sender_for(&name) else { continue };
                 match runner::spawn_lua_plugin(plugin, host_api, mailbox_tx, mailbox_rx) {
@@ -187,15 +192,7 @@ impl PluginState {
     /// Initialize the Java plugin manager (JVM) without loading any plugins.
     /// Plugins are loaded on demand via the Plugin Manager UI.
     pub fn init_java_manager(&mut self, app_handle: &tauri::AppHandle) {
-        let host_api: Arc<dyn conch_plugin::HostApi> = Arc::new(TauriHostApi {
-            name: "java".to_string(),
-            app_handle: app_handle.clone(),
-            bus: Arc::clone(&self.bus),
-            panels: Arc::clone(&self.panels),
-            menu_items: Arc::clone(&self.menu_items),
-            pending_dialogs: Arc::clone(&self.pending_dialogs),
-        });
-
+        let host_api = self.make_host_api("java", app_handle);
         self.java_mgr = Some(JavaPluginManager::new(Arc::clone(&self.bus), host_api));
         log::info!("Java plugin manager initialized (JVM ready, no plugins loaded)");
     }
@@ -355,14 +352,7 @@ pub(crate) fn enable_plugin(
         let plugin = discovered.iter().find(|p| p.meta.name == name)
             .ok_or_else(|| format!("Plugin '{name}' not found at {path}"))?;
 
-        let host_api: Arc<dyn conch_plugin::HostApi> = Arc::new(TauriHostApi {
-            name: name.clone(),
-            app_handle: app.clone(),
-            bus: Arc::clone(&ps.bus),
-            panels: Arc::clone(&ps.panels),
-            menu_items: Arc::clone(&ps.menu_items),
-            pending_dialogs: Arc::clone(&ps.pending_dialogs),
-        });
+        let host_api = ps.make_host_api(&name, &app);
 
         let mailbox_rx = ps.bus.register_plugin(&name);
         let mailbox_tx = ps.bus.sender_for(&name)

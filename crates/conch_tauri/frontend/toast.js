@@ -70,11 +70,7 @@
   function error(title, body) { return show({ title, body, level: 'error', duration: 6000 }); }
   function warn(title, body) { return show({ title, body, level: 'warn', duration: 5000 }); }
 
-  function esc(str) {
-    const el = document.createElement('span');
-    el.textContent = str;
-    return el.innerHTML;
-  }
+  const esc = window.utils.esc;
 
   exports.toast = { show, dismiss, info, success, error, warn };
 })(window);

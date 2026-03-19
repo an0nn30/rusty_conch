@@ -531,15 +531,8 @@
   // Helpers
   // ---------------------------------------------------------------------------
 
-  function esc(str) {
-    const el = document.createElement('span');
-    el.textContent = str;
-    return el.innerHTML;
-  }
-
-  function attr(str) {
-    return String(str || '').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
+  const esc = window.utils.esc;
+  const attr = window.utils.attr;
 
   // ---------------------------------------------------------------------------
   // Plugin dialogs
