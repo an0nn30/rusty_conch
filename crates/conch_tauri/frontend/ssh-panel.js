@@ -322,13 +322,33 @@
         frag.appendChild(hint);
       }
     } else {
-      // Normal tree view
+      // SSH Sessions section header
+      const hasServers = serverData.folders.length > 0
+        || serverData.ungrouped.length > 0
+        || serverData.ssh_config.length > 0;
+
+      if (hasServers) {
+        const sep = document.createElement('div');
+        sep.className = 'ssh-panel-separator';
+        frag.appendChild(sep);
+
+        const headerRow = document.createElement('div');
+        headerRow.className = 'ssh-tunnels-header';
+        headerRow.innerHTML =
+          `<span class="ssh-section-header-inline">SSH Sessions</span>` +
+          `<button class="ssh-icon-btn ssh-icon-btn-sm" id="ssh-add-server-inline" title="New Connection">+</button>`;
+        frag.appendChild(headerRow);
+      }
+
+      // Folders
       for (const folder of serverData.folders) {
         frag.appendChild(createFolderNode(folder));
       }
+      // Ungrouped servers
       for (const server of serverData.ungrouped) {
         frag.appendChild(createServerNode(server));
       }
+      // ~/.ssh/config servers (dimmed)
       if (serverData.ssh_config.length > 0) {
         frag.appendChild(makeSectionHeader('~/.ssh/config'));
         for (const server of serverData.ssh_config) {
@@ -339,6 +359,12 @@
 
     serverListEl.innerHTML = '';
     serverListEl.appendChild(frag);
+
+    // Wire the inline add button if present.
+    const addBtn = serverListEl.querySelector('#ssh-add-server-inline');
+    if (addBtn) {
+      addBtn.addEventListener('click', () => showConnectionForm());
+    }
   }
 
   function makeSectionHeader(text) {
@@ -820,9 +846,9 @@
       }},
       { type: 'separator' },
       { label: 'Delete', danger: true, action: () => {
-        if (confirm(`Delete "${server.label}"?`)) {
+        showDeleteConfirmDialog(`Delete "${server.label}"?`, () => {
           invoke('remote_delete_server', { serverId: server.id }).then(() => refreshAll()).catch(() => {});
-        }
+        });
       }},
     ]);
   }
@@ -833,11 +859,40 @@
       { label: 'Rename', action: () => showRenameFolderDialog(folder) },
       { type: 'separator' },
       { label: 'Delete Folder', danger: true, action: () => {
-        if (confirm(`Delete folder "${folder.name}" and all servers in it?`)) {
+        showDeleteConfirmDialog(`Delete folder "${folder.name}" and all servers in it?`, () => {
           invoke('remote_delete_folder', { folderId: folder.id }).then(() => refreshAll()).catch(() => {});
-        }
+        });
       }},
     ]);
+  }
+
+  function showDeleteConfirmDialog(message, onConfirm) {
+    removeOverlay();
+    const overlay = document.createElement('div');
+    overlay.className = 'ssh-overlay';
+    overlay.style.zIndex = '5000';
+    overlay.innerHTML = `
+      <div class="ssh-form ssh-form-small">
+        <div class="ssh-form-title">Confirm Delete</div>
+        <div class="ssh-form-body">
+          <div class="ssh-auth-message">${esc(message)}</div>
+        </div>
+        <div class="ssh-form-buttons">
+          <button class="ssh-form-btn" id="dc-cancel">Cancel</button>
+          <button class="ssh-form-btn primary" id="dc-delete" style="background:var(--red);border-color:var(--red)">Delete</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const dismiss = () => overlay.remove();
+    overlay.querySelector('#dc-cancel').addEventListener('click', dismiss);
+    overlay.querySelector('#dc-delete').addEventListener('click', () => { dismiss(); onConfirm(); });
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) dismiss(); });
+    const onKey = (e) => {
+      if (e.key === 'Escape') { dismiss(); document.removeEventListener('keydown', onKey); }
+    };
+    document.addEventListener('keydown', onKey);
   }
 
   function showContextMenu(e, items) {
