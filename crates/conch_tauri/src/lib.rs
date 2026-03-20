@@ -63,6 +63,8 @@ const MENU_SSH_EXPORT_ID: &str = "file.ssh_export";
 const MENU_SSH_IMPORT_ID: &str = "file.ssh_import";
 const MENU_ACTION_SSH_EXPORT: &str = "ssh-export";
 const MENU_ACTION_SSH_IMPORT: &str = "ssh-import";
+const MENU_SETTINGS_ID: &str = "app.settings";
+const MENU_ACTION_SETTINGS: &str = "settings";
 
 static NEXT_WINDOW_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -222,16 +224,6 @@ fn build_app_menu_with_plugins<R: tauri::Runtime>(
         // the on_menu_event handler. The menu IDs use "plugin.{plugin}.{action}".
         let mut tools_items: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = Vec::new();
 
-        let plugin_manager = MenuItem::with_id(
-            app,
-            MENU_PLUGIN_MANAGER_ID,
-            "Plugin Manager\u{2026}",
-            true,
-            None::<&str>,
-        )?;
-        tools_items.push(Box::new(plugin_manager));
-        tools_items.push(Box::new(PredefinedMenuItem::separator(app)?));
-
         let manage_tunnels = MenuItem::with_id(
             app,
             MENU_MANAGE_TUNNELS_ID,
@@ -268,6 +260,7 @@ fn build_app_menu_with_plugins<R: tauri::Runtime>(
         let new_window = MenuItem::with_id(app, MENU_NEW_WINDOW_ID, "New Window", true, Some("CmdOrCtrl+Shift+N"))?;
         let separator = PredefinedMenuItem::separator(app)?;
         let close_window = PredefinedMenuItem::close_window(app, None)?;
+        let settings = MenuItem::with_id(app, MENU_SETTINGS_ID, "Settings\u{2026}", true, Some("CmdOrCtrl+Comma"))?;
         let ssh_export = MenuItem::with_id(app, MENU_SSH_EXPORT_ID, "Export", true, None::<&str>)?;
         let ssh_import = MenuItem::with_id(app, MENU_SSH_IMPORT_ID, "Import", true, None::<&str>)?;
         let ssh_manager_menu = Submenu::with_items(app, "SSH Manager", true, &[&ssh_export, &ssh_import])?;
@@ -313,6 +306,8 @@ fn build_app_menu_with_plugins<R: tauri::Runtime>(
             let app_menu = Submenu::with_items(app, app_name, true, &[
                 &PredefinedMenuItem::about(app, None, None)?,
                 &PredefinedMenuItem::separator(app)?,
+                &settings,
+                &PredefinedMenuItem::separator(app)?,
                 &PredefinedMenuItem::hide(app, None)?,
                 &PredefinedMenuItem::hide_others(app, None)?,
                 &PredefinedMenuItem::separator(app)?,
@@ -323,6 +318,8 @@ fn build_app_menu_with_plugins<R: tauri::Runtime>(
 
         #[cfg(not(target_os = "macos"))]
         {
+            let separator3 = PredefinedMenuItem::separator(app)?;
+            let file_menu = Submenu::with_items(app, "File", true, &[&new_tab, &new_window, &separator, &ssh_manager_menu, &separator2, &settings, &separator3, &close_tab, &close_window])?;
             return Menu::with_items(app, &[&file_menu, &edit_menu, &view_menu, &new_tools, &window_menu]);
         }
     }
@@ -611,13 +608,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
         ],
     )?;
 
-    let plugin_manager = MenuItem::with_id(
-        app,
-        MENU_PLUGIN_MANAGER_ID,
-        "Plugin Manager\u{2026}",
-        true,
-        None::<&str>,
-    )?;
+    let settings = MenuItem::with_id(app, MENU_SETTINGS_ID, "Settings\u{2026}", true, Some("CmdOrCtrl+Comma"))?;
     let manage_tunnels = MenuItem::with_id(
         app,
         MENU_MANAGE_TUNNELS_ID,
@@ -629,7 +620,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
         app,
         "Tools",
         true,
-        &[&plugin_manager, &PredefinedMenuItem::separator(app)?, &manage_tunnels],
+        &[&manage_tunnels],
     )?;
 
     let window_menu = Submenu::with_items(
@@ -654,6 +645,8 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
             &[
                 &PredefinedMenuItem::about(app, None, None)?,
                 &PredefinedMenuItem::separator(app)?,
+                &settings,
+                &PredefinedMenuItem::separator(app)?,
                 &PredefinedMenuItem::hide(app, None)?,
                 &PredefinedMenuItem::hide_others(app, None)?,
                 &PredefinedMenuItem::separator(app)?,
@@ -668,6 +661,13 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
 
     #[cfg(not(target_os = "macos"))]
     {
+        let separator3 = PredefinedMenuItem::separator(app)?;
+        let file_menu = Submenu::with_items(
+            app,
+            "File",
+            true,
+            &[&new_tab, &new_window, &separator, &ssh_manager_menu, &separator2, &settings, &separator3, &close_tab, &close_window],
+        )?;
         Menu::with_items(app, &[&file_menu, &edit_menu, &view_menu, &tools_menu, &window_menu])
     }
 }
@@ -909,9 +909,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             MENU_FOCUS_SESSIONS_ID => {
                 emit_menu_action_to_focused_window(app, MENU_ACTION_FOCUS_SESSIONS)
             }
-            MENU_PLUGIN_MANAGER_ID => {
-                emit_menu_action_to_focused_window(app, MENU_ACTION_PLUGIN_MANAGER)
-            }
+            MENU_SETTINGS_ID => emit_menu_action_to_focused_window(app, MENU_ACTION_SETTINGS),
             MENU_MANAGE_TUNNELS_ID => {
                 emit_menu_action_to_focused_window(app, MENU_ACTION_MANAGE_TUNNELS)
             }

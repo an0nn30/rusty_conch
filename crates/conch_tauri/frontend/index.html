@@ -1646,8 +1646,8 @@
           window.sshPanel.focusQuickConnect();
           return;
         }
-        if (action === 'plugin-manager' && window.pluginManager) {
-          window.pluginManager.show();
+        if (action === 'settings') {
+          if (window.settings) window.settings.open();
           return;
         }
         if (action === 'manage-tunnels' && window.tunnelManager) {
