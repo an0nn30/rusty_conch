@@ -386,21 +386,35 @@ async fn connect_for_tunnel(
 
     log::debug!("connect_for_tunnel: effective_proxy={effective_proxy:?}");
 
+    let connect_timeout = std::time::Duration::from_secs(15);
+
     let mut session = if let Some(proxy_cmd) = &effective_proxy {
         log::debug!("connect_for_tunnel: connecting via proxy command: {proxy_cmd}");
-        connect_tunnel_via_proxy(proxy_cmd, &server.host, server.port, config, handler).await.map_err(|e| {
-            log::error!("connect_for_tunnel: proxy connection failed: {e}");
-            e
-        })?
+        match tokio::time::timeout(connect_timeout, connect_tunnel_via_proxy(proxy_cmd, &server.host, server.port, config, handler)).await {
+            Ok(Ok(session)) => session,
+            Ok(Err(e)) => {
+                log::error!("connect_for_tunnel: proxy connection failed: {e}");
+                return Err(e);
+            }
+            Err(_) => {
+                log::error!("connect_for_tunnel: proxy connection timed out after {connect_timeout:?}");
+                return Err(format!("Connection via proxy timed out after {}s", connect_timeout.as_secs()));
+            }
+        }
     } else {
         let addr = format!("{}:{}", server.host, server.port);
         log::debug!("connect_for_tunnel: direct TCP connect to {addr}");
-        client::connect(config, &addr, handler)
-            .await
-            .map_err(|e| {
+        match tokio::time::timeout(connect_timeout, client::connect(config, &addr, handler)).await {
+            Ok(Ok(session)) => session,
+            Ok(Err(e)) => {
                 log::error!("connect_for_tunnel: direct connection failed: {e}");
-                format!("Connection failed: {e}")
-            })?
+                return Err(format!("Connection failed: {e}"));
+            }
+            Err(_) => {
+                log::error!("connect_for_tunnel: connection timed out after {connect_timeout:?} to {addr}");
+                return Err(format!("Connection timed out after {}s to {addr}", connect_timeout.as_secs()));
+            }
+        }
     };
 
     log::debug!("connect_for_tunnel: SSH transport established, starting authentication");
