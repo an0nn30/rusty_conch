@@ -100,8 +100,13 @@
     if (!resizeHandleEl) return;
     let dragging = false, startX = 0, startWidth = 0;
 
-    resizeHandleEl.addEventListener('mousedown', (e) => {
+    // Prevent native drag-and-drop from hijacking the resize gesture.
+    resizeHandleEl.addEventListener('dragstart', (e) => e.preventDefault());
+    resizeHandleEl.style.touchAction = 'none';
+
+    resizeHandleEl.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+      resizeHandleEl.setPointerCapture(e.pointerId);
       dragging = true;
       startX = e.clientX;
       startWidth = panelEl.offsetWidth;
@@ -109,15 +114,16 @@
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
     });
-    window.addEventListener('mousemove', (e) => {
+    resizeHandleEl.addEventListener('pointermove', (e) => {
       if (!dragging) return;
       const delta = e.clientX - startX; // left panel: drag right = wider
       const newWidth = Math.max(200, Math.min(600, startWidth + delta));
       panelEl.style.width = newWidth + 'px';
       if (fitActiveTabFn) fitActiveTabFn();
     });
-    window.addEventListener('mouseup', () => {
+    resizeHandleEl.addEventListener('pointerup', (e) => {
       if (!dragging) return;
+      resizeHandleEl.releasePointerCapture(e.pointerId);
       dragging = false;
       resizeHandleEl.classList.remove('dragging');
       document.body.style.cursor = '';
