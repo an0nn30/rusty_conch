@@ -57,8 +57,8 @@
       <div class="fp-pane-container">
         <div class="fp-pane" id="fp-remote"></div>
         <div class="fp-transfer-bar">
-          <button class="fp-transfer-btn" id="fp-download" title="Download selected">&#8595; Download</button>
-          <button class="fp-transfer-btn" id="fp-upload" title="Upload selected">&#8593; Upload</button>
+          <button class="fp-transfer-btn" id="fp-download" title="Download selected file from remote to local"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px"><path d="m 2.001 8.211 1.386 -1.385 3.635 3.635 -0.021 -8.461 h 2 l 0.021 8.461 3.634 -3.635 1.385 1.385 -6.041 6.001 z"/></svg></button>
+          <button class="fp-transfer-btn" id="fp-upload" title="Upload selected file from local to remote"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px"><path d="m 2.001 7.789 1.386 1.385 3.635 -3.635 -0.021 8.461 h 2 l 0.021 -8.461 3.634 3.635 1.385 -1.385 -6.041 -6.001 z"/></svg></button>
         </div>
         <div class="fp-pane" id="fp-local"></div>
       </div>

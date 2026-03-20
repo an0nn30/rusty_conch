@@ -555,8 +555,9 @@
     }
     .ssh-session-node {
       display: flex; align-items: center; gap: 6px;
-      padding: 3px 10px 3px 14px; cursor: default;
+      padding: 3px 10px 3px 14px; cursor: pointer;
     }
+    .ssh-session-node:hover { background: var(--input-bg); }
     .ssh-session-dot {
       width: 6px; height: 6px; border-radius: 50%; background: var(--green); flex-shrink: 0;
     }
@@ -940,8 +941,8 @@
         r.setProperty('--blue', tc.blue);
         r.setProperty('--cyan', tc.cyan);
         r.setProperty('--magenta', tc.magenta);
-        r.setProperty('--input-bg', tc.panel_bg);
-        r.setProperty('--hover-bg', tc.panel_bg);
+        r.setProperty('--input-bg', tc.input_bg);
+        r.setProperty('--hover-bg', tc.input_bg);
         document.body.style.background = tc.background;
       } catch (e) {
         console.warn('Failed to load theme colors:', e);
@@ -1762,6 +1763,8 @@
           r.setProperty('--tab-bar-bg', tc.tab_bar_bg);
           r.setProperty('--tab-border', tc.tab_border);
           r.setProperty('--active-highlight', tc.active_highlight);
+          r.setProperty('--input-bg', tc.input_bg);
+          r.setProperty('--hover-bg', tc.input_bg);
           r.setProperty('--red', tc.red);
           r.setProperty('--green', tc.green);
           r.setProperty('--yellow', tc.yellow);
