@@ -145,6 +145,12 @@
       background: var(--tab-border);
       margin: 4px 0;
     }
+    .titlebar-submenu-parent { position: relative; }
+    .titlebar-submenu {
+      display: none; position: absolute;
+      left: 100%; top: 0;
+    }
+    .titlebar-submenu-parent:hover > .titlebar-submenu { display: block; }
 
     #tabbar {
       height: 0;

@@ -21,6 +21,11 @@
           { id: 'new-tab', label: 'New Tab', shortcut: `${ctrl}+T` },
           { id: 'new-window', label: 'New Window', shortcut: `${ctrl}+Shift+N` },
           { type: 'separator' },
+          { label: 'SSH Manager', submenu: [
+            { id: 'ssh-export', label: 'Export' },
+            { id: 'ssh-import', label: 'Import' },
+          ]},
+          { type: 'separator' },
           { id: 'close-tab', label: 'Close Tab', shortcut: `${ctrl}+W` },
           { id: 'close-window', label: 'Close Window' },
         ]
@@ -208,6 +213,31 @@
         const sep = document.createElement('div');
         sep.className = 'titlebar-dropdown-sep';
         dropdown.appendChild(sep);
+        continue;
+      }
+      if (item.submenu) {
+        const row = document.createElement('div');
+        row.className = 'titlebar-dropdown-item titlebar-submenu-parent';
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'titlebar-dropdown-label';
+        labelSpan.textContent = item.label;
+        row.appendChild(labelSpan);
+        const arrow = document.createElement('span');
+        arrow.className = 'titlebar-dropdown-shortcut';
+        arrow.textContent = '\u25B8';
+        row.appendChild(arrow);
+
+        const sub = document.createElement('div');
+        sub.className = 'titlebar-dropdown titlebar-submenu';
+        for (const si of item.submenu) {
+          const sr = document.createElement('div');
+          sr.className = 'titlebar-dropdown-item';
+          sr.textContent = si.label;
+          sr.addEventListener('click', () => { closeAllMenus(); handleItemClick(si.id); });
+          sub.appendChild(sr);
+        }
+        row.appendChild(sub);
+        dropdown.appendChild(row);
         continue;
       }
       const row = document.createElement('div');
