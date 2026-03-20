@@ -454,20 +454,360 @@
       if (gi < groups.length - 1) addDivider(c);
     }
   }
+  // --- Shared control helpers ---
+
+  function makeInput(type, value, opts = {}) {
+    const input = document.createElement('input');
+    input.type = type;
+    input.className = 'settings-input';
+    input.value = value ?? '';
+    if (opts.placeholder) input.placeholder = opts.placeholder;
+    if (opts.step) input.step = opts.step;
+    if (opts.min !== undefined) input.min = opts.min;
+    if (opts.max !== undefined) input.max = opts.max;
+    if (opts.style) input.style.cssText = opts.style;
+    return input;
+  }
+
+  function makeToggleGroup(options, activeValue, onChange) {
+    const group = document.createElement('div');
+    group.className = 'settings-toggle-group';
+    for (const opt of options) {
+      const btn = document.createElement('div');
+      btn.className = 'settings-toggle' + (opt.value === activeValue ? ' active' : '');
+      btn.textContent = opt.label;
+      btn.addEventListener('click', () => {
+        onChange(opt.value);
+        for (const child of group.children) child.classList.remove('active');
+        btn.classList.add('active');
+      });
+      group.appendChild(btn);
+    }
+    return group;
+  }
+
+  function makeSwitch(checked, onChange) {
+    const label = document.createElement('label');
+    label.className = 'settings-switch';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = checked;
+    cb.addEventListener('change', () => onChange(cb.checked));
+    const slider = document.createElement('span');
+    slider.className = 'settings-switch-slider';
+    label.appendChild(cb);
+    label.appendChild(slider);
+    return label;
+  }
+
+  // --- Terminal section ---
+
   function renderTerminal(c) {
-    c.innerHTML = '<h3>Terminal</h3><p style="color:var(--dim-fg)">Coming soon...</p>';
+    const h = document.createElement('h3');
+    h.textContent = 'Terminal';
+    c.appendChild(h);
+
+    // Sub-group: Font
+    addSectionLabel(c, 'Font');
+
+    const fontFamilyInput = makeInput('text', pendingSettings.terminal.font.normal.family);
+    fontFamilyInput.addEventListener('input', () => {
+      pendingSettings.terminal.font.normal.family = fontFamilyInput.value;
+    });
+    addRow(c, 'Font Family', null, fontFamilyInput);
+
+    const fontSizeInput = makeInput('number', pendingSettings.terminal.font.size);
+    fontSizeInput.addEventListener('input', () => {
+      const v = parseFloat(fontSizeInput.value);
+      if (!isNaN(v)) pendingSettings.terminal.font.size = v;
+    });
+    addRow(c, 'Font Size', null, fontSizeInput);
+
+    const offsetXInput = makeInput('number', pendingSettings.terminal.font.offset.x, { step: '0.5' });
+    offsetXInput.addEventListener('input', () => {
+      const v = parseFloat(offsetXInput.value);
+      if (!isNaN(v)) pendingSettings.terminal.font.offset.x = v;
+    });
+    addRow(c, 'Font Offset X', null, offsetXInput);
+
+    const offsetYInput = makeInput('number', pendingSettings.terminal.font.offset.y, { step: '0.5' });
+    offsetYInput.addEventListener('input', () => {
+      const v = parseFloat(offsetYInput.value);
+      if (!isNaN(v)) pendingSettings.terminal.font.offset.y = v;
+    });
+    addRow(c, 'Font Offset Y', null, offsetYInput);
+
+    addDivider(c);
+
+    // Sub-group: Scrolling
+    addSectionLabel(c, 'Scrolling');
+
+    const scrollInput = makeInput('number', pendingSettings.terminal.scroll_sensitivity, {
+      step: '0.05', min: 0, max: 1,
+    });
+    scrollInput.addEventListener('input', () => {
+      const v = parseFloat(scrollInput.value);
+      if (!isNaN(v)) pendingSettings.terminal.scroll_sensitivity = v;
+    });
+    addRow(c, 'Scroll Sensitivity', '0.0 to 1.0 (tuned for macOS trackpads)', scrollInput);
   }
+
+  // --- Shell section ---
+
   function renderShell(c) {
-    c.innerHTML = '<h3>Shell</h3><p style="color:var(--dim-fg)">Coming soon...</p>';
+    const h = document.createElement('h3');
+    h.textContent = 'Shell';
+    c.appendChild(h);
+
+    // Sub-group: Program
+    addSectionLabel(c, 'Program');
+
+    const shellInput = makeInput('text', pendingSettings.terminal.shell.program, {
+      placeholder: 'Uses $SHELL login shell',
+    });
+    shellInput.addEventListener('input', () => {
+      pendingSettings.terminal.shell.program = shellInput.value;
+    });
+    addRow(c, 'Shell Program', null, shellInput);
+
+    const argsInput = makeInput('text', (pendingSettings.terminal.shell.args || []).join(', '));
+    argsInput.addEventListener('input', () => {
+      pendingSettings.terminal.shell.args = argsInput.value
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+    });
+    addRow(c, 'Arguments', 'Comma-separated (e.g. -l, -c, echo ok)', argsInput);
+
+    addDivider(c);
+
+    // Sub-group: Environment Variables
+    addSectionLabel(c, 'Environment Variables');
+
+    const envContainer = document.createElement('div');
+    envContainer.className = 'settings-env-container';
+    c.appendChild(envContainer);
+
+    function renderEnvRows() {
+      envContainer.innerHTML = '';
+      const env = pendingSettings.terminal.env || {};
+      const keys = Object.keys(env);
+
+      for (const oldKey of keys) {
+        const row = document.createElement('div');
+        row.className = 'settings-env-row';
+
+        const keyInput = makeInput('text', oldKey, { style: 'width:120px;' });
+        row.appendChild(keyInput);
+
+        const eqLabel = document.createElement('span');
+        eqLabel.className = 'settings-env-eq';
+        eqLabel.textContent = '=';
+        row.appendChild(eqLabel);
+
+        const valInput = makeInput('text', env[oldKey], { style: 'flex:1;' });
+        row.appendChild(valInput);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'ssh-form-btn settings-env-remove';
+        removeBtn.textContent = 'X';
+        removeBtn.addEventListener('click', () => {
+          delete pendingSettings.terminal.env[oldKey];
+          renderEnvRows();
+        });
+        row.appendChild(removeBtn);
+
+        // When key changes, rename the entry in the env object
+        keyInput.addEventListener('change', () => {
+          const newKey = keyInput.value.trim();
+          const val = pendingSettings.terminal.env[oldKey];
+          delete pendingSettings.terminal.env[oldKey];
+          if (newKey) pendingSettings.terminal.env[newKey] = val;
+          renderEnvRows();
+        });
+
+        // When value changes, update in place
+        valInput.addEventListener('input', () => {
+          const currentKey = keyInput.value.trim() || oldKey;
+          pendingSettings.terminal.env[currentKey] = valInput.value;
+        });
+
+        envContainer.appendChild(row);
+      }
+
+      // Add variable button
+      const addBtn = document.createElement('button');
+      addBtn.className = 'ssh-form-btn settings-env-add';
+      addBtn.textContent = '+ Add Variable';
+      addBtn.addEventListener('click', () => {
+        if (!pendingSettings.terminal.env) pendingSettings.terminal.env = {};
+        // Find a unique empty key name
+        let newKey = '';
+        let i = 0;
+        while (Object.prototype.hasOwnProperty.call(pendingSettings.terminal.env, newKey)) {
+          i++;
+          newKey = 'VAR_' + i;
+        }
+        pendingSettings.terminal.env[newKey] = '';
+        renderEnvRows();
+      });
+      envContainer.appendChild(addBtn);
+
+      // Note about TERM / COLORTERM
+      const note = document.createElement('div');
+      note.className = 'settings-row-desc';
+      note.style.marginTop = '8px';
+      note.textContent = 'TERM and COLORTERM are always set to xterm-256color and truecolor.';
+      envContainer.appendChild(note);
+    }
+
+    renderEnvRows();
   }
+
+  // --- Cursor section ---
+
   function renderCursor(c) {
-    c.innerHTML = '<h3>Cursor</h3><p style="color:var(--dim-fg)">Coming soon...</p>';
+    const h = document.createElement('h3');
+    h.textContent = 'Cursor';
+    c.appendChild(h);
+
+    // Sub-group: Style
+    addSectionLabel(c, 'Style');
+
+    const shapeToggle = makeToggleGroup(
+      [
+        { label: 'Block', value: 'Block' },
+        { label: 'Underline', value: 'Underline' },
+        { label: 'Beam', value: 'Beam' },
+      ],
+      pendingSettings.terminal.cursor.style.shape,
+      (val) => { pendingSettings.terminal.cursor.style.shape = val; }
+    );
+    addRow(c, 'Shape', null, shapeToggle);
+
+    const blinkSwitch = makeSwitch(
+      pendingSettings.terminal.cursor.style.blinking,
+      (val) => { pendingSettings.terminal.cursor.style.blinking = val; }
+    );
+    addRow(c, 'Blinking', null, blinkSwitch);
+
+    addDivider(c);
+
+    // Sub-group: Vi Mode Override
+    addSectionLabel(c, 'Vi Mode Override');
+
+    const viNote = document.createElement('div');
+    viNote.className = 'settings-row-desc';
+    viNote.style.marginBottom = '8px';
+    viNote.textContent = 'Optional cursor style when vi mode is active in your shell.';
+    c.appendChild(viNote);
+
+    const viStyle = pendingSettings.terminal.cursor.vi_mode_style;
+    const viActiveShape = viStyle ? viStyle.shape : null;
+
+    // Container for vi mode blinking toggle (shown/hidden based on shape)
+    const viBlinkRow = document.createElement('div');
+    viBlinkRow.id = 'vi-blink-row';
+
+    const viShapeToggle = makeToggleGroup(
+      [
+        { label: 'None', value: null },
+        { label: 'Block', value: 'Block' },
+        { label: 'Underline', value: 'Underline' },
+        { label: 'Beam', value: 'Beam' },
+      ],
+      viActiveShape,
+      (val) => {
+        if (val === null) {
+          pendingSettings.terminal.cursor.vi_mode_style = null;
+          viBlinkRow.style.display = 'none';
+        } else {
+          if (!pendingSettings.terminal.cursor.vi_mode_style) {
+            pendingSettings.terminal.cursor.vi_mode_style = { shape: val, blinking: false };
+          } else {
+            pendingSettings.terminal.cursor.vi_mode_style.shape = val;
+          }
+          viBlinkRow.style.display = '';
+        }
+      }
+    );
+    addRow(c, 'Shape', null, viShapeToggle);
+
+    // Vi mode blinking toggle
+    const viBlinkSwitch = makeSwitch(
+      viStyle ? viStyle.blinking : false,
+      (val) => {
+        if (pendingSettings.terminal.cursor.vi_mode_style) {
+          pendingSettings.terminal.cursor.vi_mode_style.blinking = val;
+        }
+      }
+    );
+    viBlinkRow.style.display = viStyle ? '' : 'none';
+    addRow(viBlinkRow, 'Blinking', null, viBlinkSwitch);
+    c.appendChild(viBlinkRow);
   }
+
+  // --- Plugins section (placeholder) ---
+
   function renderPlugins(c) {
     c.innerHTML = '<h3>Plugins</h3><p style="color:var(--dim-fg)">Coming soon...</p>';
   }
+
+  // --- Advanced section ---
+
   function renderAdvanced(c) {
-    c.innerHTML = '<h3>Advanced</h3><p style="color:var(--dim-fg)">Coming soon...</p>';
+    const h = document.createElement('h3');
+    h.textContent = 'Advanced';
+    c.appendChild(h);
+
+    // Sub-group: Initial Window Size
+    addSectionLabel(c, 'Initial Window Size');
+
+    const colsInput = makeInput('number', pendingSettings.window.dimensions.columns);
+    colsInput.addEventListener('input', () => {
+      const v = parseInt(colsInput.value, 10);
+      if (!isNaN(v)) pendingSettings.window.dimensions.columns = v;
+    });
+    addRow(c, 'Columns', 'Width in character cells (0 = system default)', colsInput);
+
+    const linesInput = makeInput('number', pendingSettings.window.dimensions.lines);
+    linesInput.addEventListener('input', () => {
+      const v = parseInt(linesInput.value, 10);
+      if (!isNaN(v)) pendingSettings.window.dimensions.lines = v;
+    });
+    addRow(c, 'Lines', 'Height in character cells (0 = system default)', linesInput);
+
+    addDivider(c);
+
+    // Sub-group: UI Chrome Font Sizes
+    addSectionLabel(c, 'UI Chrome Font Sizes');
+
+    const fontNote = document.createElement('div');
+    fontNote.className = 'settings-row-desc';
+    fontNote.style.marginBottom = '8px';
+    fontNote.textContent = 'Fine-tune text sizes for different UI elements (in points)';
+    c.appendChild(fontNote);
+
+    const smallInput = makeInput('number', pendingSettings.conch.ui.font.small, { step: '0.5' });
+    smallInput.addEventListener('input', () => {
+      const v = parseFloat(smallInput.value);
+      if (!isNaN(v)) pendingSettings.conch.ui.font.small = v;
+    });
+    addRow(c, 'Small', 'Tab titles, badges, compact labels', smallInput);
+
+    const listInput = makeInput('number', pendingSettings.conch.ui.font.list, { step: '0.5' });
+    listInput.addEventListener('input', () => {
+      const v = parseFloat(listInput.value);
+      if (!isNaN(v)) pendingSettings.conch.ui.font.list = v;
+    });
+    addRow(c, 'List', 'Tree nodes, table rows, file explorer', listInput);
+
+    const normalInput = makeInput('number', pendingSettings.conch.ui.font.normal, { step: '0.5' });
+    normalInput.addEventListener('input', () => {
+      const v = parseFloat(normalInput.value);
+      if (!isNaN(v)) pendingSettings.conch.ui.font.normal = v;
+    });
+    addRow(c, 'Normal', 'Body text, buttons, inputs, dialogs', normalInput);
   }
 
   async function applySettings() {
