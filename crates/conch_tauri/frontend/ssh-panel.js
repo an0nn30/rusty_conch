@@ -36,9 +36,10 @@
       <div class="ssh-panel-header">
         <span class="ssh-panel-title">Sessions</span>
         <div class="ssh-panel-actions">
-          <button class="ssh-icon-btn" id="ssh-add-server" title="New Connection">+</button>
-          <button class="ssh-icon-btn" id="ssh-add-folder" title="New Folder">&#128193;</button>
-          <button class="ssh-icon-btn" id="ssh-refresh" title="Refresh">&#8635;</button>
+          <div style="position:relative">
+            <button class="ssh-icon-btn" id="ssh-add-new" title="New..."><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px"><path d="M 4 7 h 8 v 2 H 4 Z M 7 4 h 2 v 8 H 7 Z"/></svg></button>
+          </div>
+          <button class="ssh-icon-btn" id="ssh-refresh" title="Refresh"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px"><path d="m 7.972 0 v 2 c -3.314 0 -6 2.686 -6 6 0 3.314 2.686 6 6 6 3.28 0 5.94 -2.633 5.994 -5.9 0.004 -0.033 0.006 -0.066 0.006 -0.1 0 -0.006 -0.004 -0.011 -0.004 -0.018 h -1.992 c 0 0.006 -0.004 0.011 -0.004 0.018 0 2.209 -1.791 4 -4 4 -2.209 0 -4 -1.791 -4 -4 0 -2.209 1.791 -4 4 -4 v 2 l 3.494 -3.018 z"/></svg></button>
         </div>
       </div>
       <div class="ssh-quick-connect">
@@ -120,8 +121,10 @@
     });
 
     // Buttons
-    panelEl.querySelector('#ssh-add-server').addEventListener('click', () => showConnectionForm());
-    panelEl.querySelector('#ssh-add-folder').addEventListener('click', showAddFolderDialog);
+    panelEl.querySelector('#ssh-add-new').addEventListener('click', (e) => {
+      e.stopPropagation();
+      showNewMenu(panelEl.querySelector('#ssh-add-new'));
+    });
     panelEl.querySelector('#ssh-refresh').addEventListener('click', refreshAll);
 
     // Auth prompts
@@ -167,6 +170,16 @@
     if (isHidden()) showPanel();
     quickConnectEl.focus();
     quickConnectEl.select();
+  }
+
+  function showNewMenu(anchorBtn) {
+    const rect = anchorBtn.getBoundingClientRect();
+    const fakeEvent = { clientX: rect.left, clientY: rect.bottom + 4 };
+    showContextMenu(fakeEvent, [
+      { label: 'New Connection', action: () => showConnectionForm() },
+      { label: 'New Folder', action: () => showAddFolderDialog() },
+      { label: 'New Tunnel', action: () => { if (window.tunnelManager) window.tunnelManager.show(); } },
+    ]);
   }
 
   function handleGlobalKeydown(e) {
@@ -530,8 +543,7 @@
         const headerRow = document.createElement('div');
         headerRow.className = 'ssh-tunnels-header';
         headerRow.innerHTML =
-          `<span class="ssh-section-header-inline">SSH Sessions</span>` +
-          `<button class="ssh-icon-btn ssh-icon-btn-sm" id="ssh-add-server-inline" title="New Connection">+</button>`;
+          `<span class="ssh-section-header-inline">SSH Sessions</span>`;
         frag.appendChild(headerRow);
       }
 
@@ -554,12 +566,6 @@
 
     serverListEl.innerHTML = '';
     serverListEl.appendChild(frag);
-
-    // Wire the inline add button if present.
-    const addBtn = serverListEl.querySelector('#ssh-add-server-inline');
-    if (addBtn) {
-      addBtn.addEventListener('click', () => showConnectionForm());
-    }
   }
 
   function makeSectionHeader(text) {
@@ -675,8 +681,7 @@
     const headerRow = document.createElement('div');
     headerRow.className = 'ssh-tunnels-header';
     headerRow.innerHTML =
-      `<span class="ssh-section-header-inline">Tunnels</span>` +
-      `<button class="ssh-icon-btn ssh-icon-btn-sm" id="ssh-add-tunnel" title="New Tunnel">+</button>`;
+      `<span class="ssh-section-header-inline">Tunnels</span>`;
     frag.appendChild(headerRow);
 
     for (const t of tunnels) {
@@ -691,11 +696,6 @@
     }
 
     tunnelsSectionEl.appendChild(frag);
-
-    // Wire add button
-    tunnelsSectionEl.querySelector('#ssh-add-tunnel').addEventListener('click', () => {
-      if (window.tunnelManager) window.tunnelManager.show();
-    });
   }
 
   function createTunnelNode(tunnel) {
@@ -713,13 +713,16 @@
     }
 
     const isConnected = status === 'active' || status === 'connecting';
-    const btnLabel = isConnected ? 'Disconnect' : 'Connect';
+    const btnIcon = isConnected
+      ? '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px"><path d="M 2 2 v 12 h 12 v -12 z"/></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px"><path d="M 3 2 v 12 l 11 -6 z"/></svg>';
+    const btnTitle = isConnected ? 'Disconnect' : 'Connect';
 
     el.innerHTML =
       `<span class="tunnel-dot ${dotClass}"></span>` +
       `<span class="ssh-tunnel-label">${esc(tunnel.label)}</span>` +
       (errorMsg ? `<button class="ssh-tunnel-btn ssh-tunnel-edit-btn">Edit</button>` : '') +
-      `<button class="ssh-tunnel-btn">${btnLabel}</button>`;
+      `<button class="ssh-tunnel-btn" title="${btnTitle}">${errorMsg ? 'Error' : btnIcon}</button>`;
 
     if (errorMsg) {
       el.title = 'Error: ' + errorMsg;

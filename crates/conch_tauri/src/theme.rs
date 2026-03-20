@@ -20,6 +20,7 @@ pub(crate) struct ThemeColors {
     pub panel_bg: String,
     pub tab_bar_bg: String,
     pub tab_border: String,
+    pub input_bg: String,
     pub active_highlight: String,
 }
 
@@ -74,6 +75,7 @@ pub(crate) fn resolve_theme_colors(config: &UserConfig) -> ThemeColors {
         panel_bg: darken(bg, 8),
         tab_bar_bg: darken(bg, 14),
         tab_border: lighten(bg, 18),
+        input_bg: lighten(bg, 10),
         active_highlight: lighten(bg, 28),
     }
 }
