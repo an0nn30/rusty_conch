@@ -67,7 +67,7 @@ static NEXT_WINDOW_ID: AtomicU32 = AtomicU32::new(1);
 
 struct TauriState {
     ptys: Arc<Mutex<HashMap<String, PtyBackend>>>,
-    config: UserConfig,
+    config: Mutex<UserConfig>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -113,10 +113,12 @@ fn spawn_shell(
 ) -> Result<(), String> {
     let window_label = window.label().to_string();
     let key = session_key(&window_label, tab_id);
-    let (shell, shell_args) = resolved_shell(&state.config.terminal.shell);
+    let cfg = state.config.lock();
+    let (shell, shell_args) = resolved_shell(&cfg.terminal.shell);
 
-    let backend = PtyBackend::new(cols, rows, shell, shell_args, &state.config.terminal.env)
+    let backend = PtyBackend::new(cols, rows, shell, shell_args, &cfg.terminal.env)
         .map_err(|e| format!("Failed to spawn PTY: {e}"))?;
+    drop(cfg);
 
     let reader = backend
         .try_clone_reader()
@@ -330,10 +332,11 @@ fn build_app_menu_with_plugins<R: tauri::Runtime>(
 /// Return general app config the frontend needs.
 #[tauri::command]
 fn get_app_config(state: tauri::State<'_, TauriState>) -> serde_json::Value {
-    let dec = format!("{:?}", state.config.window.decorations).to_lowercase();
+    let cfg = state.config.lock();
+    let dec = format!("{:?}", cfg.window.decorations).to_lowercase();
     serde_json::json!({
-        "appearance_mode": format!("{:?}", state.config.colors.appearance_mode).to_lowercase(),
-        "zen_mode_shortcut": state.config.conch.keyboard.zen_mode,
+        "appearance_mode": format!("{:?}", cfg.colors.appearance_mode).to_lowercase(),
+        "zen_mode_shortcut": cfg.conch.keyboard.zen_mode,
         "decorations": dec,
         "platform": std::env::consts::OS,
     })
@@ -352,7 +355,8 @@ fn get_home_dir() -> String {
 
 #[tauri::command]
 fn get_theme_colors(state: tauri::State<'_, TauriState>) -> theme::ThemeColors {
-    theme::resolve_theme_colors(&state.config)
+    let cfg = state.config.lock();
+    theme::resolve_theme_colors(&cfg)
 }
 
 // ---------------------------------------------------------------------------
@@ -370,8 +374,9 @@ struct TerminalDisplayConfig {
 
 #[tauri::command]
 fn get_terminal_config(state: tauri::State<'_, TauriState>) -> TerminalDisplayConfig {
-    let font = state.config.resolved_terminal_font();
-    let cursor = &state.config.terminal.cursor.style;
+    let cfg = state.config.lock();
+    let font = cfg.resolved_terminal_font();
+    let cursor = &cfg.terminal.cursor.style;
     let cursor_style = match cursor.shape.to_lowercase().as_str() {
         "block" => "block",
         "underline" => "underline",
@@ -385,7 +390,7 @@ fn get_terminal_config(state: tauri::State<'_, TauriState>) -> TerminalDisplayCo
         font_size: font.size as f64,
         cursor_style,
         cursor_blink: cursor.blinking,
-        scroll_sensitivity: state.config.terminal.scroll_sensitivity as f64,
+        scroll_sensitivity: cfg.terminal.scroll_sensitivity as f64,
     }
 }
 
@@ -420,7 +425,8 @@ struct KeyboardShortcuts {
 
 #[tauri::command]
 fn get_keyboard_shortcuts(state: tauri::State<'_, TauriState>) -> KeyboardShortcuts {
-    let kb = &state.config.conch.keyboard;
+    let cfg = state.config.lock();
+    let kb = &cfg.conch.keyboard;
     KeyboardShortcuts {
         toggle_right_panel: kb.toggle_right_panel.clone(),
         toggle_left_panel: kb.toggle_left_panel.clone(),
@@ -794,7 +800,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
         .plugin(tauri_plugin_dialog::init())
         .manage(TauriState {
             ptys: Arc::new(Mutex::new(HashMap::new())),
-            config,
+            config: Mutex::new(config),
         })
         .manage(Arc::clone(&remote_state))
         .manage(Arc::clone(&plugin_state))
@@ -1117,7 +1123,7 @@ mod tests {
     fn tauri_state_default_has_no_pty() {
         let state = TauriState {
             ptys: Arc::new(Mutex::new(HashMap::new())),
-            config: UserConfig::default(),
+            config: Mutex::new(UserConfig::default()),
         };
         assert!(state.ptys.lock().is_empty());
     }
