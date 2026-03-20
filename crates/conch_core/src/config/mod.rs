@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 pub struct UserConfig {
     pub window: WindowConfig,
     /// Legacy top-level `[font]` section.  Prefer `[terminal.font]` instead.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub font: FontConfig,
     pub colors: ColorsConfig,
     pub terminal: TerminalConfig,
@@ -179,6 +179,18 @@ mod tests {
     fn default_font_when_neither_set() {
         let cfg = UserConfig::default();
         assert_eq!(cfg.resolved_terminal_font().size, FontConfig::default().size);
+    }
+
+    #[test]
+    fn serialized_config_omits_legacy_font_section() {
+        let config = UserConfig::default();
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        // The legacy [font] section should not appear in serialized output.
+        // Only [terminal.font] should be present.
+        assert!(
+            !toml_str.contains("\n[font]\n"),
+            "Legacy [font] section should not appear in serialized output, got:\n{toml_str}"
+        );
     }
 
     #[test]

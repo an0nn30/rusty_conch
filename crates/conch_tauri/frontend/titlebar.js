@@ -26,6 +26,8 @@
             { id: 'ssh-import', label: 'Import' },
           ]},
           { type: 'separator' },
+          { id: 'settings', label: 'Settings\u2026', shortcut: `${ctrl}+,` },
+          { type: 'separator' },
           { id: 'close-tab', label: 'Close Tab', shortcut: `${ctrl}+W` },
           { id: 'close-window', label: 'Close Window' },
         ]
@@ -54,8 +56,6 @@
       },
       {
         label: 'Tools', items: [
-          { id: 'plugin-manager', label: 'Plugin Manager\u2026' },
-          { type: 'separator' },
           { id: 'manage-tunnels', label: 'Manage SSH Tunnels\u2026', shortcut: `${ctrl}+Shift+T` },
         ]
       },

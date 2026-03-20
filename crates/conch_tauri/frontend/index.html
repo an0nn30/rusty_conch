@@ -790,6 +790,87 @@
     #app.tabs-visible + #status {
       top: 50px;
     }
+
+    /* -- Settings dialog -- */
+    .settings-dialog { width: 750px; max-width: 95vw; max-height: 80vh; display: flex; flex-direction: column; }
+    .settings-body { display: flex; flex: 1; overflow: hidden; min-height: 400px; }
+    .settings-sidebar {
+      width: 180px; border-right: 1px solid var(--tab-border);
+      padding: 12px 0; overflow-y: auto; flex-shrink: 0;
+    }
+    .settings-sidebar-group {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      color: var(--dim-fg); padding: 8px 14px 4px; letter-spacing: 0.5px;
+    }
+    .settings-sidebar-item {
+      padding: 5px 14px 5px 22px; cursor: pointer;
+      color: var(--text-secondary); font-size: 12px;
+    }
+    .settings-sidebar-item:hover { background: var(--input-bg); }
+    .settings-sidebar-item.active { background: var(--active-highlight); color: var(--fg); font-weight: 600; }
+    .settings-content { flex: 1; padding: 16px 20px; overflow-y: auto; }
+    .settings-content h3 { font-size: 14px; font-weight: 600; margin: 0 0 14px; color: var(--fg); }
+    .settings-section-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.5px; color: var(--dim-fg); margin-bottom: 4px;
+    }
+    .settings-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; gap: 12px; }
+    .settings-row-label { font-size: 12px; color: var(--fg); }
+    .settings-row-desc { font-size: 10px; color: var(--dim-fg); margin-top: 2px; }
+    .settings-divider { border: none; border-top: 1px solid var(--tab-border); margin: 12px 0; }
+    .settings-input {
+      padding: 6px 8px; background: var(--input-bg); border: 1px solid var(--tab-border);
+      border-radius: 5px; color: var(--fg); font: 13px/1.3 "JetBrains Mono", monospace;
+      outline: none;
+    }
+    .settings-input:focus { border-color: var(--dim-fg); }
+    .settings-select {
+      padding: 6px 8px; background: var(--input-bg); border: 1px solid var(--tab-border);
+      border-radius: 5px; color: var(--fg); font: 13px/1.3 "JetBrains Mono", monospace;
+      outline: none; -webkit-appearance: none; appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236272a4'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 8px center;
+      padding-right: 24px; cursor: pointer;
+    }
+    .settings-select:focus { border-color: var(--dim-fg); }
+    .settings-toggle-group { display: flex; gap: 0; }
+    .settings-toggle {
+      padding: 5px 12px; border: 1px solid var(--tab-border);
+      background: var(--input-bg); color: var(--text-secondary);
+      font-size: 12px; cursor: pointer; outline: none;
+    }
+    .settings-toggle:first-child { border-radius: 5px 0 0 5px; }
+    .settings-toggle:last-child { border-radius: 0 5px 5px 0; }
+    .settings-toggle + .settings-toggle { border-left: none; }
+    .settings-toggle.active { background: var(--active-highlight); color: var(--fg); font-weight: 600; }
+    .settings-switch {
+      position: relative; display: inline-block; width: 34px; height: 18px;
+    }
+    .settings-switch input { opacity: 0; width: 0; height: 0; }
+    .settings-switch .slider {
+      position: absolute; inset: 0; background: var(--tab-border);
+      border-radius: 9px; cursor: pointer; transition: background 0.2s;
+    }
+    .settings-switch .slider::before {
+      content: ''; position: absolute; left: 2px; top: 2px;
+      width: 14px; height: 14px; background: var(--fg);
+      border-radius: 50%; transition: transform 0.2s;
+    }
+    .settings-switch input:checked + .slider { background: var(--blue, #7aa2f7); }
+    .settings-switch input:checked + .slider::before { transform: translateX(16px); }
+    .settings-footer {}
+    .settings-shortcut-key {
+      display: inline-block; padding: 2px 6px; border: 1px solid var(--tab-border);
+      border-radius: 3px; background: var(--input-bg); color: var(--fg);
+      font: 11px/1.2 "JetBrains Mono", monospace; min-width: 20px; text-align: center;
+      cursor: pointer; user-select: none;
+    }
+    .settings-shortcut-key:hover { border-color: var(--dim-fg); }
+    .settings-shortcut-key.recording {
+      border-color: var(--blue, #7aa2f7); color: var(--blue, #7aa2f7);
+      animation: shortcut-pulse 1s ease-in-out infinite;
+    }
+    @keyframes shortcut-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
   </style>
 </head>
 <body>
@@ -827,8 +908,8 @@
   <script src="utils.js"></script>
   <script src="titlebar.js"></script>
   <script src="toast.js"></script>
-  <script src="plugin-manager.js"></script>
   <script src="plugin-widgets.js"></script>
+  <script src="settings.js"></script>
   <script src="file-icons.js"></script>
   <script src="files-panel.js"></script>
   <script src="ssh-panel.js"></script>
@@ -1465,9 +1546,9 @@
         });
       }
 
-      // ---- Plugin manager init ----
-      if (window.pluginManager) {
-        window.pluginManager.init({ invoke });
+      // ---- Settings dialog init ----
+      if (window.settings) {
+        window.settings.init({ invoke, listen: listenOnCurrentWindow });
       }
 
       // ---- Plugin widget renderer init ----
@@ -1646,8 +1727,8 @@
           window.sshPanel.focusQuickConnect();
           return;
         }
-        if (action === 'plugin-manager' && window.pluginManager) {
-          window.pluginManager.show();
+        if (action === 'settings') {
+          if (window.settings) window.settings.open();
           return;
         }
         if (action === 'manage-tunnels' && window.tunnelManager) {
