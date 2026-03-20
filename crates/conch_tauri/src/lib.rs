@@ -281,8 +281,21 @@ fn build_app_menu_with_plugins<R: tauri::Runtime>(
         let toggle_left = MenuItem::with_id(app, MENU_TOGGLE_LEFT_PANEL_ID, "Toggle File Explorer", true, Some(&toggle_left_accel))?;
         let toggle_right_accel = config_key_to_accelerator(&keyboard.toggle_right_panel);
         let toggle_right = MenuItem::with_id(app, MENU_TOGGLE_RIGHT_PANEL_ID, "Toggle Sessions Panel", true, Some(&toggle_right_accel))?;
+        let toggle_bottom_accel = config_key_to_accelerator(&keyboard.toggle_bottom_panel);
+        let toggle_bottom = MenuItem::with_id(app, "view.toggle_bottom_panel", "Toggle Bottom Panel", true, Some(&toggle_bottom_accel))?;
         let focus_sessions = MenuItem::with_id(app, MENU_FOCUS_SESSIONS_ID, "Toggle & Focus Sessions", true, Some("CmdOrCtrl+/"))?;
-        let view_menu = Submenu::with_items(app, "View", true, &[&toggle_left, &toggle_right, &PredefinedMenuItem::separator(app)?, &focus_sessions])?;
+        let zen_accel = config_key_to_accelerator(&keyboard.zen_mode);
+        let zen_mode = MenuItem::with_id(app, MENU_ZEN_MODE_ID, "Zen Mode", true, Some(&zen_accel))?;
+        let zoom_in = MenuItem::with_id(app, MENU_ZOOM_IN_ID, "Zoom In", true, Some("CmdOrCtrl+="))?;
+        let zoom_out = MenuItem::with_id(app, MENU_ZOOM_OUT_ID, "Zoom Out", true, Some("CmdOrCtrl+-"))?;
+        let zoom_reset = MenuItem::with_id(app, MENU_ZOOM_RESET_ID, "Reset Zoom", true, Some("CmdOrCtrl+0"))?;
+        let view_menu = Submenu::with_items(app, "View", true, &[
+            &toggle_left, &toggle_right, &toggle_bottom,
+            &PredefinedMenuItem::separator(app)?,
+            &focus_sessions, &zen_mode,
+            &PredefinedMenuItem::separator(app)?,
+            &zoom_in, &zoom_out, &zoom_reset,
+        ])?;
 
         let window_menu = Submenu::with_items(app, "Window", true, &[
             &PredefinedMenuItem::minimize(app, None)?,
