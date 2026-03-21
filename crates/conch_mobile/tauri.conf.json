@@ -1,0 +1,23 @@
+{
+  "productName": "Conch Mobile",
+  "identifier": "com.conch.mobile",
+  "build": {
+    "frontendDist": "frontend-mobile"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Conch",
+        "fullscreen": true,
+        "resizable": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}
