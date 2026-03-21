@@ -581,6 +581,7 @@ name = "conch_mobile"
 version = "2.0.0"
 dependencies = [
  "log",
+ "objc2",
  "serde",
  "serde_json",
  "tauri",
