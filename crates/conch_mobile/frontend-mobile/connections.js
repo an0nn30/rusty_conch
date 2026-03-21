@@ -119,7 +119,8 @@
       window.toast.warn('Quick Connect', 'Enter a host or user@host to connect.');
       return;
     }
-    window.toast.info('Connecting…', target);
+    // Open terminal and connect
+    window.terminalView.connect(target);
   }
 
   exports.connectionsTab = { render };
