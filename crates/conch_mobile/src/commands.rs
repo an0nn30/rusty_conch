@@ -53,11 +53,10 @@ pub async fn ssh_quick_connect(
 ) -> Result<String, String> {
     let (user, host, port) = parse_quick_connect(&spec);
 
-    let auth_method = if password.is_some() {
-        "password".to_string()
-    } else {
-        "key".to_string()
-    };
+    // On mobile, default to password auth for quick connect since there are
+    // no SSH keys on a fresh iOS install. If keys are imported later, the user
+    // can configure saved servers with auth_method = "key".
+    let auth_method = "password".to_string();
 
     let entry = ServerEntry {
         id: uuid::Uuid::new_v4().to_string(),
