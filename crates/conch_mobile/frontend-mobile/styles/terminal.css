@@ -1,0 +1,181 @@
+/* Terminal view — full-screen overlay */
+
+#terminal-view {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  background: var(--bg);
+  flex-direction: column;
+}
+
+#terminal-view.active {
+  display: flex;
+}
+
+/* Session header */
+.terminal-header {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  padding-top: env(safe-area-inset-top, 0px);
+  background: var(--bg-dark);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  min-height: calc(44px + env(safe-area-inset-top, 0px));
+}
+
+.terminal-back-btn {
+  background: none;
+  border: none;
+  color: var(--purple);
+  font-size: 16px;
+  padding: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.terminal-title {
+  flex: 1;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.terminal-disconnect-btn {
+  background: none;
+  border: none;
+  color: var(--red);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px;
+  cursor: pointer;
+}
+
+/* xterm.js container */
+#terminal-container {
+  flex: 1;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+#terminal-container .xterm {
+  height: 100%;
+}
+
+/* Accessory bar */
+.accessory-bar {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--bg-dark);
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+  -webkit-overflow-scrolling: touch;
+}
+
+.accessory-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.accessory-key {
+  padding: 7px 12px;
+  background: var(--card-bg-alt, #44475a);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 13px;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-weight: 500;
+  white-space: nowrap;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  flex-shrink: 0;
+}
+
+.accessory-key:active {
+  background: var(--purple);
+  color: var(--bg);
+}
+
+.accessory-key.sticky {
+  background: var(--purple);
+  color: var(--bg);
+}
+
+/* Auth prompt overlay */
+.auth-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-dialog {
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+  width: 85%;
+  max-width: 340px;
+}
+
+.auth-dialog h3 {
+  color: var(--fg);
+  font-size: 17px;
+  margin-bottom: 8px;
+}
+
+.auth-dialog p {
+  color: var(--fg-dim);
+  font-size: 13px;
+  margin-bottom: 16px;
+  word-break: break-all;
+}
+
+.auth-dialog input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  font-size: 15px;
+  margin-bottom: 16px;
+  outline: none;
+}
+
+.auth-dialog-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.auth-dialog-buttons button {
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+}
+
+.auth-btn-cancel {
+  background: var(--bg);
+  color: var(--fg-dim);
+}
+
+.auth-btn-confirm {
+  background: var(--purple);
+  color: var(--bg);
+}
