@@ -43,6 +43,7 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
+  transition: opacity 0.15s ease;
 }
 
 /* ── Tab bar ──────────────────────────────────────────────── */

@@ -23,17 +23,25 @@
     if (!renderers[tabId]) return;
     activeTab = tabId;
 
-    // Render content
+    // Render content with fade transition
     if (contentEl) {
-      contentEl.innerHTML = '';
-      const page = renderers[tabId]();
-      contentEl.appendChild(page);
-    }
+      contentEl.style.opacity = '0';
+      setTimeout(() => {
+        contentEl.innerHTML = '';
+        const page = renderers[tabId]();
+        contentEl.appendChild(page);
 
-    // Update title
-    const titles = { vault: 'Vault', connections: 'Connections', profile: 'Profile' };
-    const titleEl = document.getElementById('screen-title');
-    if (titleEl) titleEl.textContent = titles[tabId] || tabId;
+        // Update title
+        const titles = { vault: 'Vault', connections: 'Connections', profile: 'Profile' };
+        const titleEl = document.getElementById('screen-title');
+        if (titleEl) titleEl.textContent = titles[tabId] || tabId;
+
+        // Fade in
+        requestAnimationFrame(() => {
+          contentEl.style.opacity = '1';
+        });
+      }, 120);
+    }
   }
 
   /**
