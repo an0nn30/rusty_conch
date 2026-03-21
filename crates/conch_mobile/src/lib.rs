@@ -3,6 +3,7 @@
 #[cfg(target_os = "ios")]
 mod ios_native;
 
+mod callbacks;
 mod state;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
