@@ -13,8 +13,8 @@
     { value: 'ed25519',    label: 'Ed25519 (recommended)', filename: 'id_ed25519' },
     { value: 'ecdsa-p256', label: 'ECDSA P-256',           filename: 'id_ecdsa' },
     { value: 'ecdsa-p384', label: 'ECDSA P-384',           filename: 'id_ecdsa' },
-    { value: 'rsa-2048',   label: 'RSA 2048',              filename: 'id_rsa' },
-    { value: 'rsa-4096',   label: 'RSA 4096',              filename: 'id_rsa' },
+    { value: 'rsa-sha256', label: 'RSA (SHA-256)',           filename: 'id_rsa' },
+    { value: 'rsa-sha512', label: 'RSA (SHA-512)',           filename: 'id_rsa' },
   ];
 
   function init(opts) {

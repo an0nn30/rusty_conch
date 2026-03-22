@@ -7,8 +7,12 @@ pub enum KeyType {
     Ed25519,
     EcdsaP256,
     EcdsaP384,
-    Rsa2048,
-    Rsa4096,
+    /// RSA with SHA-256 signature hash. The ssh-key crate generates RSA keys at
+    /// a fixed size; this variant selects SHA-256 as the signature hash algorithm.
+    RsaSha256,
+    /// RSA with SHA-512 signature hash. Same key size as RsaSha256 — the only
+    /// difference is the signature hash algorithm.
+    RsaSha512,
 }
 
 pub struct KeyGenOptions {
@@ -45,14 +49,11 @@ pub fn generate_key(options: &KeyGenOptions) -> Result<GeneratedKey, VaultError>
             },
         )
         .map_err(|e| VaultError::KeyGen(e.to_string()))?,
-        KeyType::Rsa2048 => {
+        KeyType::RsaSha256 => {
             PrivateKey::random(&mut rng, Algorithm::Rsa { hash: Some(HashAlg::Sha256) })
                 .map_err(|e| VaultError::KeyGen(e.to_string()))?
         }
-        KeyType::Rsa4096 => {
-            // ssh-key generates RSA keys at a fixed size — both Rsa2048 and Rsa4096
-            // use the Rsa algorithm; the hash parameter selects the signature hash,
-            // not the key size. Both variants will generate the same key size.
+        KeyType::RsaSha512 => {
             PrivateKey::random(&mut rng, Algorithm::Rsa { hash: Some(HashAlg::Sha512) })
                 .map_err(|e| VaultError::KeyGen(e.to_string()))?
         }
@@ -88,8 +89,8 @@ pub fn generate_key(options: &KeyGenOptions) -> Result<GeneratedKey, VaultError>
         KeyType::Ed25519 => "Ed25519",
         KeyType::EcdsaP256 => "ECDSA P-256",
         KeyType::EcdsaP384 => "ECDSA P-384",
-        KeyType::Rsa2048 => "RSA 2048",
-        KeyType::Rsa4096 => "RSA 4096",
+        KeyType::RsaSha256 => "RSA (SHA-256)",
+        KeyType::RsaSha512 => "RSA (SHA-512)",
     };
 
     Ok(GeneratedKey {

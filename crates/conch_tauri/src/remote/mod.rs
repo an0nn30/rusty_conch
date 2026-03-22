@@ -1451,8 +1451,9 @@ fn try_vault_credentials(
     if mgr.is_locked() {
         return Err("VAULT_LOCKED".into());
     }
-    let account = mgr.get_account(account_id).ok();
-    Ok(account.map(|a| credentials_from_vault_account(&a)))
+    let account = mgr.get_account(account_id)
+        .map_err(|_| format!("Vault account {account_id} not found — it may have been deleted"))?;
+    Ok(Some(credentials_from_vault_account(&account)))
 }
 
 fn parse_quick_connect(input: &str) -> (String, String, u16) {
@@ -1986,6 +1987,26 @@ mod tests {
         let result = try_vault_credentials(&vault, &server);
         assert!(result.is_err());
         assert_eq!(result.err().unwrap(), "VAULT_LOCKED");
+    }
+
+    #[test]
+    fn try_vault_credentials_errors_when_account_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = conch_vault::VaultManager::new(dir.path().join("vault.enc"));
+        mgr.create(b"test").unwrap();
+        let vault: VaultState = Arc::new(Mutex::new(mgr));
+
+        // Server references a vault account that doesn't exist
+        let mut server = make_server("test", "example.com", "root", 22);
+        server.vault_account_id = Some(uuid::Uuid::new_v4());
+
+        let result = try_vault_credentials(&vault, &server);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(
+            err.contains("not found"),
+            "expected 'not found' in error, got: {err}"
+        );
     }
 
     #[test]

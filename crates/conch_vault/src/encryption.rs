@@ -8,6 +8,7 @@ use aes_gcm::{
 use argon2::Argon2;
 use rand::RngCore;
 use std::path::Path;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const MAGIC: &[u8; 8] = b"CONCHVLT";
 const FORMAT_VERSION: u32 = 1;
@@ -89,10 +90,13 @@ pub fn save_vault_file(path: &Path, vault: &Vault, password: &[u8]) -> Result<()
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, data)?;
+    let tmp = path.with_extension("enc.tmp");
+    std::fs::write(&tmp, data)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct CachedKey {
     pub derived_key: [u8; KEY_LEN],
     pub salt: [u8; SALT_LEN],
@@ -117,7 +121,9 @@ pub fn save_vault_file_with_key(path: &Path, vault: &Vault, cached: &CachedKey) 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, output)?;
+    let tmp = path.with_extension("enc.tmp");
+    std::fs::write(&tmp, output)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -238,11 +244,12 @@ impl From<LegacyVaultNoKeysWithKeychain> for Vault {
 /// Deserialize vault plaintext, trying the current format first, then falling
 /// back to legacy formats for backward compatibility.
 fn deserialize_vault(plaintext: &[u8]) -> Result<Vault, VaultError> {
-    bincode::deserialize::<Vault>(plaintext)
-        .or_else(|_| {
-            bincode::deserialize::<LegacyVaultWithKeychain>(plaintext)
-                .map(Vault::from)
-        })
+    match bincode::deserialize::<Vault>(plaintext) {
+        Ok(v) => return Ok(v),
+        Err(e) => log::debug!("Current format failed, trying legacy: {e}"),
+    }
+    bincode::deserialize::<LegacyVaultWithKeychain>(plaintext)
+        .map(Vault::from)
         .or_else(|_| {
             bincode::deserialize::<LegacyVault>(plaintext)
                 .map(Vault::from)
@@ -410,5 +417,60 @@ mod tests {
         let path = dir.path().join("nonexistent.enc");
         let result = load_vault_file(&path, b"password");
         assert!(matches!(result, Err(VaultError::NotFound)));
+    }
+
+    #[test]
+    fn cached_key_is_zeroized_on_drop() {
+        let salt = [0xABu8; SALT_LEN];
+        let derived_key = derive_key(b"password", &salt).unwrap();
+
+        // Verify the key has non-zero content before drop
+        assert_ne!(derived_key, [0u8; KEY_LEN]);
+
+        let mut cached = CachedKey { derived_key, salt };
+        // Manually zeroize and verify fields are zeroed
+        cached.zeroize();
+        assert_eq!(cached.derived_key, [0u8; KEY_LEN], "derived_key should be zeroed");
+        assert_eq!(cached.salt, [0u8; SALT_LEN], "salt should be zeroed");
+    }
+
+    #[test]
+    fn save_vault_file_is_atomic_no_tmp_left_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.enc");
+        let vault = make_test_vault();
+        let password = b"atomic-test";
+
+        save_vault_file(&path, &vault, password).unwrap();
+
+        // The final file should exist
+        assert!(path.exists(), "vault file should exist after save");
+        // The temp file should not remain
+        let tmp = path.with_extension("enc.tmp");
+        assert!(!tmp.exists(), "temp file should not remain after save");
+    }
+
+    #[test]
+    fn save_vault_file_with_key_is_atomic_no_tmp_left_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.enc");
+        let vault = make_test_vault();
+        let password = b"atomic-key-test";
+
+        // First create via save_vault_file, then load to get a CachedKey
+        save_vault_file(&path, &vault, password).unwrap();
+        let (loaded, cached) = load_vault_file(&path, password).unwrap();
+
+        // Re-save using the cached key
+        let path2 = dir.path().join("vault2.enc");
+        save_vault_file_with_key(&path2, &loaded, &cached).unwrap();
+
+        assert!(path2.exists(), "vault file should exist after save_with_key");
+        let tmp2 = path2.with_extension("enc.tmp");
+        assert!(!tmp2.exists(), "temp file should not remain after save_with_key");
+
+        // Verify the saved file is loadable
+        let (reloaded, _) = load_vault_file(&path2, password).unwrap();
+        assert_eq!(reloaded.accounts[0].username, "testuser");
     }
 }

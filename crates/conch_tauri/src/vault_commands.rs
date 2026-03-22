@@ -169,7 +169,12 @@ pub(crate) fn vault_add_account(
     vault: tauri::State<'_, VaultState>,
     request: AddAccountRequest,
 ) -> Result<Uuid, String> {
-    let auth = parse_auth_method(&request.auth_type, &request)?;
+    let auth = parse_auth_method(
+        &request.auth_type,
+        request.password.as_deref(),
+        request.key_path.as_deref(),
+        request.passphrase.as_deref(),
+    )?;
     let mgr = vault.lock();
     let id = mgr.add_account(request.display_name, request.username, auth)
         .map_err(|e| e.to_string())?;
@@ -183,14 +188,12 @@ pub(crate) fn vault_update_account(
     request: UpdateAccountRequest,
 ) -> Result<(), String> {
     let auth = request.auth_type.as_ref().map(|at| {
-        parse_auth_method(at, &AddAccountRequest {
-            display_name: String::new(),
-            username: String::new(),
-            auth_type: at.clone(),
-            password: request.password.clone(),
-            key_path: request.key_path.clone(),
-            passphrase: request.passphrase.clone(),
-        })
+        parse_auth_method(
+            at,
+            request.password.as_deref(),
+            request.key_path.as_deref(),
+            request.passphrase.as_deref(),
+        )
     }).transpose().map_err(|e: String| e)?;
 
     let mgr = vault.lock();
@@ -237,7 +240,7 @@ pub(crate) async fn vault_pick_key_file(
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog().file().pick_file(move |path| {
-        let _ = tx.send(path.map(|p| p.as_path().unwrap().display().to_string()));
+        let _ = tx.send(path.and_then(|p| p.as_path().map(|pp| pp.display().to_string())));
     });
     rx.await.map_err(|e| e.to_string())
 }
@@ -251,8 +254,8 @@ pub(crate) fn vault_generate_key(
         "ed25519" => KeyType::Ed25519,
         "ecdsa-p256" => KeyType::EcdsaP256,
         "ecdsa-p384" => KeyType::EcdsaP384,
-        "rsa-2048" => KeyType::Rsa2048,
-        "rsa-4096" => KeyType::Rsa4096,
+        "rsa-sha256" => KeyType::RsaSha256,
+        "rsa-sha512" => KeyType::RsaSha512,
         other => return Err(format!("unknown key type: {other}")),
     };
     let comment = request.comment.clone();
@@ -376,6 +379,12 @@ pub(crate) fn vault_migrate_legacy(
             },
             None => AuthMethod::Password(String::new()),
         };
+        if matches!(&auth, AuthMethod::Password(p) if p.is_empty()) {
+            log::warn!(
+                "Migrated server '{}' with empty password — will prompt on connect",
+                hint
+            );
+        }
         let id = vault_mgr
             .add_account(hint.clone(), user.clone(), auth)
             .map_err(|e| format!("failed to create vault account for '{hint}': {e}"))?;
@@ -456,26 +465,31 @@ pub(crate) fn vault_migrate_legacy(
     Ok(unique_creds.len())
 }
 
-fn parse_auth_method(auth_type: &str, req: &AddAccountRequest) -> Result<AuthMethod, String> {
+fn parse_auth_method(
+    auth_type: &str,
+    password: Option<&str>,
+    key_path: Option<&str>,
+    passphrase: Option<&str>,
+) -> Result<AuthMethod, String> {
     match auth_type {
         "password" => {
-            let pw = req.password.clone().unwrap_or_default();
+            let pw = password.unwrap_or_default().to_owned();
             Ok(AuthMethod::Password(pw))
         }
         "key" => {
-            let path = req.key_path.as_ref().ok_or("key_path required for key auth")?;
+            let path = key_path.ok_or("key_path required for key auth")?;
             Ok(AuthMethod::Key {
                 path: PathBuf::from(path),
-                passphrase: req.passphrase.clone(),
+                passphrase: passphrase.map(str::to_owned),
             })
         }
         "key_and_password" => {
-            let key_path = req.key_path.as_ref().ok_or("key_path required")?;
-            let password = req.password.clone().unwrap_or_default();
+            let kp = key_path.ok_or("key_path required")?;
+            let pw = password.unwrap_or_default().to_owned();
             Ok(AuthMethod::KeyAndPassword {
-                key_path: PathBuf::from(key_path),
-                passphrase: req.passphrase.clone(),
-                password,
+                key_path: PathBuf::from(kp),
+                passphrase: passphrase.map(str::to_owned),
+                password: pw,
             })
         }
         other => Err(format!("unknown auth type: {other}")),
@@ -489,29 +503,13 @@ mod tests {
 
     #[test]
     fn parse_auth_method_password() {
-        let req = AddAccountRequest {
-            display_name: "Test".into(),
-            username: "user".into(),
-            auth_type: "password".into(),
-            password: Some("secret".into()),
-            key_path: None,
-            passphrase: None,
-        };
-        let auth = parse_auth_method("password", &req).unwrap();
+        let auth = parse_auth_method("password", Some("secret"), None, None).unwrap();
         assert!(matches!(auth, AuthMethod::Password(ref p) if p == "secret"));
     }
 
     #[test]
     fn parse_auth_method_key() {
-        let req = AddAccountRequest {
-            display_name: "Test".into(),
-            username: "user".into(),
-            auth_type: "key".into(),
-            password: None,
-            key_path: Some("/home/user/.ssh/id_ed25519".into()),
-            passphrase: None,
-        };
-        let auth = parse_auth_method("key", &req).unwrap();
+        let auth = parse_auth_method("key", None, Some("/home/user/.ssh/id_ed25519"), None).unwrap();
         match auth {
             AuthMethod::Key { ref path, ref passphrase } => {
                 assert_eq!(path.to_str().unwrap(), "/home/user/.ssh/id_ed25519");
@@ -523,30 +521,19 @@ mod tests {
 
     #[test]
     fn parse_auth_method_key_requires_path() {
-        let req = AddAccountRequest {
-            display_name: "Test".into(),
-            username: "user".into(),
-            auth_type: "key".into(),
-            password: None,
-            key_path: None,
-            passphrase: None,
-        };
-        let result = parse_auth_method("key", &req);
+        let result = parse_auth_method("key", None, None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("key_path required"));
     }
 
     #[test]
     fn parse_auth_method_key_and_password() {
-        let req = AddAccountRequest {
-            display_name: "Test".into(),
-            username: "user".into(),
-            auth_type: "key_and_password".into(),
-            password: Some("serverpass".into()),
-            key_path: Some("/home/user/.ssh/id_rsa".into()),
-            passphrase: Some("keypass".into()),
-        };
-        let auth = parse_auth_method("key_and_password", &req).unwrap();
+        let auth = parse_auth_method(
+            "key_and_password",
+            Some("serverpass"),
+            Some("/home/user/.ssh/id_rsa"),
+            Some("keypass"),
+        ).unwrap();
         match auth {
             AuthMethod::KeyAndPassword { ref key_path, ref passphrase, ref password } => {
                 assert_eq!(key_path.to_str().unwrap(), "/home/user/.ssh/id_rsa");
@@ -559,15 +546,7 @@ mod tests {
 
     #[test]
     fn parse_auth_method_unknown_returns_error() {
-        let req = AddAccountRequest {
-            display_name: "Test".into(),
-            username: "user".into(),
-            auth_type: "unknown".into(),
-            password: None,
-            key_path: None,
-            passphrase: None,
-        };
-        let result = parse_auth_method("unknown", &req);
+        let result = parse_auth_method("unknown", None, None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown auth type"));
     }
