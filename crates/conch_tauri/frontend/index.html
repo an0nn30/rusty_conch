@@ -871,6 +871,102 @@
       animation: shortcut-pulse 1s ease-in-out infinite;
     }
     @keyframes shortcut-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    /* -- Vault dialog -- */
+    .vault-setup-dialog, .vault-unlock-dialog { width: 420px; max-width: 90vw; }
+    .vault-account-form { width: 460px; max-width: 90vw; }
+    .vault-description {
+      font-size: 12px; color: var(--text-secondary); line-height: 1.5;
+      margin: 0 0 4px;
+    }
+    .vault-checkbox-label {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--text-secondary); cursor: pointer;
+      padding: 4px 0;
+    }
+    .vault-checkbox-label input[type="checkbox"] {
+      -webkit-appearance: none; appearance: none; margin: 0;
+      width: 14px; height: 14px; flex-shrink: 0;
+      border: 1px solid var(--active-highlight); border-radius: 3px;
+      background: transparent; cursor: pointer;
+    }
+    .vault-checkbox-label input[type="checkbox"]:checked {
+      background: var(--blue, #7aa2f7); border-color: var(--blue, #7aa2f7);
+    }
+    .vault-dialog {
+      width: 700px; max-width: 95vw; max-height: 80vh;
+      display: flex; flex-direction: column;
+    }
+    .vault-body { display: flex; flex: 1; overflow: hidden; min-height: 380px; }
+    .vault-sidebar {
+      width: 170px; border-right: 1px solid var(--tab-border);
+      padding: 12px 0; overflow-y: auto; flex-shrink: 0;
+      display: flex; flex-direction: column;
+    }
+    .vault-sidebar-item {
+      padding: 6px 14px; cursor: pointer;
+      color: var(--text-secondary); font-size: 12px;
+    }
+    .vault-sidebar-item:hover { background: var(--input-bg); }
+    .vault-sidebar-item.active { background: var(--active-highlight); color: var(--fg); font-weight: 600; }
+    .vault-sidebar-footer {
+      margin-top: auto; padding: 10px 14px;
+      border-top: 1px solid var(--tab-border);
+    }
+    .vault-lock-status {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;
+    }
+    .vault-status-dot {
+      display: inline-block; width: 7px; height: 7px;
+      border-radius: 50%;
+    }
+    .vault-status-dot.unlocked { background: var(--green); }
+    .vault-status-dot.locked { background: var(--red); }
+    .vault-lock-btn {
+      width: 100%; padding: 4px 10px; border: 1px solid var(--tab-border);
+      border-radius: 4px; background: var(--input-bg); color: var(--text-secondary);
+      cursor: pointer; font-size: 11px; text-align: center;
+    }
+    .vault-lock-btn:hover { background: var(--tab-border); color: var(--fg); }
+    .vault-content { flex: 1; padding: 16px 20px; overflow-y: auto; }
+    .vault-content h3 { font-size: 14px; font-weight: 600; margin: 0; color: var(--fg); }
+    .vault-section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .vault-add-btn { font-size: 11px; padding: 4px 12px; }
+    .vault-empty {
+      padding: 24px; text-align: center; color: var(--dim-fg); font-size: 13px;
+      line-height: 1.6;
+    }
+    .vault-account-list { display: flex; flex-direction: column; gap: 2px; }
+    .vault-account-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 8px 10px; border-radius: 5px; cursor: default;
+    }
+    .vault-account-row:hover { background: var(--input-bg); }
+    .vault-account-avatar {
+      width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+      background: var(--active-highlight); color: var(--fg);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 600;
+    }
+    .vault-account-info { flex: 1; min-width: 0; }
+    .vault-account-name { font-size: 13px; font-weight: 500; color: var(--fg); }
+    .vault-account-detail { font-size: 11px; color: var(--dim-fg); margin-top: 1px; }
+    .vault-account-actions { display: flex; gap: 4px; }
+    .vault-row-btn {
+      padding: 3px 10px; border: 1px solid var(--tab-border);
+      border-radius: 4px; background: var(--input-bg); color: var(--text-secondary);
+      cursor: pointer; font-size: 11px;
+    }
+    .vault-row-btn:hover { background: var(--tab-border); color: var(--fg); }
+    .vault-row-btn.danger { color: var(--red); }
+    .vault-row-btn.danger:hover { background: var(--red); color: var(--fg); }
+    .vault-row-btn.danger.confirm { background: var(--red); color: var(--fg); border-color: var(--red); }
+    .vault-settings-form { display: flex; flex-direction: column; gap: 12px; }
+    .vault-settings-actions { padding-top: 8px; }
   </style>
 </head>
 <body>
@@ -912,6 +1008,7 @@
   <script src="settings.js"></script>
   <script src="file-icons.js"></script>
   <script src="files-panel.js"></script>
+  <script src="vault.js"></script>
   <script src="ssh-panel.js"></script>
   <script src="tunnel-manager.js"></script>
   <script>
@@ -1537,6 +1634,11 @@
         }, 500);
       });
 
+      // ---- Vault init ----
+      if (window.vault) {
+        window.vault.init({ invoke, listen: listenOnCurrentWindow });
+      }
+
       // ---- Tunnel manager init ----
       if (window.tunnelManager) {
         window.tunnelManager.init({
@@ -1733,6 +1835,16 @@
         }
         if (action === 'manage-tunnels' && window.tunnelManager) {
           window.tunnelManager.show();
+          return;
+        }
+        if (action === 'vault-open' && window.vault) {
+          window.vault.showVaultDialog();
+          return;
+        }
+        if (action === 'vault-lock') {
+          invoke('vault_lock').then(() => {
+            window.toast.info('Vault Locked', 'Credential vault has been locked.');
+          }).catch(() => {});
           return;
         }
         if (action === 'ssh-export' && window.sshPanel) {
