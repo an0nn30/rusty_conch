@@ -954,6 +954,23 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
                 })
                 .ok();
 
+            // Vault auto-lock background checker (every 30 seconds).
+            // Uses a std::thread since we're not inside a tokio runtime here.
+            {
+                let vault_for_timer = Arc::clone(&vault_state);
+                let app_for_timer = app.handle().clone();
+                std::thread::Builder::new()
+                    .name("vault-auto-lock".into())
+                    .spawn(move || loop {
+                        std::thread::sleep(std::time::Duration::from_secs(30));
+                        let did_lock = vault_for_timer.lock().check_timeout();
+                        if did_lock {
+                            let _ = app_for_timer.emit("vault-locked", ());
+                        }
+                    })
+                    .ok();
+            }
+
             // Check whether a legacy-to-vault migration is needed.
             // If the vault file does not exist yet AND servers.json has legacy entries
             // (plain-text user/auth fields without a vault_account_id), notify the
