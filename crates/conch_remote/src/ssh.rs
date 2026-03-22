@@ -117,7 +117,10 @@ pub async fn connect_and_open_shell(
             None => return Err("Password entry cancelled".to_string()),
         }
     } else if credentials.auth_method == "key_and_password" {
-        // Try key auth first, then password auth if the server requires both.
+        // Try key auth first; fall back to password if key fails.
+        // russh 0.48 does not expose SSH partial-success, so true multi-factor
+        // auth (key + password in sequence) is not supportable. Instead, this
+        // mode gives accounts that store both credentials a key-preferred flow.
         let key_ok = try_key_auth(
             &mut session,
             &credentials.username,
@@ -128,7 +131,13 @@ pub async fn connect_and_open_shell(
         .await?;
 
         if key_ok {
-            // Server may also require password (e.g. 2FA). Try password too.
+            true
+        } else {
+            log::info!(
+                "key_and_password: key auth failed for {}@{}, falling back to password",
+                credentials.username,
+                server.host
+            );
             let pw = match &credentials.password {
                 Some(pw) if !pw.is_empty() => Some(pw.clone()),
                 _ => {
@@ -145,13 +154,6 @@ pub async fn connect_and_open_shell(
                     .map_err(|e| format!("Auth failed: {e}"))?,
                 None => return Err("Password entry cancelled".to_string()),
             }
-        } else {
-            log::warn!(
-                "key_and_password: key auth failed for {}@{}",
-                credentials.username,
-                server.host
-            );
-            false
         }
     } else {
         try_key_auth(

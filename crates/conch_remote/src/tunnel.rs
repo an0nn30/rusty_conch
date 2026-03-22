@@ -286,6 +286,7 @@ async fn connect_for_tunnel(
             None => return Err("Password entry cancelled".to_string()),
         }
     } else if credentials.auth_method == "key_and_password" {
+        // Try key first; fall back to password if key fails (see ssh.rs).
         let key_ok = crate::ssh::try_key_auth(
             &mut session,
             &credentials.username,
@@ -296,7 +297,14 @@ async fn connect_for_tunnel(
         .await?;
 
         if key_ok {
-            // Server may also require password (e.g. 2FA). Try password too.
+            true
+        } else {
+            log::info!(
+                "key_and_password: key auth failed for {}@{}:{}, falling back to password",
+                credentials.username,
+                server.host,
+                server.port
+            );
             let pw = match &credentials.password {
                 Some(pw) if !pw.is_empty() => Some(pw.clone()),
                 _ => {
@@ -315,14 +323,6 @@ async fn connect_for_tunnel(
                     .map_err(|e| format!("Auth failed: {e}"))?,
                 None => return Err("Password entry cancelled".to_string()),
             }
-        } else {
-            log::warn!(
-                "key_and_password: key auth failed for {}@{}:{}",
-                credentials.username,
-                server.host,
-                server.port
-            );
-            false
         }
     } else {
         crate::ssh::try_key_auth(
