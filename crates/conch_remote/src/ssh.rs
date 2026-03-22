@@ -100,9 +100,10 @@ pub async fn connect_and_open_shell(
     // Authenticate.
     let authenticated = if credentials.auth_method == "password" {
         // If password was provided in credentials, use it. Otherwise prompt via callbacks.
+        // Treat empty string as missing — migrated entries store "" as a placeholder.
         let pw = match &credentials.password {
-            Some(pw) => Some(pw.clone()),
-            None => {
+            Some(pw) if !pw.is_empty() => Some(pw.clone()),
+            _ => {
                 let msg = format!("Password for {}@{}", credentials.username, server.host);
                 callbacks.prompt_password(&msg).await
             }
@@ -129,8 +130,8 @@ pub async fn connect_and_open_shell(
         if key_ok {
             // Server may also require password (e.g. 2FA). Try password too.
             let pw = match &credentials.password {
-                Some(pw) => Some(pw.clone()),
-                None => {
+                Some(pw) if !pw.is_empty() => Some(pw.clone()),
+                _ => {
                     let msg =
                         format!("Password for {}@{}", credentials.username, server.host);
                     callbacks.prompt_password(&msg).await
@@ -145,6 +146,11 @@ pub async fn connect_and_open_shell(
                 None => return Err("Password entry cancelled".to_string()),
             }
         } else {
+            log::warn!(
+                "key_and_password: key auth failed for {}@{}",
+                credentials.username,
+                server.host
+            );
             false
         }
     } else {

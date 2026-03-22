@@ -1967,7 +1967,7 @@ mod tests {
     }
 
     #[test]
-    fn try_vault_credentials_returns_none_when_locked() {
+    fn try_vault_credentials_returns_err_when_locked() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = conch_vault::VaultManager::new(dir.path().join("vault.enc"));
         mgr.create(b"test").unwrap();

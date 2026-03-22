@@ -277,19 +277,20 @@ pub(crate) fn vault_generate_key(
 
     let public_path = save_path.with_extension("pub");
 
-    // Record the generated key in the vault if it's unlocked.
+    // Record the generated key in the vault — require it to be unlocked.
     let mgr = vault.lock();
-    if !mgr.is_locked() {
-        mgr.add_generated_key(
-            key.algorithm.clone(),
-            key.fingerprint.clone(),
-            comment,
-            save_path.clone(),
-            public_path.clone(),
-        )
-        .map_err(|e| e.to_string())?;
-        mgr.save().map_err(|e| e.to_string())?;
+    if mgr.is_locked() {
+        return Err("Vault is locked — unlock it before generating keys".into());
     }
+    mgr.add_generated_key(
+        key.algorithm.clone(),
+        key.fingerprint.clone(),
+        comment,
+        save_path.clone(),
+        public_path.clone(),
+    )
+    .map_err(|e| e.to_string())?;
+    mgr.save().map_err(|e| e.to_string())?;
 
     Ok(KeyGenResponse {
         fingerprint: key.fingerprint,
