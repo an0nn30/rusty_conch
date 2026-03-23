@@ -131,6 +131,9 @@
     listen('ssh-host-key-prompt', handleHostKeyPrompt);
     listen('ssh-password-prompt', handlePasswordPrompt);
 
+    // Vault auto-save prompt
+    listen('vault-auto-save-prompt', handleVaultAutoSavePrompt);
+
     // Global shortcuts
     document.addEventListener('keydown', handleGlobalKeydown);
 
@@ -823,6 +826,8 @@
       else if (existing.proxy_command) { proxyType = 'command'; proxyValue = existing.proxy_command; }
     }
 
+    const existingVaultId = existing ? (existing.vault_account_id || '') : '';
+
     const overlay = document.createElement('div');
     overlay.className = 'ssh-overlay';
     overlay.innerHTML = `
@@ -842,17 +847,26 @@
               <input type="number" id="cf-port" value="${existing ? existing.port : 22}" min="1" max="65535" />
             </label>
           </div>
-          <label class="ssh-form-label">Username
-            <input type="text" id="cf-user" value="${attr(existing ? existing.user : '')}"
-                   placeholder="root" spellcheck="false" />
+          <label class="ssh-form-label">Account
+            <select id="cf-vault-account">
+              <option value="">Manual credentials</option>
+              <option value="__create__">+ Create New Account...</option>
+            </select>
           </label>
-          <label class="ssh-form-label">Password
-            <input type="password" id="cf-password" value="" placeholder="leave empty for key auth" />
-          </label>
-          <label class="ssh-form-label">Private Key
-            <input type="text" id="cf-key-path" value="${attr(existing && existing.key_path ? existing.key_path : '')}"
-                   placeholder="~/.ssh/id_ed25519" spellcheck="false" />
-          </label>
+          <div id="cf-vault-account-info" style="display:none;padding:6px 8px;border-radius:4px;background:var(--bg);border:1px solid var(--selection);margin-bottom:8px;font-size:12px"></div>
+          <div id="cf-manual-creds">
+            <label class="ssh-form-label">Username
+              <input type="text" id="cf-user" value="${attr(existing ? existing.user : '')}"
+                     placeholder="root" spellcheck="false" />
+            </label>
+            <label class="ssh-form-label">Password
+              <input type="password" id="cf-password" value="" placeholder="leave empty for key auth" />
+            </label>
+            <label class="ssh-form-label">Private Key
+              <input type="text" id="cf-key-path" value="${attr(existing && existing.key_path ? existing.key_path : '')}"
+                     placeholder="~/.ssh/id_ed25519" spellcheck="false" />
+            </label>
+          </div>
           <details class="ssh-form-advanced" ${proxyType !== 'none' ? 'open' : ''}>
             <summary>Advanced</summary>
             <label class="ssh-form-label">Proxy Type
@@ -885,6 +899,20 @@
 
     document.body.appendChild(overlay);
 
+    // Populate vault account picker
+    populateAccountPicker(overlay, existingVaultId);
+
+    // Account picker change handler
+    const accountSelect = overlay.querySelector('#cf-vault-account');
+    accountSelect.addEventListener('change', () => {
+      const val = accountSelect.value;
+      if (val === '__create__') {
+        handleCreateNewAccount(overlay, existingVaultId);
+        return;
+      }
+      updateCredentialFieldsVisibility(overlay);
+    });
+
     // Focus the host field
     const hostInput = overlay.querySelector('#cf-host');
     setTimeout(() => hostInput.focus(), 50);
@@ -906,31 +934,115 @@
     overlay.querySelector('#cf-save-connect').addEventListener('click', () => submitForm(overlay, existing, true));
   }
 
+  async function populateAccountPicker(overlay, selectedId) {
+    const select = overlay.querySelector('#cf-vault-account');
+    if (!select) return;
+
+    let accounts = [];
+    if (window.vault && window.vault.getAccounts) {
+      try {
+        accounts = await window.vault.getAccounts();
+      } catch (_) {
+        // Vault may not exist or be locked — just show manual option.
+      }
+    }
+
+    // Rebuild options: keep Manual + Create New, insert accounts between them.
+    let html = '<option value="">Manual credentials</option>';
+    for (const a of accounts) {
+      const authLabel = a.auth_type === 'password' ? 'password' : a.auth_type === 'key' ? 'key' : 'key+pw';
+      html += `<option value="${attr(a.id)}">${esc(a.display_name)} (${esc(a.username)}, ${authLabel})</option>`;
+    }
+    html += '<option value="__create__">+ Create New Account...</option>';
+    select.innerHTML = html;
+
+    // Restore selection
+    if (selectedId) {
+      select.value = selectedId;
+    }
+
+    updateCredentialFieldsVisibility(overlay);
+  }
+
+  function updateCredentialFieldsVisibility(overlay) {
+    const select = overlay.querySelector('#cf-vault-account');
+    const manualCreds = overlay.querySelector('#cf-manual-creds');
+    const accountInfo = overlay.querySelector('#cf-vault-account-info');
+    if (!select || !manualCreds || !accountInfo) return;
+
+    const val = select.value;
+    if (val && val !== '__create__') {
+      // A vault account is selected — hide manual fields, show info.
+      manualCreds.style.display = 'none';
+      const selectedOption = select.options[select.selectedIndex];
+      accountInfo.style.display = 'block';
+      accountInfo.textContent = 'Using vault account: ' + selectedOption.textContent;
+    } else {
+      // Manual credentials
+      manualCreds.style.display = '';
+      accountInfo.style.display = 'none';
+    }
+  }
+
+  function handleCreateNewAccount(overlay, fallbackId) {
+    if (!window.vault) {
+      window.toast.error('Vault Unavailable', 'Vault module not loaded');
+      const select = overlay.querySelector('#cf-vault-account');
+      if (select) select.value = fallbackId || '';
+      return;
+    }
+
+    window.vault.ensureUnlocked(() => {
+      window.vault.showAccountForm(null);
+      // After the vault overlay is dismissed, re-populate the picker
+      // with a brief delay so the vault save completes first.
+      const checkInterval = setInterval(() => {
+        const vaultOverlay = document.getElementById('vault-overlay');
+        if (!vaultOverlay) {
+          clearInterval(checkInterval);
+          populateAccountPicker(overlay, '');
+        }
+      }, 300);
+    });
+  }
+
   function submitForm(overlay, existing, andConnect) {
     const host = overlay.querySelector('#cf-host').value.trim();
     if (!host) { overlay.querySelector('#cf-host').focus(); return; }
 
     const label = overlay.querySelector('#cf-label').value.trim();
     const port = parseInt(overlay.querySelector('#cf-port').value, 10) || 22;
-    const user = overlay.querySelector('#cf-user').value.trim() || 'root';
-    const password = overlay.querySelector('#cf-password').value;
-    const keyPath = overlay.querySelector('#cf-key-path').value.trim() || null;
     const proxyType = overlay.querySelector('#cf-proxy-type').value;
     const proxyValue = overlay.querySelector('#cf-proxy-value').value.trim();
     const folderId = overlay.querySelector('#cf-folder').value || null;
-
-    const authMethod = password ? 'password' : 'key';
     const proxyJump = proxyType === 'jump' && proxyValue ? proxyValue : null;
     const proxyCommand = proxyType === 'command' && proxyValue ? proxyValue : null;
 
+    // Check if a vault account is selected.
+    const accountSelect = overlay.querySelector('#cf-vault-account');
+    const vaultAccountId = accountSelect && accountSelect.value && accountSelect.value !== '__create__'
+      ? accountSelect.value
+      : null;
+
+    // When vault account is used, manual credential fields may be hidden.
+    const user = vaultAccountId
+      ? (existing ? existing.user : null)
+      : (overlay.querySelector('#cf-user').value.trim() || 'root');
+    const password = vaultAccountId ? '' : overlay.querySelector('#cf-password').value;
+    const keyPath = vaultAccountId
+      ? null
+      : (overlay.querySelector('#cf-key-path').value.trim() || null);
+    const authMethod = vaultAccountId ? null : (password ? 'password' : 'key');
+
     const entry = {
       id: existing ? existing.id : crypto.randomUUID(),
-      label: label || `${user}@${host}`,
+      label: label || `${user || 'root'}@${host}`,
       host,
       port,
-      user,
+      user: user || null,
       auth_method: authMethod,
       key_path: keyPath,
+      vault_account_id: vaultAccountId,
       proxy_command: proxyCommand,
       proxy_jump: proxyJump,
     };
@@ -1223,6 +1335,40 @@
       if (e.key === 'Escape') { respond(null); document.removeEventListener('keydown', onKey); }
     };
     document.addEventListener('keydown', onKey);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Vault auto-save prompt
+  // ---------------------------------------------------------------------------
+
+  function handleVaultAutoSavePrompt(event) {
+    const { server_id, server_label, host, username, auth_method } = event.payload;
+
+    // Only show for password auth — key auth doesn't need saving.
+    if (auth_method !== 'password') return;
+
+    // Only show if vault module is available.
+    if (!window.vault) return;
+
+    window.toast.info(
+      'Save to Vault?',
+      `Save credentials for ${username}@${host} to the credential vault?`,
+      {
+        duration: 10000,
+        action: {
+          label: 'Save',
+          callback: () => {
+            window.vault.ensureUnlocked(() => {
+              window.vault.showAccountForm({
+                display_name: server_label || `${username}@${host}`,
+                username: username,
+                auth_type: 'password',
+              });
+            });
+          },
+        },
+      }
+    );
   }
 
   // ---------------------------------------------------------------------------

@@ -14,10 +14,18 @@ pub struct ServerEntry {
     pub label: String,
     pub host: String,
     pub port: u16,
-    pub user: String,
+    // Legacy fields — kept for backward compatibility during migration.
+    // Will be removed once vault accounts are fully wired (Task 11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
     /// "key" or "password".
-    pub auth_method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_path: Option<String>,
+    // New vault reference — links this server to a vault account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_account_id: Option<uuid::Uuid>,
     /// Raw proxy command (e.g., `ssh -W %h:%p bastion`). `%h` and `%p` are expanded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_command: Option<String>,
@@ -38,8 +46,12 @@ pub struct ServerFolder {
 pub struct SavedTunnel {
     pub id: Uuid,
     pub label: String,
-    /// `user@host:port` identifying the SSH server for this tunnel.
+    /// Legacy field — `user@host:port` identifying the SSH server for this tunnel.
+    #[serde(default)]
     pub session_key: String,
+    /// New reference to a `ServerEntry` by ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_entry_id: Option<String>,
     pub local_port: u16,
     pub remote_host: String,
     pub remote_port: u16,
@@ -163,6 +175,35 @@ impl SshConfig {
             *existing = tunnel;
         }
     }
+
+    // -- Migration helpers --
+
+    /// Returns true if any server entry has legacy user/auth fields but no vault
+    /// account linked yet.
+    pub fn has_legacy_entries(&self) -> bool {
+        self.all_servers()
+            .any(|e| e.user.is_some() && e.vault_account_id.is_none())
+    }
+
+    /// Collect unique (user, key_path) combinations from legacy entries.
+    ///
+    /// Returns a `Vec` of `(username, key_path, display_name_hint)` tuples.
+    /// Entries that share the same user + key_path are de-duplicated so that
+    /// exactly one vault account is created per distinct credential.
+    pub fn collect_unique_credentials(&self) -> Vec<(String, Option<String>, String)> {
+        let mut seen = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        for entry in self.all_servers() {
+            if let Some(user) = &entry.user {
+                let key = (user.clone(), entry.key_path.clone());
+                if seen.insert(key.clone()) {
+                    let hint = format!("{}@{}", user, entry.host);
+                    result.push((user.clone(), entry.key_path.clone(), hint));
+                }
+            }
+        }
+        result
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -254,12 +295,25 @@ impl SshConfig {
                 .collect(),
         };
 
-        ExportPayload {
+        let mut payload = ExportPayload {
             version: 1,
             folders,
             ungrouped,
             tunnels,
+        };
+
+        // Strip vault_account_id from exported entries — vault references are
+        // local to this machine and should not leak into portable exports.
+        for entry in &mut payload.ungrouped {
+            entry.vault_account_id = None;
         }
+        for folder in &mut payload.folders {
+            for entry in &mut folder.entries {
+                entry.vault_account_id = None;
+            }
+        }
+
+        payload
     }
 
     /// Merge an import payload into the current config.
@@ -413,8 +467,8 @@ struct PartialEntry {
 impl PartialEntry {
     fn into_server_entry(self) -> Option<ServerEntry> {
         let host = self.hostname.unwrap_or_else(|| self.alias.clone());
-        let user = self.user.unwrap_or_else(|| {
-            std::env::var("USER").unwrap_or_else(|_| "root".to_string())
+        let user = self.user.or_else(|| {
+            std::env::var("USER").ok()
         });
 
         Some(ServerEntry {
@@ -423,8 +477,9 @@ impl PartialEntry {
             host,
             port: self.port.unwrap_or(22),
             user,
-            auth_method: "key".to_string(),
+            auth_method: Some("key".to_string()),
             key_path: self.identity_file,
+            vault_account_id: None,
             proxy_command: self.proxy_command,
             proxy_jump: self.proxy_jump,
         })
@@ -441,9 +496,10 @@ mod tests {
             label: id.to_string(),
             host: host.to_string(),
             port: 22,
-            user: "root".to_string(),
-            auth_method: "key".to_string(),
+            user: Some("root".to_string()),
+            auth_method: Some("key".to_string()),
             key_path: None,
+            vault_account_id: None,
             proxy_command: None,
             proxy_jump: None,
         }
@@ -561,7 +617,7 @@ Host server2
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].label, "server1");
         assert_eq!(entries[0].host, "10.0.0.1");
-        assert_eq!(entries[0].user, "deploy");
+        assert_eq!(entries[0].user.as_deref(), Some("deploy"));
         assert_eq!(entries[0].port, 2222);
         assert_eq!(entries[1].host, "example.com");
     }
@@ -613,5 +669,116 @@ Host bastion-target
         let loaded = load_config(dir.path());
         assert_eq!(loaded.ungrouped.len(), 1);
         assert_eq!(loaded.ungrouped[0].host, "host1");
+    }
+
+    #[test]
+    fn legacy_server_entry_deserializes_with_vault_account_id_none() {
+        let json = r#"{
+            "id": "s1",
+            "label": "My Server",
+            "host": "example.com",
+            "port": 22,
+            "user": "deploy",
+            "auth_method": "key",
+            "key_path": "/home/user/.ssh/id_ed25519"
+        }"#;
+        let entry: ServerEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.id, "s1");
+        assert_eq!(entry.host, "example.com");
+        assert!(entry.vault_account_id.is_none());
+    }
+
+    #[test]
+    fn server_entry_with_vault_id_roundtrips() {
+        let id = uuid::Uuid::new_v4();
+        let entry = ServerEntry {
+            id: "s1".into(),
+            label: "Test".into(),
+            host: "example.com".into(),
+            port: 22,
+            user: None,
+            auth_method: None,
+            key_path: None,
+            vault_account_id: Some(id),
+            proxy_command: None,
+            proxy_jump: None,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: ServerEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.vault_account_id, Some(id));
+    }
+
+    #[test]
+    fn export_strips_vault_account_id() {
+        let mut cfg = SshConfig::default();
+        let mut entry = make_entry("s1", "host1");
+        entry.vault_account_id = Some(uuid::Uuid::new_v4());
+        cfg.add_server(entry);
+
+        let payload = cfg.to_export_filtered(None, None);
+        for server in &payload.ungrouped {
+            assert!(server.vault_account_id.is_none());
+        }
+    }
+
+    #[test]
+    fn detect_legacy_entries() {
+        let json = r#"{
+            "folders": [],
+            "ungrouped": [{
+                "id": "s1", "label": "Old Server", "host": "example.com",
+                "port": 22, "user": "root", "auth_method": "key",
+                "key_path": "/home/user/.ssh/id_ed25519"
+            }],
+            "tunnels": []
+        }"#;
+        let cfg: SshConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.has_legacy_entries());
+    }
+
+    #[test]
+    fn collect_unique_credentials_deduplicates() {
+        let json = r#"{
+            "folders": [],
+            "ungrouped": [
+                {"id": "s1", "label": "A", "host": "a.com", "port": 22,
+                 "user": "deploy", "auth_method": "key", "key_path": "/k1"},
+                {"id": "s2", "label": "B", "host": "b.com", "port": 22,
+                 "user": "deploy", "auth_method": "key", "key_path": "/k1"},
+                {"id": "s3", "label": "C", "host": "c.com", "port": 22,
+                 "user": "root", "auth_method": "password"}
+            ],
+            "tunnels": []
+        }"#;
+        let cfg: SshConfig = serde_json::from_str(json).unwrap();
+        let creds = cfg.collect_unique_credentials();
+        assert_eq!(creds.len(), 2, "deploy+/k1 and root+password should be 2 unique credentials");
+    }
+
+    #[test]
+    fn has_legacy_entries_false_when_vault_account_set() {
+        let mut cfg = SshConfig::default();
+        let mut entry = make_entry("s1", "host1");
+        entry.vault_account_id = Some(uuid::Uuid::new_v4());
+        // Entry has vault_account_id so it is NOT legacy.
+        cfg.add_server(entry);
+        assert!(!cfg.has_legacy_entries());
+    }
+
+    #[test]
+    fn saved_tunnel_with_server_entry_id_roundtrips() {
+        let tunnel = SavedTunnel {
+            id: uuid::Uuid::new_v4(),
+            label: "DB Tunnel".into(),
+            server_entry_id: Some("s1".into()),
+            session_key: String::new(),
+            local_port: 5432,
+            remote_host: "db.internal".into(),
+            remote_port: 5432,
+            auto_start: false,
+        };
+        let json = serde_json::to_string(&tunnel).unwrap();
+        let deserialized: SavedTunnel = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.server_entry_id, Some("s1".into()));
     }
 }

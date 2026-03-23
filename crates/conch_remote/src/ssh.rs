@@ -11,6 +11,21 @@ use crate::callbacks::{RemoteCallbacks, RemotePaths};
 use crate::config::ServerEntry;
 use crate::handler::ConchSshHandler;
 
+/// Credentials resolved from the vault (or legacy ServerEntry fields, or user prompt).
+///
+/// Decouples SSH connection logic from knowing about the vault — the caller
+/// resolves vault accounts into `SshCredentials` before calling
+/// `connect_and_open_shell`.
+pub struct SshCredentials {
+    pub username: String,
+    /// "key", "password", or "key_and_password".
+    pub auth_method: String,
+    pub password: Option<String>,
+    pub key_path: Option<String>,
+    /// Passphrase for decrypting the private key (if any).
+    pub key_passphrase: Option<String>,
+}
+
 /// Expand a leading `~` or `~/` to the user's home directory.
 pub fn expand_tilde(path: &str) -> PathBuf {
     if path == "~" {
@@ -32,9 +47,13 @@ pub fn expand_tilde(path: &str) -> PathBuf {
 ///
 /// Returns the client handle and the shell channel. Auth prompts are sent
 /// through the `callbacks` trait implementation.
+///
+/// `credentials` provides the username, auth method, and optionally a
+/// pre-supplied password or key path. The caller resolves these from the
+/// vault or from legacy `ServerEntry` fields before calling this function.
 pub async fn connect_and_open_shell(
     server: &ServerEntry,
-    password: Option<String>,
+    credentials: &SshCredentials,
     callbacks: Arc<dyn RemoteCallbacks>,
     paths: &RemotePaths,
 ) -> Result<(client::Handle<ConchSshHandler>, russh::Channel<russh::client::Msg>), String> {
@@ -79,29 +98,70 @@ pub async fn connect_and_open_shell(
     };
 
     // Authenticate.
-    let authenticated = if server.auth_method == "password" {
-        // If password was provided, use it directly. Otherwise prompt via callbacks.
-        let pw = match &password {
-            Some(pw) => Some(pw.clone()),
-            None => {
-                let msg = format!("Password for {}@{}", server.user, server.host);
+    let authenticated = if credentials.auth_method == "password" {
+        // If password was provided in credentials, use it. Otherwise prompt via callbacks.
+        // Treat empty string as missing — migrated entries store "" as a placeholder.
+        let pw = match &credentials.password {
+            Some(pw) if !pw.is_empty() => Some(pw.clone()),
+            _ => {
+                let msg = format!("Password for {}@{}", credentials.username, server.host);
                 callbacks.prompt_password(&msg).await
             }
         };
 
         match pw {
             Some(pw) => session
-                .authenticate_password(&server.user, &pw)
+                .authenticate_password(&credentials.username, &pw)
                 .await
                 .map_err(|e| format!("Auth failed: {e}"))?,
             None => return Err("Password entry cancelled".to_string()),
         }
+    } else if credentials.auth_method == "key_and_password" {
+        // Try key auth first; fall back to password if key fails.
+        // russh 0.48 does not expose SSH partial-success, so true multi-factor
+        // auth (key + password in sequence) is not supportable. Instead, this
+        // mode gives accounts that store both credentials a key-preferred flow.
+        let key_ok = try_key_auth(
+            &mut session,
+            &credentials.username,
+            credentials.key_path.as_deref(),
+            &paths.default_key_paths,
+            credentials.key_passphrase.as_deref(),
+        )
+        .await?;
+
+        if key_ok {
+            true
+        } else {
+            log::info!(
+                "key_and_password: key auth failed for {}@{}, falling back to password",
+                credentials.username,
+                server.host
+            );
+            let pw = match &credentials.password {
+                Some(pw) if !pw.is_empty() => Some(pw.clone()),
+                _ => {
+                    let msg =
+                        format!("Password for {}@{}", credentials.username, server.host);
+                    callbacks.prompt_password(&msg).await
+                }
+            };
+
+            match pw {
+                Some(pw) => session
+                    .authenticate_password(&credentials.username, &pw)
+                    .await
+                    .map_err(|e| format!("Auth failed: {e}"))?,
+                None => return Err("Password entry cancelled".to_string()),
+            }
+        }
     } else {
         try_key_auth(
             &mut session,
-            &server.user,
-            server.key_path.as_deref(),
+            &credentials.username,
+            credentials.key_path.as_deref(),
             &paths.default_key_paths,
+            credentials.key_passphrase.as_deref(),
         )
         .await?
     };
@@ -184,6 +244,7 @@ pub(crate) async fn try_key_auth(
     user: &str,
     explicit_key_path: Option<&str>,
     default_key_paths: &[PathBuf],
+    key_passphrase: Option<&str>,
 ) -> Result<bool, String> {
     let key_paths: Vec<PathBuf> = if let Some(path) = explicit_key_path {
         vec![expand_tilde(path)]
@@ -196,7 +257,7 @@ pub(crate) async fn try_key_auth(
             continue;
         }
 
-        match russh_keys::load_secret_key(key_path, None) {
+        match russh_keys::load_secret_key(key_path, key_passphrase) {
             Ok(key) => {
                 match session
                     .authenticate_publickey(user, Arc::new(key))
