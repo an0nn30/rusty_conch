@@ -215,6 +215,22 @@
 
   // --- Theme preview helpers ---
 
+  function span(cls, text) {
+    const s = document.createElement('span');
+    if (cls) s.className = cls;
+    s.textContent = text;
+    return s;
+  }
+
+  function line(...nodes) {
+    const d = document.createElement('div');
+    for (const n of nodes) {
+      if (typeof n === 'string') d.appendChild(document.createTextNode(n));
+      else d.appendChild(n);
+    }
+    return d;
+  }
+
   function buildThemePreview() {
     const box = document.createElement('div');
     box.className = 'tp-container';
@@ -228,27 +244,11 @@
       'border:1px solid var(--tab-border)',
     ].join(';');
 
-    function span(cls, text) {
-      const s = document.createElement('span');
-      if (cls) s.className = cls;
-      s.textContent = text;
-      return s;
-    }
-
-    function line(...nodes) {
-      const d = document.createElement('div');
-      for (const n of nodes) {
-        if (typeof n === 'string') d.appendChild(document.createTextNode(n));
-        else d.appendChild(n);
-      }
-      return d;
-    }
-
     // "PREVIEW" label
     const label = document.createElement('div');
-    label.style.cssText = 'font-size:9px;letter-spacing:0.1em;margin-bottom:8px;opacity:0.5;text-transform:uppercase';
+    label.style.cssText = 'font-size:9px;letter-spacing:0.1em;margin-bottom:8px;text-transform:uppercase';
     label.textContent = 'PREVIEW';
-    label.className = 'tp-fg';
+    label.className = 'tp-dim';
     box.appendChild(label);
 
     // Prompt line
