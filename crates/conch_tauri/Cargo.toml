@@ -18,6 +18,7 @@ conch_core = { workspace = true }
 conch_plugin = { workspace = true }
 conch_plugin_sdk = { workspace = true }
 conch_remote = { workspace = true }
+conch_vault = { path = "../conch_vault" }
 tauri = { version = "2" }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
@@ -42,6 +43,13 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSLocale"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = ["vault_eager_import"]
+vault_eager_import = ["conch_vault/vault_eager_import"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

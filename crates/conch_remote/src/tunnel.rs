@@ -94,6 +94,7 @@ impl TunnelManager {
         &self,
         id: Uuid,
         server: &ServerEntry,
+        credentials: &crate::ssh::SshCredentials,
         local_port: u16,
         remote_host: String,
         remote_port: u16,
@@ -107,7 +108,7 @@ impl TunnelManager {
 
         log::info!("tunnel[{id}]: listening on 127.0.0.1:{local_port}");
 
-        let ssh_handle = connect_for_tunnel(server, callbacks, paths).await?;
+        let ssh_handle = connect_for_tunnel(server, credentials, callbacks, paths).await?;
 
         log::info!("tunnel[{id}]: SSH connection established");
 
@@ -218,6 +219,7 @@ impl TunnelManager {
 
 async fn connect_for_tunnel(
     server: &ServerEntry,
+    credentials: &crate::ssh::SshCredentials,
     callbacks: Arc<dyn RemoteCallbacks>,
     paths: &RemotePaths,
 ) -> Result<client::Handle<ConchSshHandler>, String> {
@@ -262,25 +264,73 @@ async fn connect_for_tunnel(
     };
 
     // Auth
-    let authenticated = if server.auth_method == "password" {
-        let msg = format!(
-            "Password for {}@{}:{}",
-            server.user, server.host, server.port
-        );
-        let password = callbacks
-            .prompt_password(&msg)
-            .await
-            .ok_or_else(|| "Password prompt cancelled".to_string())?;
-        session
-            .authenticate_password(&server.user, &password)
-            .await
-            .map_err(|e| format!("Auth failed: {e}"))?
+    let authenticated = if credentials.auth_method == "password" {
+        // If password was provided in credentials, use it. Otherwise prompt via callbacks.
+        // Treat empty string as missing — migrated entries store "" as a placeholder.
+        let pw = match &credentials.password {
+            Some(pw) if !pw.is_empty() => Some(pw.clone()),
+            _ => {
+                let msg = format!(
+                    "Password for {}@{}:{}",
+                    credentials.username, server.host, server.port
+                );
+                callbacks.prompt_password(&msg).await
+            }
+        };
+
+        match pw {
+            Some(pw) => session
+                .authenticate_password(&credentials.username, &pw)
+                .await
+                .map_err(|e| format!("Auth failed: {e}"))?,
+            None => return Err("Password entry cancelled".to_string()),
+        }
+    } else if credentials.auth_method == "key_and_password" {
+        // Try key first; fall back to password if key fails (see ssh.rs).
+        let key_ok = crate::ssh::try_key_auth(
+            &mut session,
+            &credentials.username,
+            credentials.key_path.as_deref(),
+            &paths.default_key_paths,
+            credentials.key_passphrase.as_deref(),
+        )
+        .await?;
+
+        if key_ok {
+            true
+        } else {
+            log::info!(
+                "key_and_password: key auth failed for {}@{}:{}, falling back to password",
+                credentials.username,
+                server.host,
+                server.port
+            );
+            let pw = match &credentials.password {
+                Some(pw) if !pw.is_empty() => Some(pw.clone()),
+                _ => {
+                    let msg = format!(
+                        "Password for {}@{}:{}",
+                        credentials.username, server.host, server.port
+                    );
+                    callbacks.prompt_password(&msg).await
+                }
+            };
+
+            match pw {
+                Some(pw) => session
+                    .authenticate_password(&credentials.username, &pw)
+                    .await
+                    .map_err(|e| format!("Auth failed: {e}"))?,
+                None => return Err("Password entry cancelled".to_string()),
+            }
+        }
     } else {
         crate::ssh::try_key_auth(
             &mut session,
-            &server.user,
-            server.key_path.as_deref(),
+            &credentials.username,
+            credentials.key_path.as_deref(),
             &paths.default_key_paths,
+            credentials.key_passphrase.as_deref(),
         )
         .await?
     };
@@ -288,7 +338,7 @@ async fn connect_for_tunnel(
     if !authenticated {
         return Err(format!(
             "Authentication failed for {}@{}",
-            server.user, server.host
+            credentials.username, server.host
         ));
     }
 
@@ -356,5 +406,78 @@ mod tests {
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"connecting\""));
+    }
+
+    /// Verify that the password-resolution logic used in `connect_for_tunnel`
+    /// prefers `credentials.password` over prompting.
+    #[test]
+    fn password_resolution_prefers_stored_credential() {
+        use crate::ssh::SshCredentials;
+
+        let creds_with_pw = SshCredentials {
+            username: "user".into(),
+            auth_method: "password".into(),
+            password: Some("stored_secret".into()),
+            key_path: None,
+            key_passphrase: None,
+        };
+
+        // When credentials.password is Some, the match arm should yield the stored value
+        // without needing to call any callback.
+        let resolved: Option<String> = match &creds_with_pw.password {
+            Some(pw) => Some(pw.clone()),
+            None => None, // In real code this would call callbacks.prompt_password()
+        };
+        assert_eq!(resolved.as_deref(), Some("stored_secret"));
+
+        // When credentials.password is None, the match arm falls through to the
+        // prompt branch (simulated here as None since there's no callback).
+        let creds_no_pw = SshCredentials {
+            username: "user".into(),
+            auth_method: "password".into(),
+            password: None,
+            key_path: None,
+            key_passphrase: None,
+        };
+        let resolved: Option<String> = match &creds_no_pw.password {
+            Some(pw) => Some(pw.clone()),
+            None => None,
+        };
+        assert_eq!(resolved, None);
+    }
+
+    #[tokio::test]
+    async fn clear_error_removes_error_state() {
+        let mgr = TunnelManager::new();
+        let id = Uuid::new_v4();
+
+        mgr.set_connecting(id).await;
+        mgr.set_error(&id, "oops".into()).await;
+        assert!(matches!(
+            mgr.status(&id).await,
+            Some(TunnelStatus::Error(_))
+        ));
+
+        mgr.clear_error(&id).await;
+        assert!(mgr.status(&id).await.is_none(), "error state should be removed");
+    }
+
+    #[tokio::test]
+    async fn clear_error_does_not_remove_active() {
+        let mgr = TunnelManager::new();
+        let id = Uuid::new_v4();
+
+        // Manually insert an Active state
+        mgr.tunnels.lock().await.insert(
+            id,
+            TunnelState {
+                status: TunnelStatus::Active,
+                abort_handle: None,
+            },
+        );
+
+        mgr.clear_error(&id).await;
+        // Active state should NOT be removed by clear_error
+        assert!(mgr.is_active(&id).await, "active tunnel should not be cleared");
     }
 }

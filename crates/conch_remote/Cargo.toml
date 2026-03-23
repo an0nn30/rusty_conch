@@ -13,6 +13,7 @@ log = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
 dirs = { workspace = true }
+conch_vault = { path = "../conch_vault" }
 base64 = { workspace = true }
 async-trait = "0.1"
 russh = "0.48"

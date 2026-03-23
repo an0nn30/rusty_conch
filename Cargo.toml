@@ -6,6 +6,7 @@ members = [
     "crates/conch_plugin",
     "crates/conch_remote",
     "crates/conch_tauri",
+    "crates/conch_vault",
 ]
 
 [workspace.package]

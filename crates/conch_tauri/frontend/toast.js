@@ -36,6 +36,11 @@
       : level === 'warn' ? '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="m 7.955 0.667 c -0.343 0.015 -0.654 0.206 -0.824 0.504 l -7 12.338 c -0.379 0.667 0.103 1.494 0.869 1.494 h 14 c 0.767 0 1.248 -0.828 0.869 -1.494 l -7 -12.338 c -0.186 -0.326 -0.539 -0.521 -0.914 -0.504 z M 7 4 h 2 v 6 H 7 z m 0 7 h 2 v 2 H 7 z"/></svg>'
       : '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="m 8 1 c 0.552 0 1 0.448 1 1 0 0.033 -0.002 0.067 -0.006 0.1 2.29 0.459 4.006 2.471 4.006 4.9 l 0 2 v 2.5 l 2 2 v 0.5 H 13 3 1 v -0.5 l 2 -2 0 -4.5 c 0 -2.429 1.716 -4.442 4.006 -4.9 C 7.002 2.067 7 2.033 7 2 c 0 -0.552 0.448 -1 1 -1 z M 9.729 15 c -0.357 0.618 -1.015 0.999 -1.729 1 -0.714 -0.001 -1.373 -0.382 -1.73 -1 z"/></svg>';
 
+    let actionHtml = '';
+    if (opts.action && opts.action.label) {
+      actionHtml = `<div class="conch-toast-actions"><button class="conch-toast-action-btn">${esc(opts.action.label)}</button></div>`;
+    }
+
     toast.innerHTML = `
       <div class="conch-toast-header">
         <span class="conch-toast-icon">${icon}</span>
@@ -43,9 +48,20 @@
         <button class="conch-toast-close">\u2715</button>
       </div>
       ${opts.body ? `<div class="conch-toast-body">${esc(opts.body)}</div>` : ''}
+      ${actionHtml}
     `;
 
     toast.querySelector('.conch-toast-close').addEventListener('click', () => dismiss(toast));
+
+    if (opts.action && opts.action.callback) {
+      const actionBtn = toast.querySelector('.conch-toast-action-btn');
+      if (actionBtn) {
+        actionBtn.addEventListener('click', () => {
+          dismiss(toast);
+          opts.action.callback();
+        });
+      }
+    }
 
     toastContainer.appendChild(toast);
     requestAnimationFrame(() => toast.classList.add('visible'));
@@ -65,7 +81,7 @@
   }
 
   // Convenience methods
-  function info(title, body) { return show({ title, body, level: 'info' }); }
+  function info(title, body, extra) { return show(Object.assign({ title, body, level: 'info' }, extra || {})); }
   function success(title, body) { return show({ title, body, level: 'success' }); }
   function error(title, body) { return show({ title, body, level: 'error', duration: 6000 }); }
   function warn(title, body) { return show({ title, body, level: 'warn', duration: 5000 }); }

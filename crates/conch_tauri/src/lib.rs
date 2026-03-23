@@ -12,6 +12,7 @@ pub(crate) mod remote;
 pub(crate) mod settings;
 pub(crate) mod theme;
 pub(crate) mod utf8_stream;
+pub(crate) mod vault_commands;
 mod watcher;
 
 use std::collections::HashMap;
@@ -65,6 +66,12 @@ const MENU_ACTION_SSH_EXPORT: &str = "ssh-export";
 const MENU_ACTION_SSH_IMPORT: &str = "ssh-import";
 const MENU_SETTINGS_ID: &str = "app.settings";
 const MENU_ACTION_SETTINGS: &str = "settings";
+const MENU_VAULT_ID: &str = "tools.credential_vault";
+const MENU_KEYGEN_ID: &str = "tools.generate_ssh_key";
+const MENU_VAULT_LOCK_ID: &str = "tools.lock_vault";
+const MENU_ACTION_VAULT_OPEN: &str = "vault-open";
+const MENU_ACTION_KEYGEN_OPEN: &str = "keygen-open";
+const MENU_ACTION_VAULT_LOCK: &str = "vault-lock";
 
 static NEXT_WINDOW_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -232,6 +239,30 @@ fn build_app_menu_with_plugins<R: tauri::Runtime>(
             Some("CmdOrCtrl+Shift+T"),
         )?;
         tools_items.push(Box::new(manage_tunnels));
+
+        // Add vault menu items.
+        tools_items.push(Box::new(PredefinedMenuItem::separator(app)?));
+        tools_items.push(Box::new(MenuItem::with_id(
+            app,
+            MENU_VAULT_ID,
+            "Credential Vault\u{2026}",
+            true,
+            Some("CmdOrCtrl+Shift+V"),
+        )?));
+        tools_items.push(Box::new(MenuItem::with_id(
+            app,
+            MENU_KEYGEN_ID,
+            "Generate SSH Key\u{2026}",
+            true,
+            None::<&str>,
+        )?));
+        tools_items.push(Box::new(MenuItem::with_id(
+            app,
+            MENU_VAULT_LOCK_ID,
+            "Lock Vault",
+            true,
+            None::<&str>,
+        )?));
 
         // Add plugin items.
         if !plugin_items.is_empty() {
@@ -616,11 +647,38 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
         true,
         Some("CmdOrCtrl+Shift+T"),
     )?;
+    let credential_vault = MenuItem::with_id(
+        app,
+        MENU_VAULT_ID,
+        "Credential Vault\u{2026}",
+        true,
+        Some("CmdOrCtrl+Shift+V"),
+    )?;
+    let generate_ssh_key = MenuItem::with_id(
+        app,
+        MENU_KEYGEN_ID,
+        "Generate SSH Key\u{2026}",
+        true,
+        None::<&str>,
+    )?;
+    let lock_vault = MenuItem::with_id(
+        app,
+        MENU_VAULT_LOCK_ID,
+        "Lock Vault",
+        true,
+        None::<&str>,
+    )?;
     let tools_menu = Submenu::with_items(
         app,
         "Tools",
         true,
-        &[&manage_tunnels],
+        &[
+            &manage_tunnels,
+            &PredefinedMenuItem::separator(app)?,
+            &credential_vault,
+            &generate_ssh_key,
+            &lock_vault,
+        ],
     )?;
 
     let window_menu = Submenu::with_items(
@@ -766,6 +824,11 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
     let plugins_config = config.conch.plugins.clone();
     let plugin_state = Arc::new(Mutex::new(plugins::PluginState::new(plugins_config.clone())));
 
+    let config_dir = config::config_dir();
+    let vault_path = config_dir.join("vault.enc");
+    let vault_state: vault_commands::VaultState =
+        Arc::new(Mutex::new(conch_vault::VaultManager::new(vault_path)));
+
     // Load persisted window size, falling back to config dimensions.
     let persisted = config::load_persistent_state().unwrap_or_default();
     let cfg_dims = &config.window.dimensions;
@@ -805,6 +868,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
         })
         .manage(Arc::clone(&remote_state))
         .manage(Arc::clone(&plugin_state))
+        .manage(Arc::clone(&vault_state))
         .setup(move |app| {
             let kb_config = config::load_user_config()
                 .map(|c| c.conch.keyboard)
@@ -890,6 +954,39 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
                 })
                 .ok();
 
+            // Vault auto-lock background checker (every 30 seconds).
+            // Uses a std::thread since we're not inside a tokio runtime here.
+            {
+                let vault_for_timer = Arc::clone(&vault_state);
+                let app_for_timer = app.handle().clone();
+                std::thread::Builder::new()
+                    .name("vault-auto-lock".into())
+                    .spawn(move || loop {
+                        std::thread::sleep(std::time::Duration::from_secs(30));
+                        let did_lock = vault_for_timer.lock().check_timeout();
+                        if did_lock {
+                            let _ = app_for_timer.emit("vault-locked", ());
+                        }
+                    })
+                    .ok();
+            }
+
+            // Check whether a legacy-to-vault migration is needed.
+            // If the vault file does not exist yet AND servers.json has legacy entries
+            // (plain-text user/auth fields without a vault_account_id), notify the
+            // frontend so it can prompt the user to set up the vault and migrate.
+            {
+                let vault_exists = vault_state.lock().vault_exists();
+                if !vault_exists {
+                    let has_legacy = remote_state.lock().config.has_legacy_entries();
+                    if has_legacy {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.emit("vault-migration-needed", ());
+                        }
+                    }
+                }
+            }
+
             Ok(())
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -918,6 +1015,15 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             }
             MENU_SSH_IMPORT_ID => {
                 emit_menu_action_to_focused_window(app, MENU_ACTION_SSH_IMPORT)
+            }
+            MENU_VAULT_ID => {
+                emit_menu_action_to_focused_window(app, MENU_ACTION_VAULT_OPEN)
+            }
+            MENU_KEYGEN_ID => {
+                emit_menu_action_to_focused_window(app, MENU_ACTION_KEYGEN_OPEN)
+            }
+            MENU_VAULT_LOCK_ID => {
+                emit_menu_action_to_focused_window(app, MENU_ACTION_VAULT_LOCK)
             }
             MENU_NEW_WINDOW_ID => {
                 if let Err(e) = create_new_window(app) {
@@ -1050,6 +1156,23 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             plugins::get_panel_widgets,
             plugins::plugin_widget_event,
             plugins::request_plugin_render,
+            vault_commands::vault_status,
+            vault_commands::vault_create,
+            vault_commands::vault_unlock,
+            vault_commands::vault_lock,
+            vault_commands::vault_list_accounts,
+            vault_commands::vault_get_account,
+            vault_commands::vault_add_account,
+            vault_commands::vault_update_account,
+            vault_commands::vault_delete_account,
+            vault_commands::vault_get_settings,
+            vault_commands::vault_update_settings,
+            vault_commands::vault_pick_key_file,
+            vault_commands::vault_check_path_exists,
+            vault_commands::vault_generate_key,
+            vault_commands::vault_list_keys,
+            vault_commands::vault_delete_key,
+            vault_commands::vault_migrate_legacy,
         ])
         .run(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("Tauri error: {e}"))?;
