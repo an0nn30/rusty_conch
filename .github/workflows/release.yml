@@ -61,17 +61,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
       - name: Build Java SDK JAR (embedded in binary)
         run: make -C java-sdk build
 
       - name: Test
-        run: cargo test --release --target=x86_64-apple-darwin
+        run: cargo test --release
 
-      - name: Build ARM64
-        run: cargo build --release -p conch_tauri --target=aarch64-apple-darwin
-
-      - name: Build x86_64
-        run: cargo build --release -p conch_tauri --target=x86_64-apple-darwin
+      - name: Build universal app with Tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --target universal-apple-darwin
 
       - name: Extract version
         id: version
@@ -79,48 +82,20 @@ jobs:
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Create universal .app bundle
-        run: |
-          APP="Conch.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-
-          lipo -create \
-            target/aarch64-apple-darwin/release/conch \
-            target/x86_64-apple-darwin/release/conch \
-            -output "$APP/Contents/MacOS/conch"
-
-          cp packaging/macos/Info.plist "$APP/Contents/"
-          if [ -f crates/conch_tauri/icons/icon.icns ]; then
-            cp crates/conch_tauri/icons/icon.icns "$APP/Contents/Resources/conch.icns"
-          fi
-
-          codesign --remove-signature "$APP" 2>/dev/null || true
-          codesign --force --deep --sign - "$APP"
-
-      - name: Install create-dmg
-        run: brew install create-dmg
-
-      - name: Create DMG
-        run: |
-          mkdir -p dmg-staging
-          mv Conch.app dmg-staging/
-          create-dmg \
-            --volname "Conch" \
-            --window-pos 200 120 \
-            --window-size 600 400 \
-            --icon-size 80 \
-            --icon "Conch.app" 150 200 \
-            --hide-extension "Conch.app" \
-            --app-drop-link 450 200 \
-            --no-internet-enable \
-            "Conch-v${{ steps.version.outputs.version }}.dmg" \
-            "dmg-staging/" || true
-          rm -rf dmg-staging
-
       - name: Upload DMG
         run: |
           ./.github/workflows/upload_asset.sh \
-            ./Conch-v${{ steps.version.outputs.version }}.dmg $GITHUB_TOKEN
+            ./target/universal-apple-darwin/release/bundle/dmg/*.dmg $GITHUB_TOKEN
+
+      # NOTE: Exact artifact filenames (e.g., Conch.app.tar.gz) should be
+      # verified after the first Tauri build — glob patterns used here as a
+      # best-effort match.
+      - name: Upload update artifact
+        run: |
+          ./.github/workflows/upload_asset.sh \
+            ./target/universal-apple-darwin/release/bundle/macos/*.tar.gz $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh \
+            ./target/universal-apple-darwin/release/bundle/macos/*.tar.gz.sig $GITHUB_TOKEN
 
   # ---------------------------------------------------------------------------
   # Windows — portable exe + MSI installer
@@ -141,6 +116,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
       - name: Build Java SDK JAR (embedded in binary)
         run: |
           mkdir -p java-sdk/build/classes
@@ -150,8 +128,11 @@ jobs:
       - name: Test
         run: cargo test --release
 
-      - name: Build
-        run: cargo build --release -p conch_tauri
+      - name: Build with Tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build
 
       - name: Extract version
         id: version
@@ -159,28 +140,83 @@ jobs:
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Upload portable executable
-        run: |
-          mkdir -p portable
-          cp ./target/release/conch.exe portable/
-          cd portable && 7z a -tzip "../Conch-v${{ steps.version.outputs.version }}-portable.zip" . && cd ..
-          ./.github/workflows/upload_asset.sh \
-            ./Conch-v${{ steps.version.outputs.version }}-portable.zip $GITHUB_TOKEN
-
-      - name: Install WiX
-        run: dotnet tool install --global wix --version 4.0.5
-
-      - name: Build MSI installer
-        run: |
-          wix extension add WixToolset.UI.wixext/4.0.5 WixToolset.Util.wixext/4.0.5
-          wix build -arch "x64" -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext \
-            -out "./Conch-v${{ steps.version.outputs.version }}-installer.msi" \
-            "packaging/windows/conch.wxs"
-
-      - name: Upload MSI installer
+      # NOTE: Exact artifact filenames (e.g., Conch-v*-setup.exe.nsis.zip)
+      # should be verified after the first Tauri build — glob patterns used
+      # here as a best-effort match.
+      - name: Upload NSIS installer
         run: |
           ./.github/workflows/upload_asset.sh \
-            ./Conch-v${{ steps.version.outputs.version }}-installer.msi $GITHUB_TOKEN
+            ./target/release/bundle/nsis/*.exe $GITHUB_TOKEN
+
+      - name: Upload update artifact
+        run: |
+          ./.github/workflows/upload_asset.sh \
+            ./target/release/bundle/nsis/*.nsis.zip $GITHUB_TOKEN
+          ./.github/workflows/upload_asset.sh \
+            ./target/release/bundle/nsis/*.nsis.zip.sig $GITHUB_TOKEN
+
+  # ---------------------------------------------------------------------------
+  # Generate latest.json — Tauri updater endpoint artifact
+  # ---------------------------------------------------------------------------
+  generate-latest-json:
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download signatures from release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release download "$TAG" --pattern "*.sig" --dir sigs/
+
+      # NOTE: The artifact filenames in the URLs below (Conch.app.tar.gz,
+      # Conch-v*-setup.exe.nsis.zip) should be verified after the first
+      # successful Tauri build and updated if they differ.
+      - name: Generate latest.json
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${{ steps.version.outputs.version }}"
+          MAC_SIG=$(cat sigs/*.tar.gz.sig 2>/dev/null || echo "")
+          WIN_SIG=$(cat sigs/*.nsis.zip.sig 2>/dev/null || echo "")
+
+          cat > latest.json << ENDJSON
+          {
+            "version": "$VERSION",
+            "notes": "See release notes at https://github.com/an0nn30/conch/releases/tag/$TAG",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "$MAC_SIG",
+                "url": "https://github.com/an0nn30/conch/releases/download/$TAG/Conch.app.tar.gz"
+              },
+              "darwin-x86_64": {
+                "signature": "$MAC_SIG",
+                "url": "https://github.com/an0nn30/conch/releases/download/$TAG/Conch.app.tar.gz"
+              },
+              "windows-x86_64": {
+                "signature": "$WIN_SIG",
+                "url": "https://github.com/an0nn30/conch/releases/download/$TAG/Conch-v${VERSION}-setup.exe.nsis.zip"
+              }
+            }
+          }
+          ENDJSON
+
+      - name: Upload latest.json
+        run: |
+          ./.github/workflows/upload_asset.sh \
+            ./latest.json $GITHUB_TOKEN
 
   # ---------------------------------------------------------------------------
   # Linux AMD64 — deb + rpm
