@@ -2016,6 +2016,18 @@
           setTimeout(() => fitAndResizeTab(currentTab()), 50);
           return;
         }
+        if (action === 'check-for-updates') {
+          invoke('check_for_update').then(info => {
+            if (info) {
+              showUpdateAvailableToast(info);
+            } else {
+              window.toast.info('Up to Date', "You're running the latest version.");
+            }
+          }).catch(() => {
+            window.toast.warn('Update Check Failed', 'Unable to check for updates.');
+          });
+          return;
+        }
       }
 
       await listenOnCurrentWindow('menu-action', (event) => {
@@ -2032,6 +2044,106 @@
       if (window._initTitlebarPending && window.titlebar) {
         window.titlebar.init(handleMenuAction);
         delete window._initTitlebarPending;
+      }
+
+      // --- In-app updater ---
+      await listen('update-available', (event) => {
+        const info = event.payload;
+        if (!info || !info.version) return;
+        showUpdateAvailableToast(info);
+      });
+
+      function showUpdateAvailableToast(info) {
+        window.toast.show({
+          level: 'info',
+          title: 'Update Available',
+          body: 'Conch v' + window.utils.esc(info.version) + ' is available.',
+          duration: 0,
+          action: {
+            label: 'Update Now',
+            callback: () => startUpdate(),
+          },
+        });
+      }
+
+      let updateProgressToast = null;
+
+      async function startUpdate() {
+        updateProgressToast = window.toast.show({
+          level: 'info',
+          title: 'Updating',
+          body: 'Downloading update...',
+          duration: 0,
+        });
+
+        try {
+          await invoke('install_update');
+          if (updateProgressToast) {
+            window.toast.dismiss(updateProgressToast);
+            updateProgressToast = null;
+          }
+          showRestartDialog();
+        } catch (e) {
+          if (updateProgressToast) {
+            window.toast.dismiss(updateProgressToast);
+            updateProgressToast = null;
+          }
+          window.toast.error('Update Failed', String(e));
+        }
+      }
+
+      await listen('update-progress', (event) => {
+        if (!updateProgressToast) return;
+        const p = event.payload;
+        const body = updateProgressToast.querySelector('.conch-toast-body');
+        if (body && p.total) {
+          const pct = Math.round((p.downloaded / p.total) * 100);
+          body.textContent = 'Downloading update... ' + pct + '%';
+        }
+      });
+
+      function showRestartDialog() {
+        const overlay = document.createElement('div');
+        overlay.className = 'ssh-overlay';
+        overlay.id = 'update-restart-overlay';
+
+        const dialog = document.createElement('div');
+        dialog.className = 'ssh-form';
+        dialog.style.width = '400px';
+
+        const title = document.createElement('div');
+        title.className = 'ssh-form-title';
+        title.textContent = 'Update Ready';
+        dialog.appendChild(title);
+
+        const msg = document.createElement('div');
+        msg.style.cssText = 'padding:16px 20px;color:var(--fg);font-size:13px';
+        msg.textContent = 'The update has been installed. Restart now to apply?';
+        dialog.appendChild(msg);
+
+        const buttons = document.createElement('div');
+        buttons.className = 'ssh-form-buttons';
+
+        const laterBtn = document.createElement('button');
+        laterBtn.className = 'ssh-form-btn';
+        laterBtn.textContent = 'Restart Later';
+        laterBtn.addEventListener('click', () => overlay.remove());
+
+        const restartBtn = document.createElement('button');
+        restartBtn.className = 'ssh-form-btn primary';
+        restartBtn.textContent = 'Restart Now';
+        restartBtn.addEventListener('click', () => {
+          overlay.remove();
+          invoke('restart_app');
+        });
+
+        buttons.appendChild(laterBtn);
+        buttons.appendChild(restartBtn);
+        dialog.appendChild(buttons);
+
+        overlay.appendChild(dialog);
+        overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) overlay.remove(); });
+        document.body.appendChild(overlay);
       }
 
       // Global Escape handler — close overlays or refocus terminal.
