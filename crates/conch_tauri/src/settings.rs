@@ -32,9 +32,9 @@ pub(crate) fn list_themes() -> Vec<String> {
 }
 
 #[tauri::command]
-pub(crate) fn preview_theme_colors(name: String) -> theme::ThemeColors {
+pub(crate) fn preview_theme_colors(name: String) -> Result<theme::ThemeColors, String> {
     let scheme = conch_core::color_scheme::resolve_theme(&name);
-    theme::resolve_theme_colors_from_scheme(&scheme)
+    Ok(theme::resolve_theme_colors_from_scheme(&scheme))
 }
 
 #[tauri::command]
