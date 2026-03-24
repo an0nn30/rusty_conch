@@ -26,7 +26,18 @@ pub(crate) struct ThemeColors {
 
 fn darken(hex: &str, amount: i32) -> String {
     let hex = hex.trim_start_matches('#');
-    if hex.len() < 6 { return format!("#{hex}"); }
+    // Expand 3-char shorthand (#fff -> ffffff)
+    let hex = if hex.len() == 3 {
+        let b: Vec<u8> = hex.bytes().collect();
+        format!(
+            "{0}{0}{1}{1}{2}{2}",
+            b[0] as char, b[1] as char, b[2] as char
+        )
+    } else if hex.len() < 6 {
+        return format!("#{hex}");
+    } else {
+        hex.to_string()
+    };
     let r = i32::from_str_radix(&hex[0..2], 16).unwrap_or(0);
     let g = i32::from_str_radix(&hex[2..4], 16).unwrap_or(0);
     let b = i32::from_str_radix(&hex[4..6], 16).unwrap_or(0);
@@ -135,5 +146,18 @@ mod tests {
         // Falls back to bg/fg
         assert_eq!(tc.cursor_text, scheme.primary.background);
         assert_eq!(tc.cursor_color, scheme.primary.foreground);
+    }
+
+    #[test]
+    fn darken_expands_three_char_hex() {
+        // #fff should expand to #ffffff then darken by 10
+        let result = darken("#fff", 10);
+        assert_eq!(result, "#f5f5f5");
+    }
+
+    #[test]
+    fn lighten_expands_three_char_hex() {
+        let result = lighten("#000", 10);
+        assert_eq!(result, "#0a0a0a");
     }
 }
