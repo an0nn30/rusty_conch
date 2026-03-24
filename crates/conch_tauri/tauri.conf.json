@@ -29,7 +29,7 @@
       "endpoints": [
         "https://github.com/an0nn30/conch/releases/latest/download/latest.json"
       ],
-      "pubkey": "PLACEHOLDER_REPLACE_WITH_REAL_PUBKEY"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM1NzRGOUQzM0Y4M0U3QkUKUldTKzU0TS8wL2wweGFUdTdYZEwybFJQWnZMSjg1MThHT3NJNVZzWE1MMEk2TWRkc0hxMW1TbEEK"
     }
   }
 }
