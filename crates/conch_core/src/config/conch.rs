@@ -8,6 +8,7 @@ pub struct ConchConfig {
     pub keyboard: KeyboardConfig,
     pub ui: UiConfig,
     pub plugins: PluginsConfig,
+    pub check_for_updates: bool,
 }
 
 impl Default for ConchConfig {
@@ -16,6 +17,7 @@ impl Default for ConchConfig {
             keyboard: KeyboardConfig::default(),
             ui: UiConfig::default(),
             plugins: PluginsConfig::default(),
+            check_for_updates: true,
         }
     }
 }
@@ -273,6 +275,27 @@ mod tests {
         let toml_str = r#"native_menu_bar = true"#;
         let cfg: UiConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.font, UiFontConfig::default());
+    }
+
+    #[test]
+    fn check_for_updates_defaults_to_true() {
+        let config = ConchConfig::default();
+        assert!(config.check_for_updates);
+    }
+
+    #[test]
+    fn check_for_updates_survives_round_trip() {
+        let mut config = ConchConfig::default();
+        config.check_for_updates = false;
+        let toml = toml::to_string(&config).unwrap();
+        let parsed: ConchConfig = toml::from_str(&toml).unwrap();
+        assert!(!parsed.check_for_updates);
+    }
+
+    #[test]
+    fn check_for_updates_missing_defaults_true() {
+        let parsed: ConchConfig = toml::from_str("").unwrap();
+        assert!(parsed.check_for_updates);
     }
 
 }

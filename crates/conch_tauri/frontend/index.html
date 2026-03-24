@@ -2016,6 +2016,22 @@
           setTimeout(() => fitAndResizeTab(currentTab()), 50);
           return;
         }
+        if (action === 'about') {
+          showAboutDialog();
+          return;
+        }
+        if (action === 'check-for-updates') {
+          invoke('check_for_update').then(info => {
+            if (info) {
+              showUpdateAvailableToast(info);
+            } else {
+              window.toast.info('Up to Date', "You're running the latest version.");
+            }
+          }).catch(() => {
+            window.toast.warn('Update Check Failed', 'Unable to check for updates.');
+          });
+          return;
+        }
       }
 
       await listenOnCurrentWindow('menu-action', (event) => {
@@ -2032,6 +2048,192 @@
       if (window._initTitlebarPending && window.titlebar) {
         window.titlebar.init(handleMenuAction);
         delete window._initTitlebarPending;
+      }
+
+      // --- In-app updater ---
+      await listen('update-available', (event) => {
+        const info = event.payload;
+        if (!info || !info.version) return;
+        showUpdateAvailableToast(info);
+      });
+
+      function showUpdateAvailableToast(info) {
+        window.toast.show({
+          level: 'info',
+          title: 'Update Available',
+          body: 'Conch v' + window.utils.esc(info.version) + ' is available.',
+          duration: 0,
+          action: {
+            label: 'Update Now',
+            callback: () => startUpdate(),
+          },
+        });
+      }
+
+      let updateProgressToast = null;
+
+      async function startUpdate() {
+        updateProgressToast = window.toast.show({
+          level: 'info',
+          title: 'Updating',
+          body: 'Downloading update...',
+          duration: 0,
+        });
+
+        try {
+          await invoke('install_update');
+          if (updateProgressToast) {
+            window.toast.dismiss(updateProgressToast);
+            updateProgressToast = null;
+          }
+          showRestartDialog();
+        } catch (e) {
+          if (updateProgressToast) {
+            window.toast.dismiss(updateProgressToast);
+            updateProgressToast = null;
+          }
+          window.toast.error('Update Failed', String(e));
+        }
+      }
+
+      await listen('update-progress', (event) => {
+        if (!updateProgressToast) return;
+        const p = event.payload;
+        const body = updateProgressToast.querySelector('.conch-toast-body');
+        if (body && p.total) {
+          const pct = Math.round((p.downloaded / p.total) * 100);
+          body.textContent = 'Downloading update... ' + pct + '%';
+        }
+      });
+
+      function showRestartDialog() {
+        const overlay = document.createElement('div');
+        overlay.className = 'ssh-overlay';
+        overlay.id = 'update-restart-overlay';
+
+        const dialog = document.createElement('div');
+        dialog.className = 'ssh-form';
+        dialog.style.width = '400px';
+
+        const title = document.createElement('div');
+        title.className = 'ssh-form-title';
+        title.textContent = 'Update Ready';
+        dialog.appendChild(title);
+
+        const msg = document.createElement('div');
+        msg.style.cssText = 'padding:16px 20px;color:var(--fg);font-size:13px';
+        msg.textContent = 'The update has been installed. Restart now to apply?';
+        dialog.appendChild(msg);
+
+        const buttons = document.createElement('div');
+        buttons.className = 'ssh-form-buttons';
+
+        const laterBtn = document.createElement('button');
+        laterBtn.className = 'ssh-form-btn';
+        laterBtn.textContent = 'Restart Later';
+        laterBtn.addEventListener('click', () => overlay.remove());
+
+        const restartBtn = document.createElement('button');
+        restartBtn.className = 'ssh-form-btn primary';
+        restartBtn.textContent = 'Restart Now';
+        restartBtn.addEventListener('click', () => {
+          overlay.remove();
+          invoke('restart_app');
+        });
+
+        buttons.appendChild(laterBtn);
+        buttons.appendChild(restartBtn);
+        dialog.appendChild(buttons);
+
+        overlay.appendChild(dialog);
+        overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) overlay.remove(); });
+        document.body.appendChild(overlay);
+      }
+
+      async function showAboutDialog() {
+        let info;
+        try { info = await invoke('get_about_info'); } catch (_) { info = {}; }
+        const ver = info.version || '?';
+        const commit = (info.commit || 'dev').substring(0, 7);
+        const rawDate = info.build_date || '';
+        const buildDate = rawDate ? new Date(rawDate).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : 'unknown';
+        const platform = (info.platform || '?') + ' ' + (info.arch || '');
+
+        const overlay = document.createElement('div');
+        overlay.className = 'ssh-overlay';
+        overlay.id = 'about-overlay';
+
+        const dialog = document.createElement('div');
+        dialog.className = 'ssh-form';
+        dialog.style.width = '460px';
+
+        const title = document.createElement('div');
+        title.className = 'ssh-form-title';
+        title.textContent = 'About Conch';
+        dialog.appendChild(title);
+
+        const body = document.createElement('div');
+        body.style.cssText = 'padding:20px 24px;color:var(--fg);font-size:13px;line-height:1.7;display:flex;gap:20px;align-items:flex-start';
+
+        const icon = document.createElement('img');
+        icon.src = 'icons/app-icon.png';
+        icon.style.cssText = 'width:64px;height:64px;flex-shrink:0;border-radius:12px';
+        body.appendChild(icon);
+
+        const content = document.createElement('div');
+        content.style.cssText = 'flex:1;min-width:0';
+
+        const heading = document.createElement('div');
+        heading.style.cssText = 'font-size:18px;font-weight:700;margin-bottom:4px';
+        heading.textContent = 'Conch ' + window.utils.esc(ver);
+        content.appendChild(heading);
+
+        const build = document.createElement('div');
+        build.style.cssText = 'color:var(--text-secondary);font-size:12px;margin-bottom:12px';
+        build.textContent = 'Build #' + window.utils.esc(commit) + ', built on ' + window.utils.esc(buildDate);
+        content.appendChild(build);
+
+        const runtime = document.createElement('div');
+        runtime.style.cssText = 'color:var(--text-secondary);font-size:12px;margin-bottom:12px';
+        runtime.textContent = 'Platform: ' + window.utils.esc(platform);
+        content.appendChild(runtime);
+
+        const license = document.createElement('div');
+        license.style.cssText = 'color:var(--text-secondary);font-size:11px;line-height:1.6';
+        license.innerHTML = 'Licensed under <a href="#" style="color:var(--blue)" onclick="event.preventDefault();if(window.__TAURI__&&window.__TAURI__.shell)window.__TAURI__.shell.open(\'https://www.apache.org/licenses/LICENSE-2.0\')">Apache License 2.0</a><br>'
+          + 'Icons: <a href="#" style="color:var(--blue)" onclick="event.preventDefault();if(window.__TAURI__&&window.__TAURI__.shell)window.__TAURI__.shell.open(\'https://github.com/snwh/paper-icon-theme\')">Paper Icon Theme</a> by Sam Hewitt (<a href="#" style="color:var(--blue)" onclick="event.preventDefault();if(window.__TAURI__&&window.__TAURI__.shell)window.__TAURI__.shell.open(\'https://creativecommons.org/licenses/by-sa/4.0/\')">CC BY-SA 4.0</a>)<br><br>'
+          + 'Copyright \u00A9 2026 Dustin Watts and contributors';
+        content.appendChild(license);
+
+        body.appendChild(content);
+        dialog.appendChild(body);
+
+        const buttons = document.createElement('div');
+        buttons.className = 'ssh-form-buttons';
+
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'ssh-form-btn';
+        closeBtn.textContent = 'Close';
+        closeBtn.addEventListener('click', () => overlay.remove());
+
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'ssh-form-btn primary';
+        copyBtn.textContent = 'Copy Info';
+        copyBtn.addEventListener('click', () => {
+          const text = 'Conch ' + ver + '\nBuild #' + commit + ', built on ' + buildDate + '\nPlatform: ' + platform;
+          navigator.clipboard.writeText(text).then(() => {
+            window.toast.success('Copied', 'Build info copied to clipboard.');
+          });
+          overlay.remove();
+        });
+
+        buttons.appendChild(closeBtn);
+        buttons.appendChild(copyBtn);
+        dialog.appendChild(buttons);
+
+        overlay.appendChild(dialog);
+        overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) overlay.remove(); });
+        document.body.appendChild(overlay);
       }
 
       // Global Escape handler — close overlays or refocus terminal.

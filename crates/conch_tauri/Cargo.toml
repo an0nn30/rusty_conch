@@ -19,9 +19,11 @@ conch_plugin = { workspace = true }
 conch_plugin_sdk = { workspace = true }
 conch_remote = { workspace = true }
 conch_vault = { path = "../conch_vault" }
-tauri = { version = "2" }
+tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 portable-pty = "0.8"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -53,6 +55,7 @@ vault_eager_import = ["conch_vault/vault_eager_import"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+vergen-git2 = "1"
 
 [package.metadata.generate-rpm]
 assets = [
