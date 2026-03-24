@@ -707,7 +707,7 @@
     cb.checked = checked;
     cb.addEventListener('change', () => onChange(cb.checked));
     const slider = document.createElement('span');
-    slider.className = 'settings-switch-slider';
+    slider.className = 'slider';
     label.appendChild(cb);
     label.appendChild(slider);
     return label;
