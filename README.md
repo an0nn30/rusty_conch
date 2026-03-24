@@ -43,6 +43,8 @@ Think MobaXterm, but open source, cross-platform, and extensible.
 
 **Settings Dialog** — Comprehensive settings UI accessible via File > Settings (or `Cmd+,`). Configure appearance, terminal, shell, keyboard shortcuts, plugins, and advanced settings with an Apply/Cancel workflow.
 
+**Auto-Updates** (macOS/Windows) — Checks for new versions on startup and notifies when an update is available. Download and install updates in-place from the app. Configurable via Settings > Advanced or check manually from the menu.
+
 **Theming** — Full [Alacritty-compatible](https://github.com/alacritty/alacritty-theme) `.toml` theme support. Drop a theme file in `~/.config/conch/themes/` and set `[colors] theme = "name"`. Hot-reload on file change. Live preview in the Settings dialog shows theme colors before applying.
 
 **Zen Mode** — `Cmd+Shift+Z` hides all panels for a distraction-free terminal.
@@ -161,6 +163,9 @@ Alacritty-compatible sections (`[window]`, `[font]`, `[colors]`, `[terminal]`) w
 ```toml
 [colors]
 theme = "dracula"           # Any Alacritty .toml theme file name
+
+[conch]
+check_for_updates = true    # Check for new versions on startup (macOS/Windows)
 
 [conch.keyboard]
 new_tab = "cmd+t"
