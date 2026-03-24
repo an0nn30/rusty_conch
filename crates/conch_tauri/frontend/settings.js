@@ -1155,6 +1155,17 @@
     h.textContent = 'Advanced';
     c.appendChild(h);
 
+    // Updates
+    addSectionLabel(c, 'Updates');
+
+    const updateSwitch = makeSwitch(
+      pendingSettings.conch.check_for_updates !== false,
+      (val) => { pendingSettings.conch.check_for_updates = val; }
+    );
+    addRow(c, 'Check for updates on startup', 'Automatically check for new versions when the app starts (macOS and Windows)', updateSwitch);
+
+    addDivider(c);
+
     // Sub-group: Initial Window Size
     addSectionLabel(c, 'Initial Window Size');
 
