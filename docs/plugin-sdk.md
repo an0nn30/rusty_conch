@@ -597,7 +597,7 @@ end
 | `ui.panel_icon_label(icon, text, style?)` | icon, text, style | Icon + label combination |
 | `ui.panel_badge(text, variant)` | text, variant | Status badge (`"info"`, `"success"`, `"warn"`, `"error"`) |
 | `ui.panel_progress(id, fraction, label?)` | id, fraction, label | Progress bar (0.0-1.0) |
-| `ui.panel_image(id?, src, width?, height?)` | id, src, width, height | Image by file path or `data:` URI |
+| `ui.panel_image(id?, src, width?, height?)` **(pending)** | id, src, width, height | Image by file path or `data:` URI |
 
 **Interactive widgets:**
 
@@ -616,7 +616,7 @@ end
 | `ui.panel_table(columns, rows)` | columns, rows | Data table (simple: array of column names + array of row arrays) |
 | `ui.panel_tree(id, nodes, selected?)` | id, nodes, selected | Tree view with icons and context menus |
 | `ui.panel_toolbar(id?, items)` | id, items | Toolbar with buttons, separators, spacers, and text inputs |
-| `ui.panel_path_bar(id, segments)` | id, segments | Clickable breadcrumb path bar |
+| `ui.panel_path_bar(id, segments)` **(pending)** | id, segments | Clickable breadcrumb path bar |
 | `ui.panel_tabs(id, active, tabs)` | id, active, tabs | Tabbed container (active is 0-based index) |
 
 **Layout containers:**
@@ -628,7 +628,7 @@ Layout functions take a callback that builds the child widgets:
 | `ui.panel_horizontal(func, spacing?)` | func, spacing | Horizontal row of widgets |
 | `ui.panel_vertical(func, spacing?)` | func, spacing | Vertical column of widgets |
 | `ui.panel_scroll_area(func, max_height?)` | func, max_height | Scrollable container |
-| `ui.panel_drop_zone(id, label, func?)` | id, label, func | Drag-and-drop target area |
+| `ui.panel_drop_zone(id, label, func?)` **(pending)** | id, label, func | Drag-and-drop target area |
 
 ```lua
 function render()
@@ -666,17 +666,19 @@ end
 
 Both plugin tiers share the same declarative widget system. Plugins return a JSON array of widget objects, and the host renders them as HTML in the webview. Each widget has a `"type"` field that determines its kind, and additional fields for configuration.
 
+> **Note:** Some widget types are defined in the SDK but not yet supported by the webview renderer. These are marked with **(pending)** below. Using them will display `[unknown widget: ...]` until renderer support is added.
+
 ### Layout Widgets
 
 | Widget | Fields | Description |
 |--------|--------|-------------|
 | `horizontal` | `id?`, `children`, `spacing?`, `centered?` | Horizontal row of child widgets |
 | `vertical` | `id?`, `children`, `spacing?` | Vertical column of child widgets |
-| `split_pane` | `id`, `direction`, `ratio`, `resizable`, `left`, `right` | Two-pane split with adjustable ratio |
+| `split_pane` **(pending)** | `id`, `direction`, `ratio`, `resizable`, `left`, `right` | Two-pane split with adjustable ratio |
 | `scroll_area` | `id?`, `max_height?`, `children` | Scrollable container |
 | `tabs` | `id`, `active`, `tabs: [{label, icon?, children}]` | Tabbed container (active is 0-based index) |
-| `drop_zone` | `id`, `label`, `children` | Drag-and-drop target area |
-| `context_menu` | `child`, `items: [{id, label, icon?, enabled?, shortcut?}]` | Wraps a widget with a right-click menu |
+| `drop_zone` **(pending)** | `id`, `label`, `children` | Drag-and-drop target area |
+| `context_menu` **(pending)** | `child`, `items: [{id, label, icon?, enabled?, shortcut?}]` | Wraps a widget with a right-click menu |
 
 **SplitPane details:**
 - `direction`: `"horizontal"` or `"vertical"`
@@ -698,7 +700,7 @@ Both plugin tiers share the same declarative widget system. Plugins return a JSO
 | `icon_label` | `icon`, `text`, `style?` | Icon + label combination |
 | `badge` | `text`, `variant` | Status badge |
 | `progress` | `id`, `fraction`, `label?` | Progress bar (fraction: 0.0-1.0) |
-| `image` | `id?`, `src`, `width?`, `height?` | Image by file path or `data:` URI |
+| `image` **(pending)** | `id?`, `src`, `width?`, `height?` | Image by file path or `data:` URI |
 
 **Style values** (for `label` and `icon_label`): `"normal"`, `"secondary"`, `"muted"`, `"accent"`, `"warn"`, `"error"`.
 
@@ -719,7 +721,7 @@ Both plugin tiers share the same declarative widget system. Plugins return a JSO
 | Widget | Fields | Description |
 |--------|--------|-------------|
 | `toolbar` | `id?`, `items` | Toolbar with buttons, separators, spacers, and text inputs |
-| `path_bar` | `id`, `segments` | Clickable breadcrumb path bar (segments: array of strings) |
+| `path_bar` **(pending)** | `id`, `segments` | Clickable breadcrumb path bar (segments: array of strings) |
 | `tree_view` | `id`, `nodes`, `selected?` | Hierarchical tree with icons, badges, and context menus |
 | `table` | `id`, `columns`, `rows`, `sort_column?`, `sort_ascending?`, `selected_row?` | Sortable, selectable data table with context menus |
 
