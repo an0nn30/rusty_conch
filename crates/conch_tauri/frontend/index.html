@@ -1425,7 +1425,13 @@
         });
         const fitAddon = new FitAddon.FitAddon();
         term.loadAddon(fitAddon);
-        term.loadAddon(new WebLinksAddon.WebLinksAddon());
+        term.loadAddon(new WebLinksAddon.WebLinksAddon((_event, uri) => {
+          if (tauri.shell && tauri.shell.open) {
+            tauri.shell.open(uri);
+          } else {
+            window.open(uri, '_blank');
+          }
+        }));
         if (typeof Unicode11Addon !== 'undefined') {
           term.loadAddon(new Unicode11Addon.Unicode11Addon());
           term.unicode.activeVersion = '11';
