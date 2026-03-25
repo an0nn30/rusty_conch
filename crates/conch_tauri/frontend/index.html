@@ -20,11 +20,12 @@
       --cyan: #8be9fd; --magenta: #ff79c6;
       --input-bg: #2b2e3a; --hover-bg: #2b2e3a;
       --text-secondary: #c5c8d5; --text-muted: #8b8fa3;
+      --ui-font-small: 12px; --ui-font-list: 14px; --ui-font-normal: 14px;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
       width: 100%; height: 100%; overflow: hidden; background: var(--bg);
-      font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--ui-font-normal); line-height: 1.4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       color: var(--fg);
     }
     #app { width: 100%; height: 100%; display: flex; flex-direction: column; }
@@ -79,7 +80,7 @@
       -webkit-app-region: drag;
     }
     .titlebar-title {
-      font-size: 12px;
+      font-size: var(--ui-font-normal);
       color: var(--text-muted);
       overflow: hidden;
       text-overflow: ellipsis;
@@ -122,7 +123,7 @@
       border: 1px solid var(--tab-border);
       box-shadow: 0 4px 16px rgba(0,0,0,0.4);
       padding: 4px 0;
-      font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--ui-font-normal); line-height: 1.4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       color: var(--text-secondary);
     }
     .titlebar-dropdown-item {
@@ -143,7 +144,7 @@
     }
     .titlebar-dropdown-shortcut {
       color: var(--text-muted);
-      font-size: 11px;
+      font-size: var(--ui-font-small);
       flex-shrink: 0;
     }
     .titlebar-dropdown-sep {
@@ -193,7 +194,7 @@
       border-radius: 0;
       background: var(--input-bg);
       color: var(--text-secondary);
-      font: 12px/1.1 "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+      font-size: var(--ui-font-small); line-height: 1.1; font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
       text-align: center;
       cursor: pointer;
       white-space: nowrap;
@@ -245,7 +246,7 @@
       width: 300px; min-width: 200px; max-width: 600px;
       background: var(--panel-bg); border-right: 1px solid var(--tab-border);
       display: flex; flex-direction: column; overflow: hidden;
-      font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--ui-font-normal); line-height: 1.4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       color: var(--text-secondary);
     }
     #files-panel-resize {
@@ -256,7 +257,7 @@
     .fp-pane-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
     .fp-pane { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
     .fp-pane-label {
-      padding: 6px 8px 2px; font-size: 11px; font-weight: 600; color: var(--text-muted);
+      padding: 6px 8px 2px; font-size: var(--ui-font-small); font-weight: 600; color: var(--text-muted);
       text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
     }
     .fp-toolbar {
@@ -264,7 +265,7 @@
     }
     .fp-tb-btn {
       background: none; border: 1px solid transparent; border-radius: 3px;
-      color: var(--text-muted); cursor: pointer; padding: 2px 5px; font-size: 11px; line-height: 1;
+      color: var(--text-muted); cursor: pointer; padding: 2px 5px; font-size: var(--ui-font-small); line-height: 1;
     }
     .fp-tb-btn:hover:not(:disabled) { background: var(--tab-border); color: var(--fg); }
     .fp-tb-btn:disabled { opacity: 0.3; cursor: default; }
@@ -275,12 +276,12 @@
     }
     .fp-path-input:focus { border-color: var(--dim-fg); }
     .fp-path-input:disabled { opacity: 0.4; }
-    .fp-error { padding: 4px 8px; font-size: 11px; color: var(--red); flex-shrink: 0; }
+    .fp-error { padding: 4px 8px; font-size: var(--ui-font-small); color: var(--red); flex-shrink: 0; }
     .fp-table-wrap { flex: 1; overflow-y: auto; overflow-x: hidden; }
-    .fp-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .fp-table { width: 100%; border-collapse: collapse; font-size: var(--ui-font-list); }
     .fp-table th {
       position: sticky; top: 0; z-index: 1; padding: 3px 6px; text-align: left;
-      font-size: 10px; font-weight: 500; color: var(--dim-fg); background: var(--panel-bg);
+      font-size: var(--ui-font-small); font-weight: 500; color: var(--dim-fg); background: var(--panel-bg);
       border-bottom: 1px solid var(--tab-border); white-space: nowrap; user-select: none;
     }
     .fp-table td { padding: 2px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -294,12 +295,12 @@
     .fp-icon { vertical-align: middle; }
     .fp-cell-name img, .fp-cell-name svg { vertical-align: middle; margin-right: 3px; }
     .fp-cell-ext { width: 45px; color: var(--dim-fg); }
-    .fp-cell-size { width: 65px; text-align: right; color: var(--text-muted); font-family: "JetBrains Mono", monospace; font-size: 10px; }
-    .fp-cell-mod { width: 110px; color: var(--text-muted); font-size: 10px; }
+    .fp-cell-size { width: 65px; text-align: right; color: var(--text-muted); font-family: "JetBrains Mono", monospace; font-size: var(--ui-font-small); }
+    .fp-cell-mod { width: 110px; color: var(--text-muted); font-size: var(--ui-font-small); }
     .fp-th-ext { width: 45px; }
     .fp-th-size { width: 65px; }
     .fp-th-mod { width: 110px; }
-    .fp-footer { padding: 3px 8px; font-size: 10px; color: var(--dim-fg); flex-shrink: 0; }
+    .fp-footer { padding: 3px 8px; font-size: var(--ui-font-small); color: var(--dim-fg); flex-shrink: 0; }
     .fp-transfer-bar {
       display: flex; justify-content: center; gap: 8px;
       padding: 4px 8px; border-top: 1px solid var(--tab-border); border-bottom: 1px solid var(--tab-border);
@@ -307,16 +308,16 @@
     }
     .fp-transfer-btn {
       padding: 3px 12px; border: 1px solid var(--tab-border); border-radius: 4px;
-      background: var(--input-bg); color: var(--text-secondary); cursor: pointer; font-size: 11px;
+      background: var(--input-bg); color: var(--text-secondary); cursor: pointer; font-size: var(--ui-font-small);
     }
     .fp-transfer-btn:hover { background: var(--tab-border); color: var(--fg); }
-    .fp-transfer-pct { margin-left: 6px; color: var(--green); font-weight: 600; font-size: 10px; }
+    .fp-transfer-pct { margin-left: 6px; color: var(--green); font-weight: 600; font-size: var(--ui-font-small); }
     .fp-col-menu {
       position: fixed; z-index: 2000; background: var(--input-bg); border: 1px solid var(--active-highlight);
       border-radius: 6px; padding: 4px 0; min-width: 130px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
     }
     .fp-col-menu-item {
-      padding: 4px 12px; cursor: pointer; font-size: 12px; color: var(--fg); white-space: nowrap;
+      padding: 4px 12px; cursor: pointer; font-size: var(--ui-font-normal); color: var(--fg); white-space: nowrap;
     }
     .fp-col-menu-item:hover { background: var(--active-highlight); }
     .fp-col-check { display: inline-block; width: 16px; text-align: center; }
@@ -324,7 +325,7 @@
     .fp-progress-toast {
       width: 340px; background: var(--panel-bg); border: 1px solid #50fa7b; border-radius: 8px;
       padding: 10px 12px;
-      font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--ui-font-normal); line-height: 1.4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       color: var(--fg); box-shadow: 0 4px 20px rgba(0,0,0,0.5);
       opacity: 0; transform: translateY(10px);
       transition: opacity 200ms, transform 200ms;
@@ -352,7 +353,7 @@
     }
     .fp-pt-details {
       display: flex; justify-content: space-between;
-      font-size: 10px; color: var(--text-muted);
+      font-size: var(--ui-font-small); color: var(--text-muted);
     }
     /* -- Global toast system -- */
     #toast-container {
@@ -363,7 +364,7 @@
     .conch-toast {
       width: 340px; background: var(--panel-bg); border: 1px solid var(--active-highlight);
       border-radius: 8px; padding: 10px 12px;
-      font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--ui-font-normal); line-height: 1.4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       color: var(--fg); box-shadow: 0 4px 20px rgba(0,0,0,0.5);
       opacity: 0; transform: translateY(10px);
       transition: opacity 200ms, transform 200ms;
@@ -379,13 +380,13 @@
     }
     .conch-toast-close:hover { color: var(--fg); }
     .conch-toast-body {
-      margin-top: 4px; font-size: 11px; color: var(--text-muted);
+      margin-top: 4px; font-size: var(--ui-font-small); color: var(--text-muted);
       word-break: break-word; white-space: pre-wrap;
     }
     .conch-toast-actions { margin-top: 6px; display: flex; gap: 6px; }
     .conch-toast-action-btn {
       background: var(--selection); color: var(--fg); border: none; border-radius: 3px;
-      padding: 3px 10px; font-size: 11px; cursor: pointer;
+      padding: 3px 10px; font-size: var(--ui-font-small); cursor: pointer;
     }
     .conch-toast-action-btn:hover { background: var(--active-highlight); }
     .conch-toast-success { border-color: var(--green); }
@@ -402,7 +403,7 @@
     .pw-vertical { display: flex; flex-direction: column; gap: 4px; }
     .pw-scroll-area { overflow-y: auto; }
     .pw-heading { font-size: 14px; font-weight: 600; color: var(--fg); margin: 4px 0 2px; }
-    .pw-label { font-size: 12px; color: var(--text-secondary); }
+    .pw-label { font-size: var(--ui-font-normal); color: var(--text-secondary); }
     .pw-style-secondary { color: var(--text-muted); }
     .pw-style-muted { color: var(--dim-fg); }
     .pw-style-accent { color: var(--blue); }
@@ -410,13 +411,13 @@
     .pw-style-error { color: var(--red); }
     .pw-text { font: 12px/1.4 "JetBrains Mono", monospace; color: var(--fg); margin: 0; white-space: pre-wrap; word-break: break-word; }
     .pw-scroll-text { font: 11px/1.3 "JetBrains Mono", monospace; color: var(--text-secondary); overflow-y: auto; margin: 0; padding: 4px; background: #1a1b26; border-radius: 3px; }
-    .pw-kv { display: flex; gap: 8px; font-size: 12px; }
+    .pw-kv { display: flex; gap: 8px; font-size: var(--ui-font-normal); }
     .pw-kv-key { color: var(--text-muted); flex-shrink: 0; }
     .pw-kv-value { color: var(--fg); word-break: break-word; }
     .pw-separator { border: none; border-top: 1px solid var(--tab-border); margin: 4px 0; }
     .pw-spacer { }
-    .pw-icon-label { font-size: 12px; }
-    .pw-badge { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 500; }
+    .pw-icon-label { font-size: var(--ui-font-normal); }
+    .pw-badge { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: var(--ui-font-small); font-weight: 500; }
     .pw-badge-info { background: var(--active-highlight); color: var(--cyan); }
     .pw-badge-success { background: var(--active-highlight); color: var(--green); }
     .pw-badge-warn { background: var(--active-highlight); color: var(--yellow); }
@@ -426,7 +427,7 @@
     .pw-progress-label { position: absolute; right: 4px; top: -1px; font-size: 9px; color: var(--text-muted); }
     .pw-button {
       padding: 4px 12px; border: 1px solid var(--active-highlight); border-radius: 4px;
-      background: var(--input-bg); color: var(--text-secondary); cursor: pointer; font-size: 12px;
+      background: var(--input-bg); color: var(--text-secondary); cursor: pointer; font-size: var(--ui-font-normal);
     }
     .pw-button:hover:not(:disabled) { background: var(--tab-border); color: var(--fg); }
     .pw-button:disabled { opacity: 0.4; cursor: default; }
@@ -437,14 +438,14 @@
     }
     .pw-text-input:focus, .pw-text-edit:focus, .pw-combo-box:focus { border-color: var(--dim-fg); }
     .pw-text-edit { resize: vertical; min-height: 40px; }
-    .pw-checkbox { font-size: 12px; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 4px; }
+    .pw-checkbox { font-size: var(--ui-font-normal); color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 4px; }
     .pw-toolbar { display: flex; align-items: center; gap: 3px; padding: 3px 0; }
-    .pw-toolbar-btn { padding: 2px 6px; border: 1px solid transparent; border-radius: 3px; background: none; color: var(--text-muted); cursor: pointer; font-size: 11px; }
+    .pw-toolbar-btn { padding: 2px 6px; border: 1px solid transparent; border-radius: 3px; background: none; color: var(--text-muted); cursor: pointer; font-size: var(--ui-font-small); }
     .pw-toolbar-btn:hover:not(:disabled) { background: var(--tab-border); color: var(--fg); }
     .pw-toolbar-sep { width: 1px; height: 14px; background: var(--tab-border); }
     .pw-toolbar-spacer { flex: 1; }
     .pw-toolbar-input { flex: 1; min-width: 0; padding: 2px 6px; background: var(--input-bg); border: 1px solid var(--tab-border); border-radius: 3px; color: var(--fg); font: 11px "JetBrains Mono", monospace; outline: none; }
-    .pw-tree { font-size: 12px; }
+    .pw-tree { font-size: var(--ui-font-list); }
     .pw-tree-row { display: flex; align-items: center; gap: 4px; padding: 2px 6px; cursor: pointer; user-select: none; }
     .pw-tree-row:hover { background: var(--input-bg); }
     .pw-tree-row.selected { background: var(--active-highlight); }
@@ -452,30 +453,30 @@
     .pw-tree-arrow { width: 12px; text-align: center; font-size: 9px; color: var(--dim-fg); cursor: pointer; flex-shrink: 0; }
     .pw-tree-arrow-placeholder { width: 12px; flex-shrink: 0; }
     .pw-tree-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .pw-tree-badge { font-size: 10px; color: var(--dim-fg); flex-shrink: 0; }
+    .pw-tree-badge { font-size: var(--ui-font-small); color: var(--dim-fg); flex-shrink: 0; }
     .pw-tree-children { padding-left: 12px; }
     .pw-table-wrap { overflow: auto; }
-    .pw-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-    .pw-table th { padding: 3px 6px; text-align: left; font-size: 10px; font-weight: 500; color: var(--dim-fg); background: var(--panel-bg); border-bottom: 1px solid var(--tab-border); white-space: nowrap; user-select: none; position: sticky; top: 0; z-index: 1; }
+    .pw-table { width: 100%; border-collapse: collapse; font-size: var(--ui-font-list); }
+    .pw-table th { padding: 3px 6px; text-align: left; font-size: var(--ui-font-small); font-weight: 500; color: var(--dim-fg); background: var(--panel-bg); border-bottom: 1px solid var(--tab-border); white-space: nowrap; user-select: none; position: sticky; top: 0; z-index: 1; }
     .pw-table td { padding: 2px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
     .pw-table-row:hover td { background: var(--input-bg); }
     .pw-table-row.selected td { background: var(--active-highlight); }
     .pw-tabs-bar { display: flex; gap: 0; border-bottom: 1px solid var(--tab-border); }
-    .pw-tab-btn { padding: 4px 12px; border: none; border-bottom: 2px solid transparent; background: none; color: var(--text-muted); cursor: pointer; font-size: 11px; }
+    .pw-tab-btn { padding: 4px 12px; border: none; border-bottom: 2px solid transparent; background: none; color: var(--text-muted); cursor: pointer; font-size: var(--ui-font-small); }
     .pw-tab-btn:hover { color: var(--fg); }
     .pw-tab-btn.active { color: var(--fg); border-bottom-color: var(--blue); }
     .pw-tabs-content { padding: 6px 0; }
-    .pw-unknown { color: var(--dim-fg); font-size: 11px; font-style: italic; padding: 4px; }
-    .pw-error { color: var(--red); font-size: 11px; padding: 4px; }
+    .pw-unknown { color: var(--dim-fg); font-size: var(--ui-font-small); font-style: italic; padding: 4px; }
+    .pw-error { color: var(--red); font-size: var(--ui-font-small); padding: 4px; }
     /* Plugin panel container */
     .plugin-panel-content { padding: 6px 8px; overflow-y: auto; flex: 1; }
     /* -- Plugin Manager -- */
     .plugin-manager-dialog { width: 720px; max-width: 95vw; }
     .pm-body { max-height: 50vh; overflow-y: auto; }
-    .pm-table { width: 100%; border-collapse: collapse; font-size: 12px; color: var(--text-secondary); }
+    .pm-table { width: 100%; border-collapse: collapse; font-size: var(--ui-font-normal); color: var(--text-secondary); }
     .pm-table thead { position: sticky; top: 0; z-index: 1; }
     .pm-table th {
-      padding: 6px 10px; text-align: left; font-weight: 500; font-size: 10px;
+      padding: 6px 10px; text-align: left; font-weight: 500; font-size: var(--ui-font-small);
       text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim-fg);
       background: var(--panel-bg); border-bottom: 1px solid var(--tab-border);
     }
@@ -484,7 +485,7 @@
     .pm-col-status { width: 90px; }
     .pm-col-name { font-weight: 500; }
     .pm-col-version { color: var(--dim-fg); width: 60px; }
-    .pm-col-path { max-width: 160px; overflow: hidden; text-overflow: ellipsis; color: var(--dim-fg); font-size: 10px; }
+    .pm-col-path { max-width: 160px; overflow: hidden; text-overflow: ellipsis; color: var(--dim-fg); font-size: var(--ui-font-small); }
     .pm-th-path { width: 160px; }
     .pm-col-action { width: 1%; white-space: nowrap; text-align: right; }
     .pm-empty { padding: 24px; text-align: center; color: var(--dim-fg); font-size: 13px; }
@@ -494,13 +495,13 @@
       height: 120px; min-height: 40px; max-height: 300px;
       background: var(--panel-bg); border-top: 1px solid var(--tab-border);
       display: flex; flex-direction: column; overflow: hidden;
-      font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--ui-font-normal); line-height: 1.4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       color: var(--fg);
     }
     #bottom-panel.hidden { display: none; }
     #bottom-panel-header {
       display: flex; align-items: center; padding: 4px 10px;
-      font-size: 10px; color: var(--dim-fg); text-transform: uppercase;
+      font-size: var(--ui-font-small); color: var(--dim-fg); text-transform: uppercase;
       letter-spacing: 0.5px; flex-shrink: 0;
       border-bottom: 1px solid var(--tab-border);
     }
@@ -528,7 +529,7 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--ui-font-normal); line-height: 1.4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       color: var(--text-secondary);
     }
     .ssh-panel-header {
@@ -556,12 +557,13 @@
     .ssh-quick-connect input::placeholder { color: var(--dim-fg); }
     .ssh-active-sessions { }
     .ssh-section-header {
-      padding: 6px 10px 3px; font-size: 10px; text-transform: uppercase;
+      padding: 6px 10px 3px; font-size: var(--ui-font-small); text-transform: uppercase;
       letter-spacing: 0.5px; color: var(--dim-fg);
     }
     .ssh-session-node {
       display: flex; align-items: center; gap: 6px;
       padding: 3px 10px 3px 14px; cursor: pointer;
+      font-size: var(--ui-font-list);
     }
     .ssh-session-node:hover { background: var(--input-bg); }
     .ssh-session-dot {
@@ -574,9 +576,9 @@
       padding: 0 10px 2px;
     }
     .ssh-section-header-inline {
-      font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim-fg);
+      font-size: var(--ui-font-small); text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim-fg);
     }
-    .ssh-icon-btn-sm { font-size: 11px; padding: 1px 5px; }
+    .ssh-icon-btn-sm { font-size: var(--ui-font-small); padding: 1px 5px; }
     .ssh-tunnel-node {
       display: flex; align-items: center; gap: 6px;
       padding: 3px 10px 3px 14px; cursor: pointer; user-select: none;
@@ -589,44 +591,46 @@
       margin-left: auto; flex-shrink: 0;
       padding: 1px 8px; border: 1px solid var(--active-highlight); border-radius: 3px;
       background: transparent; color: var(--text-secondary); cursor: pointer;
-      font-size: 10px; line-height: 1.5; white-space: nowrap;
+      font-size: var(--ui-font-small); line-height: 1.5; white-space: nowrap;
       transition: background 100ms, border-color 100ms;
     }
     .ssh-tunnel-btn:hover { border-color: var(--dim-fg); background: var(--input-bg); }
     .ssh-tunnel-btn:active { background: var(--tab-border); }
     .ssh-tunnel-btn:disabled { opacity: 0.4; cursor: default; }
-    .ssh-tunnel-empty { padding: 4px 14px; font-size: 11px; color: var(--dim-fg); }
+    .ssh-tunnel-empty { padding: 4px 14px; font-size: var(--ui-font-small); color: var(--dim-fg); }
     .ssh-tunnels-section { }
     .ssh-server-list { flex: 1; overflow-y: auto; overflow-x: hidden; padding-bottom: 8px; }
     .ssh-folder { }
     .ssh-folder-header {
       display: flex; align-items: center; gap: 4px;
       padding: 4px 10px; cursor: pointer; user-select: none;
+      font-size: var(--ui-font-list);
     }
     .ssh-folder-header:hover { background: var(--input-bg); }
     .ssh-folder-arrow { font-size: 9px; width: 12px; text-align: center; color: var(--dim-fg); }
     .ssh-folder-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .ssh-folder-count { font-size: 10px; color: var(--dim-fg); }
+    .ssh-folder-count { font-size: var(--ui-font-small); color: var(--dim-fg); }
     .ssh-folder-entries { }
     .ssh-server-node {
       display: flex; align-items: center; gap: 6px;
       padding: 3px 10px 3px 22px; cursor: pointer; user-select: none;
+      font-size: var(--ui-font-list);
     }
     .ssh-server-node:hover { background: var(--input-bg); }
     .ssh-server-node.highlighted { background: var(--active-highlight); color: var(--fg); }
     .ssh-server-node.dimmed { opacity: 0.6; }
-    .ssh-search-hint { padding: 8px 14px; font-size: 11px; color: var(--dim-fg); font-style: italic; }
+    .ssh-search-hint { padding: 8px 14px; font-size: var(--ui-font-small); color: var(--dim-fg); font-style: italic; }
     .ssh-server-label {
       flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .ssh-server-detail { font-size: 10px; color: var(--dim-fg); flex-shrink: 0; }
+    .ssh-server-detail { font-size: var(--ui-font-small); color: var(--dim-fg); flex-shrink: 0; }
     .ssh-context-menu {
       position: fixed; z-index: 2000; background: var(--input-bg); border: 1px solid var(--active-highlight);
       border-radius: 6px; padding: 4px 0; min-width: 140px;
       box-shadow: 0 4px 16px rgba(0,0,0,0.4);
     }
     .ssh-context-menu-item {
-      padding: 5px 14px; cursor: pointer; font-size: 12px; color: var(--fg);
+      padding: 5px 14px; cursor: pointer; font-size: var(--ui-font-normal); color: var(--fg);
     }
     .ssh-context-menu-item:hover { background: var(--active-highlight); }
     .ssh-auth-message { font-size: 13px; color: var(--fg); line-height: 1.5; margin-bottom: 8px; }
@@ -636,7 +640,7 @@
       border-radius: 4px; padding: 8px 10px; margin-bottom: 8px;
       white-space: pre-wrap; word-break: break-all;
     }
-    .ssh-auth-question { font-size: 12px; color: var(--dim-fg); }
+    .ssh-auth-question { font-size: var(--ui-font-normal); color: var(--dim-fg); }
     .ssh-context-menu-item.danger { color: var(--red); }
     .ssh-context-menu-item.danger:hover { background: var(--red); color: var(--fg); }
     .ssh-context-menu-sep { height: 1px; background: var(--tab-border); margin: 4px 0; }
@@ -650,7 +654,7 @@
       background: var(--panel-bg); border: 1px solid var(--active-highlight);
       border-radius: 10px; width: 460px; max-width: 90vw;
       box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-      font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--ui-font-normal); line-height: 1.4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       color: var(--fg);
     }
     .ssh-form-small { width: 320px; }
@@ -662,7 +666,7 @@
     .ssh-form-row { display: flex; gap: 10px; }
     .ssh-form-label {
       display: flex; flex-direction: column; gap: 3px;
-      font-size: 11px; color: var(--text-muted); font-weight: 500;
+      font-size: var(--ui-font-small); color: var(--text-muted); font-weight: 500;
     }
     .ssh-form-label input,
     .ssh-form-label select {
@@ -686,7 +690,7 @@
       border: 1px solid var(--tab-border); border-radius: 5px; padding: 0;
     }
     .ssh-form-advanced summary {
-      padding: 6px 10px; cursor: pointer; font-size: 11px;
+      padding: 6px 10px; cursor: pointer; font-size: var(--ui-font-small);
       color: var(--text-muted); user-select: none;
     }
     .ssh-form-advanced summary:hover { color: var(--fg); }
@@ -701,15 +705,15 @@
     .ssh-form-btn {
       padding: 6px 16px; border: 1px solid var(--tab-border); border-radius: 5px;
       background: var(--input-bg); color: var(--text-secondary); cursor: pointer;
-      font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--ui-font-normal); line-height: 1; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
     .ssh-form-btn:hover { background: var(--tab-border); color: var(--fg); }
     .ssh-form-btn.primary { background: var(--dim-fg); color: var(--fg); border-color: var(--dim-fg); }
     .ssh-form-btn.primary:hover { background: var(--active-highlight); }
     /* -- Export dialog -- */
-    .ssh-export-section { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim-fg); margin-bottom: 4px; }
-    .ssh-export-group { font-size: 11px; font-weight: 600; color: var(--dim-fg); margin: 8px 0 2px 0; }
-    .ssh-export-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; font-size: 12px; color: var(--fg); line-height: 14px; }
+    .ssh-export-section { font-size: var(--ui-font-small); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim-fg); margin-bottom: 4px; }
+    .ssh-export-group { font-size: var(--ui-font-small); font-weight: 600; color: var(--dim-fg); margin: 8px 0 2px 0; }
+    .ssh-export-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; font-size: var(--ui-font-normal); color: var(--fg); line-height: 14px; }
     .ssh-export-item input[type="checkbox"],
     .ssh-form-body input[type="checkbox"] {
       -webkit-appearance: none; appearance: none; margin: 0;
@@ -721,19 +725,19 @@
     .ssh-form-body input[type="checkbox"]:checked {
       background: var(--blue, #7aa2f7); border-color: var(--blue, #7aa2f7);
     }
-    .ssh-export-dim { color: var(--dim-fg); font-size: 11px; }
+    .ssh-export-dim { color: var(--dim-fg); font-size: var(--ui-font-small); }
     /* -- Tunnel manager -- */
     .tunnel-manager-dialog { width: 680px; max-width: 95vw; }
     .tunnel-manager-body { padding: 0; max-height: 50vh; overflow-y: auto; }
     .tunnel-table-wrap { min-height: 60px; }
     .tunnel-table {
       width: 100%; border-collapse: collapse;
-      font-size: 12px; color: var(--text-secondary);
+      font-size: var(--ui-font-normal); color: var(--text-secondary);
     }
     .tunnel-table thead { position: sticky; top: 0; z-index: 1; }
     .tunnel-table th {
       padding: 6px 10px; text-align: left; font-weight: 500;
-      font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+      font-size: var(--ui-font-small); text-transform: uppercase; letter-spacing: 0.5px;
       color: var(--dim-fg); background: var(--panel-bg); border-bottom: 1px solid var(--tab-border);
     }
     .tunnel-table td {
@@ -743,7 +747,7 @@
     }
     .tunnel-row:hover td { background: var(--input-bg); }
     .tunnel-col-status { width: 100px; }
-    .tunnel-mono { font-family: "JetBrains Mono", monospace; font-size: 11px; }
+    .tunnel-mono { font-family: "JetBrains Mono", monospace; font-size: var(--ui-font-small); }
     .tunnel-dot {
       display: inline-block; width: 7px; height: 7px;
       border-radius: 50%; margin-right: 4px; vertical-align: middle;
@@ -756,7 +760,7 @@
     .tunnel-action-btn {
       padding: 3px 10px; margin-left: 4px; border: 1px solid var(--tab-border);
       border-radius: 4px; background: var(--input-bg); color: var(--text-secondary);
-      cursor: pointer; font-size: 11px;
+      cursor: pointer; font-size: var(--ui-font-small);
     }
     .tunnel-action-btn:hover { background: var(--tab-border); color: var(--fg); }
     .tunnel-action-btn.danger { color: var(--red); }
@@ -805,24 +809,24 @@
       padding: 12px 0; overflow-y: auto; flex-shrink: 0;
     }
     .settings-sidebar-group {
-      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      font-size: var(--ui-font-small); font-weight: 600; text-transform: uppercase;
       color: var(--dim-fg); padding: 8px 14px 4px; letter-spacing: 0.5px;
     }
     .settings-sidebar-item {
       padding: 5px 14px 5px 22px; cursor: pointer;
-      color: var(--text-secondary); font-size: 12px;
+      color: var(--text-secondary); font-size: var(--ui-font-normal);
     }
     .settings-sidebar-item:hover { background: var(--input-bg); }
     .settings-sidebar-item.active { background: var(--active-highlight); color: var(--fg); font-weight: 600; }
     .settings-content { flex: 1; padding: 16px 20px; overflow-y: auto; }
     .settings-content h3 { font-size: 14px; font-weight: 600; margin: 0 0 14px; color: var(--fg); }
     .settings-section-label {
-      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      font-size: var(--ui-font-small); font-weight: 600; text-transform: uppercase;
       letter-spacing: 0.5px; color: var(--dim-fg); margin-bottom: 4px;
     }
     .settings-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; gap: 12px; }
-    .settings-row-label { font-size: 12px; color: var(--fg); }
-    .settings-row-desc { font-size: 10px; color: var(--dim-fg); margin-top: 2px; }
+    .settings-row-label { font-size: var(--ui-font-normal); color: var(--fg); }
+    .settings-row-desc { font-size: var(--ui-font-small); color: var(--dim-fg); margin-top: 2px; }
     .settings-divider { border: none; border-top: 1px solid var(--tab-border); margin: 12px 0; }
     .settings-input {
       padding: 6px 8px; background: var(--input-bg); border: 1px solid var(--tab-border);
@@ -843,7 +847,7 @@
     .settings-toggle {
       padding: 5px 12px; border: 1px solid var(--tab-border);
       background: var(--input-bg); color: var(--text-secondary);
-      font-size: 12px; cursor: pointer; outline: none;
+      font-size: var(--ui-font-normal); cursor: pointer; outline: none;
     }
     .settings-toggle:first-child { border-radius: 5px 0 0 5px; }
     .settings-toggle:last-child { border-radius: 0 5px 5px 0; }
@@ -882,7 +886,7 @@
     .tp-container {
       border-radius: 6px; padding: 14px; margin: 8px 0 12px 0;
       font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
-      font-size: 12px; line-height: 1.5;
+      font-size: var(--ui-font-normal); line-height: 1.5;
       border: 1px solid var(--tab-border);
     }
     .tp-label { font-size: 9px; letter-spacing: 0.1em; margin-bottom: 8px; text-transform: uppercase; }
@@ -902,16 +906,16 @@
     }
     @keyframes vault-spin { to { transform: rotate(360deg); } }
     .vault-account-form { width: 460px; max-width: 90vw; }
-    .vault-keygen-link { font-size: 12px; color: var(--text-secondary); margin: 4px 0 8px; }
+    .vault-keygen-link { font-size: var(--ui-font-normal); color: var(--text-secondary); margin: 4px 0 8px; }
     .vault-keygen-link a { color: var(--fg); text-decoration: underline; cursor: pointer; }
-    .vault-browse-link { font-size: 12px; color: var(--text-secondary); cursor: pointer; text-decoration: underline; display: inline-block; margin: 2px 0 6px; }
+    .vault-browse-link { font-size: var(--ui-font-normal); color: var(--text-secondary); cursor: pointer; text-decoration: underline; display: inline-block; margin: 2px 0 6px; }
     .vault-description {
-      font-size: 12px; color: var(--text-secondary); line-height: 1.5;
+      font-size: var(--ui-font-normal); color: var(--text-secondary); line-height: 1.5;
       margin: 0 0 4px;
     }
     .vault-checkbox-label {
       display: flex; align-items: center; gap: 8px;
-      font-size: 12px; color: var(--text-secondary); cursor: pointer;
+      font-size: var(--ui-font-normal); color: var(--text-secondary); cursor: pointer;
       padding: 4px 0;
     }
     .vault-checkbox-label input[type="checkbox"] {
@@ -935,7 +939,7 @@
     }
     .vault-sidebar-item {
       padding: 6px 14px; cursor: pointer;
-      color: var(--text-secondary); font-size: 12px;
+      color: var(--text-secondary); font-size: var(--ui-font-normal);
     }
     .vault-sidebar-item:hover { background: var(--input-bg); }
     .vault-sidebar-item.active { background: var(--active-highlight); color: var(--fg); font-weight: 600; }
@@ -945,7 +949,7 @@
     }
     .vault-lock-status {
       display: flex; align-items: center; gap: 6px;
-      font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;
+      font-size: var(--ui-font-small); color: var(--text-secondary); margin-bottom: 8px;
     }
     .vault-status-dot {
       display: inline-block; width: 7px; height: 7px;
@@ -956,7 +960,7 @@
     .vault-lock-btn {
       width: 100%; padding: 4px 10px; border: 1px solid var(--tab-border);
       border-radius: 4px; background: var(--input-bg); color: var(--text-secondary);
-      cursor: pointer; font-size: 11px; text-align: center;
+      cursor: pointer; font-size: var(--ui-font-small); text-align: center;
     }
     .vault-lock-btn:hover { background: var(--tab-border); color: var(--fg); }
     .vault-content { flex: 1; padding: 16px 20px; overflow-y: auto; }
@@ -965,7 +969,7 @@
       display: flex; align-items: center; justify-content: space-between;
       margin-bottom: 14px;
     }
-    .vault-add-btn { font-size: 11px; padding: 4px 12px; }
+    .vault-add-btn { font-size: var(--ui-font-small); padding: 4px 12px; }
     .vault-empty {
       padding: 24px; text-align: center; color: var(--dim-fg); font-size: 13px;
       line-height: 1.6;
@@ -980,16 +984,16 @@
       width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
       background: var(--active-highlight); color: var(--fg);
       display: flex; align-items: center; justify-content: center;
-      font-size: 12px; font-weight: 600;
+      font-size: var(--ui-font-normal); font-weight: 600;
     }
     .vault-account-info { flex: 1; min-width: 0; }
     .vault-account-name { font-size: 13px; font-weight: 500; color: var(--fg); }
-    .vault-account-detail { font-size: 11px; color: var(--dim-fg); margin-top: 1px; }
+    .vault-account-detail { font-size: var(--ui-font-small); color: var(--dim-fg); margin-top: 1px; }
     .vault-account-actions { display: flex; gap: 4px; }
     .vault-row-btn {
       padding: 3px 10px; border: 1px solid var(--tab-border);
       border-radius: 4px; background: var(--input-bg); color: var(--text-secondary);
-      cursor: pointer; font-size: 11px;
+      cursor: pointer; font-size: var(--ui-font-small);
     }
     .vault-row-btn:hover { background: var(--tab-border); color: var(--fg); }
     .vault-row-btn.danger { color: var(--red); }
@@ -1005,16 +1009,16 @@
       display: flex; gap: 6px; align-items: center;
     }
     .keygen-path-row input { flex: 1; min-width: 0; }
-    .keygen-browse-btn { flex-shrink: 0; font-size: 11px; padding: 4px 10px; }
+    .keygen-browse-btn { flex-shrink: 0; font-size: var(--ui-font-small); padding: 4px 10px; }
     .keygen-note {
-      font-size: 11px; color: var(--dim-fg); line-height: 1.5; padding: 2px 0;
+      font-size: var(--ui-font-small); color: var(--dim-fg); line-height: 1.5; padding: 2px 0;
     }
     .keygen-overwrite-warning {
       display: flex; align-items: center; gap: 8px; padding: 6px 10px;
       margin-top: 6px; border-radius: 4px;
       background: color-mix(in srgb, var(--yellow) 15%, var(--bg));
       border: 1px solid color-mix(in srgb, var(--yellow) 40%, transparent);
-      font-size: 12px;
+      font-size: var(--ui-font-normal);
     }
     .keygen-overwrite-text { color: var(--yellow); flex: 1; }
     .keygen-overwrite-btn { background: var(--yellow); color: var(--bg); }
@@ -1030,14 +1034,14 @@
     }
     .keygen-result-row:last-of-type { border-bottom: none; }
     .keygen-result-label {
-      flex-shrink: 0; width: 90px; font-size: 11px; color: var(--dim-fg);
+      flex-shrink: 0; width: 90px; font-size: var(--ui-font-small); color: var(--dim-fg);
       text-align: right;
     }
     .keygen-result-value {
-      flex: 1; min-width: 0; font-size: 12px; color: var(--fg);
+      flex: 1; min-width: 0; font-size: var(--ui-font-normal); color: var(--fg);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .keygen-mono { font-family: "JetBrains Mono", "Menlo", monospace; font-size: 11px; }
+    .keygen-mono { font-family: "JetBrains Mono", "Menlo", monospace; font-size: var(--ui-font-small); }
     .keygen-pubkey-block {
       margin-top: 10px; border: 1px solid var(--tab-border); border-radius: 5px;
       overflow: hidden;
@@ -1047,8 +1051,8 @@
       padding: 5px 10px; background: var(--input-bg);
       border-bottom: 1px solid var(--tab-border);
     }
-    .keygen-pubkey-label { font-size: 11px; color: var(--dim-fg); }
-    .keygen-copy-btn { font-size: 11px; padding: 2px 10px; }
+    .keygen-pubkey-label { font-size: var(--ui-font-small); color: var(--dim-fg); }
+    .keygen-copy-btn { font-size: var(--ui-font-small); padding: 2px 10px; }
     .keygen-pubkey-text {
       display: block; width: 100%; padding: 8px 10px;
       background: var(--bg); color: var(--fg);
@@ -1240,6 +1244,18 @@
             position: appCfg.notification_position || 'bottom',
             nativeNotifications: appCfg.native_notifications !== false,
           });
+        }
+
+        // Apply UI chrome font settings.
+        const r = document.documentElement.style;
+        if (appCfg.ui_font_small > 0) r.setProperty('--ui-font-small', appCfg.ui_font_small + 'px');
+        if (appCfg.ui_font_list > 0) r.setProperty('--ui-font-list', appCfg.ui_font_list + 'px');
+        if (appCfg.ui_font_normal > 0) r.setProperty('--ui-font-normal', appCfg.ui_font_normal + 'px');
+        if (appCfg.ui_font_family) {
+          document.body.style.fontFamily = appCfg.ui_font_family + ', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        }
+        if (appCfg.ui_font_size > 0) {
+          document.body.style.fontSize = appCfg.ui_font_size + 'px';
         }
       } catch (_) {}
 
@@ -2326,8 +2342,27 @@
           for (const tab of tabs.values()) {
             tab.term.options.theme = newTheme;
           }
+          // Re-apply UI chrome font sizes.
+          const appCfg = await invoke('get_app_config');
+          if (appCfg.ui_font_small > 0) r.setProperty('--ui-font-small', appCfg.ui_font_small + 'px');
+          if (appCfg.ui_font_list > 0) r.setProperty('--ui-font-list', appCfg.ui_font_list + 'px');
+          if (appCfg.ui_font_normal > 0) r.setProperty('--ui-font-normal', appCfg.ui_font_normal + 'px');
+          if (appCfg.ui_font_family) {
+            document.body.style.fontFamily = appCfg.ui_font_family + ', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          }
+          if (appCfg.ui_font_size > 0) {
+            document.body.style.fontSize = appCfg.ui_font_size + 'px';
+          }
+
+          // Re-apply notification settings.
+          if (window.toast && window.toast.configure) {
+            window.toast.configure({
+              position: appCfg.notification_position || 'bottom',
+              nativeNotifications: appCfg.native_notifications !== false,
+            });
+          }
         } catch (e) {
-          console.warn('Theme reload failed:', e);
+          console.warn('Config reload failed:', e);
         }
       });
 

@@ -378,6 +378,11 @@ fn get_app_config(state: tauri::State<'_, TauriState>) -> serde_json::Value {
         "platform": std::env::consts::OS,
         "notification_position": cfg.conch.ui.notification_position,
         "native_notifications": cfg.conch.ui.native_notifications,
+        "ui_font_family": cfg.conch.ui.font_family,
+        "ui_font_size": cfg.conch.ui.font_size,
+        "ui_font_small": cfg.conch.ui.font.small,
+        "ui_font_list": cfg.conch.ui.font.list,
+        "ui_font_normal": cfg.conch.ui.font.normal,
     })
 }
 

@@ -1245,6 +1245,19 @@
       if (!isNaN(v)) pendingSettings.conch.ui.font.normal = v;
     });
     addRow(c, 'Normal', 'Body text, buttons, inputs, dialogs', normalInput);
+
+    const resetLink = document.createElement('div');
+    resetLink.textContent = 'Reset to Default';
+    resetLink.style.cssText = 'font-size:var(--ui-font-small);color:var(--blue);cursor:pointer;margin-top:4px;text-align:right';
+    resetLink.addEventListener('click', () => {
+      pendingSettings.conch.ui.font.small = 12.0;
+      pendingSettings.conch.ui.font.list = 14.0;
+      pendingSettings.conch.ui.font.normal = 14.0;
+      smallInput.value = 12.0;
+      listInput.value = 14.0;
+      normalInput.value = 14.0;
+    });
+    c.appendChild(resetLink);
   }
 
   async function applySettings() {
