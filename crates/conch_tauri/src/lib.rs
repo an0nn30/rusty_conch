@@ -1182,6 +1182,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             remote::ssh_write,
             remote::ssh_resize,
             remote::ssh_disconnect,
+            remote::ssh_open_channel,
             remote::remote_get_servers,
             remote::remote_save_server,
             remote::remote_delete_server,

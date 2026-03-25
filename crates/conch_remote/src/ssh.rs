@@ -357,6 +357,33 @@ pub async fn channel_loop(
     !initiated_by_host
 }
 
+/// Open a new shell channel on an existing SSH connection.
+///
+/// Reuses the authenticated session to open an additional interactive shell,
+/// allowing multiple split panes to share a single SSH connection.
+pub async fn open_shell_channel(
+    session: &client::Handle<ConchSshHandler>,
+    cols: u16,
+    rows: u16,
+) -> Result<russh::Channel<russh::client::Msg>, String> {
+    let channel = session
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("Channel open failed: {e}"))?;
+
+    channel
+        .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
+        .await
+        .map_err(|e| format!("PTY request failed: {e}"))?;
+
+    channel
+        .request_shell(false)
+        .await
+        .map_err(|e| format!("Shell request failed: {e}"))?;
+
+    Ok(channel)
+}
+
 /// Execute a command on a separate SSH channel and return (stdout, stderr, exit_code).
 pub async fn exec(
     ssh_handle: &client::Handle<ConchSshHandler>,
