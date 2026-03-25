@@ -8,6 +8,8 @@
   let toastContainer = null;
   let position = 'bottom'; // 'top' or 'bottom'
   let nativeNotificationsEnabled = true;
+  const history = [];
+  let notificationListeners = [];
 
   function ensureContainer() {
     if (toastContainer) return;
@@ -60,6 +62,17 @@
    * @returns {HTMLElement|null} the toast element (null if sent as native notification)
    */
   function show(opts) {
+    const record = {
+      timestamp: new Date(),
+      level: opts.level || 'info',
+      title: opts.title || '',
+      body: opts.body || '',
+    };
+    history.unshift(record);
+    for (const cb of notificationListeners) {
+      try { cb(record); } catch (_) {}
+    }
+
     // Try native notification if window is not focused
     if (!opts.forceInApp && nativeNotificationsEnabled && !document.hasFocus()) {
       if (sendNativeNotification(opts.title, opts.body)) {
@@ -152,5 +165,14 @@
 
   const esc = window.utils.esc;
 
-  exports.toast = { show, showInApp, dismiss, configure, info, success, error, warn };
+  function getHistory() { return history; }
+  function onNotification(cb) { notificationListeners.push(cb); }
+  function clearHistory() {
+    history.length = 0;
+    for (const cb of notificationListeners) {
+      try { cb(null); } catch (_) {}
+    }
+  }
+
+  exports.toast = { show, showInApp, dismiss, configure, info, success, error, warn, getHistory, onNotification, clearHistory };
 })(window);
