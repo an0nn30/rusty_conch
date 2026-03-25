@@ -387,15 +387,15 @@
       background: var(--selection); color: var(--fg); border: none; border-radius: 3px;
       padding: 3px 10px; font-size: 11px; cursor: pointer;
     }
-    .conch-toast-action-btn:hover { background: var(--comment); }
+    .conch-toast-action-btn:hover { background: var(--active-highlight); }
     .conch-toast-success { border-color: var(--green); }
     .conch-toast-success .conch-toast-icon { color: var(--green); }
     .conch-toast-error { border-color: var(--red); }
     .conch-toast-error .conch-toast-icon { color: var(--red); }
-    .conch-toast-warn { border-color: #f1fa8c; }
-    .conch-toast-warn .conch-toast-icon { color: #f1fa8c; }
-    .conch-toast-info { border-color: #8be9fd; }
-    .conch-toast-info .conch-toast-icon { color: #8be9fd; }
+    .conch-toast-warn { border-color: var(--yellow); }
+    .conch-toast-warn .conch-toast-icon { color: var(--yellow); }
+    .conch-toast-info { border-color: var(--cyan); }
+    .conch-toast-info .conch-toast-icon { color: var(--cyan); }
 
     /* -- Plugin widgets -- */
     .pw-horizontal { display: flex; gap: 6px; align-items: center; }
@@ -405,8 +405,8 @@
     .pw-label { font-size: 12px; color: var(--text-secondary); }
     .pw-style-secondary { color: var(--text-muted); }
     .pw-style-muted { color: var(--dim-fg); }
-    .pw-style-accent { color: #bd93f9; }
-    .pw-style-warn { color: #f1fa8c; }
+    .pw-style-accent { color: var(--blue); }
+    .pw-style-warn { color: var(--yellow); }
     .pw-style-error { color: var(--red); }
     .pw-text { font: 12px/1.4 "JetBrains Mono", monospace; color: var(--fg); margin: 0; white-space: pre-wrap; word-break: break-word; }
     .pw-scroll-text { font: 11px/1.3 "JetBrains Mono", monospace; color: var(--text-secondary); overflow-y: auto; margin: 0; padding: 4px; background: #1a1b26; border-radius: 3px; }
@@ -417,10 +417,10 @@
     .pw-spacer { }
     .pw-icon-label { font-size: 12px; }
     .pw-badge { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 500; }
-    .pw-badge-info { background: var(--active-highlight); color: #8be9fd; }
-    .pw-badge-success { background: #2a4a2e; color: var(--green); }
-    .pw-badge-warn { background: #4a4528; color: #f1fa8c; }
-    .pw-badge-error { background: #4a2828; color: var(--red); }
+    .pw-badge-info { background: var(--active-highlight); color: var(--cyan); }
+    .pw-badge-success { background: var(--active-highlight); color: var(--green); }
+    .pw-badge-warn { background: var(--active-highlight); color: var(--yellow); }
+    .pw-badge-error { background: var(--active-highlight); color: var(--red); }
     .pw-progress { position: relative; height: 6px; background: var(--tab-border); border-radius: 3px; overflow: hidden; }
     .pw-progress-bar { height: 100%; background: var(--green); border-radius: 3px; transition: width 150ms; }
     .pw-progress-label { position: absolute; right: 4px; top: -1px; font-size: 9px; color: var(--text-muted); }
@@ -463,7 +463,7 @@
     .pw-tabs-bar { display: flex; gap: 0; border-bottom: 1px solid var(--tab-border); }
     .pw-tab-btn { padding: 4px 12px; border: none; border-bottom: 2px solid transparent; background: none; color: var(--text-muted); cursor: pointer; font-size: 11px; }
     .pw-tab-btn:hover { color: var(--fg); }
-    .pw-tab-btn.active { color: var(--fg); border-bottom-color: #bd93f9; }
+    .pw-tab-btn.active { color: var(--fg); border-bottom-color: var(--blue); }
     .pw-tabs-content { padding: 6px 0; }
     .pw-unknown { color: var(--dim-fg); font-size: 11px; font-style: italic; padding: 4px; }
     .pw-error { color: var(--red); font-size: 11px; padding: 4px; }
@@ -705,7 +705,7 @@
     }
     .ssh-form-btn:hover { background: var(--tab-border); color: var(--fg); }
     .ssh-form-btn.primary { background: var(--dim-fg); color: var(--fg); border-color: var(--dim-fg); }
-    .ssh-form-btn.primary:hover { background: #7283b5; }
+    .ssh-form-btn.primary:hover { background: var(--active-highlight); }
     /* -- Export dialog -- */
     .ssh-export-section { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim-fg); margin-bottom: 4px; }
     .ssh-export-group { font-size: 11px; font-weight: 600; color: var(--dim-fg); margin: 8px 0 2px 0; }
@@ -785,9 +785,9 @@
       left: 12px;
       right: 12px;
       padding: 10px 12px;
-      border: 1px solid #ff5555;
-      background: rgba(40, 42, 54, 0.95);
-      color: #ffb8b8;
+      border: 1px solid var(--red);
+      background: var(--panel-bg);
+      color: var(--red);
       font: 13px/1.4 monospace;
       white-space: pre-wrap;
       z-index: 1000;
@@ -1212,6 +1212,8 @@
         r.setProperty('--magenta', tc.magenta);
         r.setProperty('--input-bg', tc.input_bg);
         r.setProperty('--hover-bg', tc.input_bg);
+        if (tc.text_secondary) r.setProperty('--text-secondary', tc.text_secondary);
+        if (tc.text_muted) r.setProperty('--text-muted', tc.text_muted);
         document.body.style.background = tc.background;
       } catch (e) {
         console.warn('Failed to load theme colors:', e);
@@ -2305,6 +2307,8 @@
           r.setProperty('--blue', tc.blue);
           r.setProperty('--cyan', tc.cyan);
           r.setProperty('--magenta', tc.magenta);
+          if (tc.text_secondary) r.setProperty('--text-secondary', tc.text_secondary);
+          if (tc.text_muted) r.setProperty('--text-muted', tc.text_muted);
           document.body.style.background = tc.background;
           // Update xterm.js theme for all tabs.
           const newTheme = {

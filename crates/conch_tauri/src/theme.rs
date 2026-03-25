@@ -22,6 +22,8 @@ pub(crate) struct ThemeColors {
     pub tab_border: String,
     pub input_bg: String,
     pub active_highlight: String,
+    pub text_secondary: String,
+    pub text_muted: String,
 }
 
 fn darken(hex: &str, amount: i32) -> String {
@@ -49,6 +51,33 @@ fn darken(hex: &str, amount: i32) -> String {
 
 fn lighten(hex: &str, amount: i32) -> String {
     darken(hex, -amount)
+}
+
+/// Compute relative luminance (0.0 = black, 1.0 = white) of a hex color.
+fn luminance(hex: &str) -> f64 {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() < 6 { return 0.5; }
+    let r = i32::from_str_radix(&hex[0..2], 16).unwrap_or(128) as f64 / 255.0;
+    let g = i32::from_str_radix(&hex[2..4], 16).unwrap_or(128) as f64 / 255.0;
+    let b = i32::from_str_radix(&hex[4..6], 16).unwrap_or(128) as f64 / 255.0;
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// Blend a color toward another by a fraction (0.0 = source, 1.0 = target).
+fn blend(source: &str, target: &str, frac: f64) -> String {
+    let s = source.trim_start_matches('#');
+    let t = target.trim_start_matches('#');
+    if s.len() < 6 || t.len() < 6 { return format!("#{s}"); }
+    let sr = i32::from_str_radix(&s[0..2], 16).unwrap_or(0) as f64;
+    let sg = i32::from_str_radix(&s[2..4], 16).unwrap_or(0) as f64;
+    let sb = i32::from_str_radix(&s[4..6], 16).unwrap_or(0) as f64;
+    let tr = i32::from_str_radix(&t[0..2], 16).unwrap_or(0) as f64;
+    let tg = i32::from_str_radix(&t[2..4], 16).unwrap_or(0) as f64;
+    let tb = i32::from_str_radix(&t[4..6], 16).unwrap_or(0) as f64;
+    format!("#{:02x}{:02x}{:02x}",
+        (sr + (tr - sr) * frac).round().clamp(0.0, 255.0) as u8,
+        (sg + (tg - sg) * frac).round().clamp(0.0, 255.0) as u8,
+        (sb + (tb - sb) * frac).round().clamp(0.0, 255.0) as u8)
 }
 
 /// Resolve theme colors from a pre-loaded ColorScheme (no config needed).
@@ -81,12 +110,16 @@ pub(crate) fn resolve_theme_colors_from_scheme(scheme: &conch_core::color_scheme
         bright_magenta: scheme.bright.magenta.clone(),
         bright_cyan: scheme.bright.cyan.clone(),
         bright_white: scheme.bright.white.clone(),
-        dim_fg: scheme.primary.dim_foreground.clone().unwrap_or_else(|| lighten(bg, 60)),
-        panel_bg: darken(bg, 8),
-        tab_bar_bg: darken(bg, 14),
-        tab_border: lighten(bg, 18),
-        input_bg: lighten(bg, 10),
-        active_highlight: lighten(bg, 28),
+        // Detect dark vs light theme: dark bg = lighten toward white, light bg = darken toward black.
+        dim_fg: scheme.primary.dim_foreground.clone().unwrap_or_else(|| blend(fg, bg, 0.50)),
+        panel_bg: if luminance(bg) < 0.5 { darken(bg, 8) } else { lighten(bg, 8) },
+        tab_bar_bg: if luminance(bg) < 0.5 { darken(bg, 14) } else { lighten(bg, 14) },
+        tab_border: if luminance(bg) < 0.5 { lighten(bg, 18) } else { darken(bg, 18) },
+        input_bg: if luminance(bg) < 0.5 { lighten(bg, 10) } else { darken(bg, 10) },
+        active_highlight: if luminance(bg) < 0.5 { lighten(bg, 28) } else { darken(bg, 28) },
+        // Derive text colors by blending fg toward bg for reduced emphasis.
+        text_secondary: blend(fg, bg, 0.25),
+        text_muted: blend(fg, bg, 0.50),
     }
 }
 
@@ -159,5 +192,50 @@ mod tests {
     fn lighten_expands_three_char_hex() {
         let result = lighten("#000", 10);
         assert_eq!(result, "#0a0a0a");
+    }
+
+    #[test]
+    fn blend_midpoint() {
+        // Blend black toward white at 50% = #808080 (gray)
+        let result = blend("#000000", "#ffffff", 0.5);
+        assert_eq!(result, "#808080");
+    }
+
+    #[test]
+    fn blend_zero_returns_source() {
+        let result = blend("#ff0000", "#0000ff", 0.0);
+        assert_eq!(result, "#ff0000");
+    }
+
+    #[test]
+    fn blend_one_returns_target() {
+        let result = blend("#ff0000", "#0000ff", 1.0);
+        assert_eq!(result, "#0000ff");
+    }
+
+    #[test]
+    fn luminance_black_is_zero() {
+        assert!((luminance("#000000") - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn luminance_white_is_one() {
+        assert!((luminance("#ffffff") - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn text_secondary_differs_from_fg() {
+        let scheme = ColorScheme::default(); // Dracula: light fg on dark bg
+        let tc = resolve_theme_colors_from_scheme(&scheme);
+        assert_ne!(tc.text_secondary, tc.foreground);
+        assert_ne!(tc.text_secondary, tc.background);
+    }
+
+    #[test]
+    fn text_muted_more_blended_than_secondary() {
+        let scheme = ColorScheme::default();
+        let tc = resolve_theme_colors_from_scheme(&scheme);
+        // text_muted should be closer to bg than text_secondary
+        assert_ne!(tc.text_muted, tc.text_secondary);
     }
 }
