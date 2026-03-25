@@ -1897,6 +1897,109 @@
         }
       }
 
+      // ---- Split pane helpers ----
+
+      function rebuildTreeDOM(tab) {
+        const containerEl = tab.containerEl;
+        // Detach all children without destroying them.
+        while (containerEl.firstChild) {
+          containerEl.removeChild(containerEl.firstChild);
+        }
+        // Re-render from the tree, re-appending existing pane elements.
+        const rendered = window.splitPane.renderTree(tab.treeRoot, (id) => {
+          return panes.get(id).root;
+        });
+        containerEl.appendChild(rendered);
+      }
+
+      async function splitPane(direction) {
+        const pane = currentPane();
+        if (!pane) return;
+
+        const tab = tabs.get(pane.tabId);
+        if (!tab) return;
+
+        const newPaneId = nextPaneId++;
+
+        // Update the tree data model.
+        tab.treeRoot = window.splitTree.splitLeaf(tab.treeRoot, pane.paneId, newPaneId, direction);
+
+        // Create the new pane's DOM element.
+        const newPaneEl = document.createElement('div');
+        newPaneEl.className = 'terminal-pane';
+        newPaneEl.dataset.paneId = newPaneId;
+
+        const { term, fitAddon } = initTerminal(newPaneEl);
+
+        const newPane = {
+          paneId: newPaneId,
+          tabId: tab.id,
+          type: pane.type,
+          connectionId: pane.connectionId || null,
+          term,
+          fitAddon,
+          root: newPaneEl,
+          spawned: false,
+          lastCols: 0,
+          lastRows: 0,
+          cleanupMouseBridge: setupTmuxRightClickBridge(term, newPaneEl),
+          resizeObserver: null,
+          debounceTimer: null,
+        };
+        panes.set(newPaneId, newPane);
+
+        // Re-render the tree DOM (preserves existing pane elements).
+        rebuildTreeDOM(tab);
+
+        // Set up per-pane ResizeObserver.
+        newPane.resizeObserver = window.splitPane.createPaneResizeObserver(newPane, fitAndResizePane);
+
+        // Click-to-focus on the new pane.
+        newPaneEl.addEventListener('mousedown', () => setFocusedPane(newPaneId));
+
+        // Spawn the new session.
+        const dims = fitAddon.proposeDimensions() || { cols: 80, rows: 24 };
+
+        if (pane.type === 'ssh' && pane.connectionId) {
+          // SSH: open a new channel on the existing connection.
+          try {
+            await invoke('ssh_open_channel', {
+              paneId: newPaneId,
+              connectionId: pane.connectionId,
+              cols: dims.cols,
+              rows: dims.rows,
+            });
+            newPane.spawned = true;
+          } catch (e) {
+            window.toast.error('Failed to open SSH channel: ' + e);
+          }
+        } else {
+          // Local shell.
+          try {
+            await invoke('spawn_shell', {
+              paneId: newPaneId,
+              cols: dims.cols,
+              rows: dims.rows,
+            });
+            newPane.spawned = true;
+          } catch (e) {
+            window.toast.error('Failed to spawn shell: ' + e);
+          }
+        }
+
+        // Wire up input handler.
+        term.onData((data) => {
+          if (!newPane.spawned) return;
+          const cmd = newPane.type === 'ssh' ? 'ssh_write' : 'write_to_pty';
+          invoke(cmd, { paneId: newPaneId, data }).catch((e) => {
+            console.error(cmd + ' error:', e);
+          });
+        });
+
+        // Focus the new pane.
+        setFocusedPane(newPaneId);
+      }
+
       // ---- Files panel init ----
       const filesPanelEl = document.getElementById('files-panel');
       const filesPanelWrapEl = document.getElementById('files-panel-wrap');
