@@ -110,7 +110,7 @@ fn desktop_remote_paths() -> RemotePaths {
 fn spawn_output_forwarder(
     app: &tauri::AppHandle,
     window_label: &str,
-    tab_id: u32,
+    pane_id: u32,
     mut output_rx: mpsc::UnboundedReceiver<Vec<u8>>,
 ) {
     let app = app.clone();
@@ -127,7 +127,7 @@ fn spawn_output_forwarder(
                 "pty-output",
                 PtyOutputEvent {
                     window_label: wl.clone(),
-                    tab_id,
+                    pane_id,
                     data: text,
                 },
             );
@@ -195,7 +195,7 @@ pub(crate) struct SshSession {
 
 /// Shared state for all remote operations.
 pub(crate) struct RemoteState {
-    /// SSH sessions keyed by `"{window_label}:{tab_id}"` (same as local PTY keys).
+    /// SSH sessions keyed by `"{window_label}:{pane_id}"` (same as local PTY keys).
     pub sessions: HashMap<String, SshSession>,
     /// Server configuration.
     pub config: SshConfig,
@@ -235,8 +235,8 @@ impl RemoteState {
 // Tauri commands
 // ---------------------------------------------------------------------------
 
-fn session_key(window_label: &str, tab_id: u32) -> String {
-    format!("{window_label}:{tab_id}")
+fn session_key(window_label: &str, pane_id: u32) -> String {
+    format!("{window_label}:{pane_id}")
 }
 
 /// Connect to an SSH server and open a shell channel in a tab.
@@ -246,14 +246,14 @@ pub(crate) async fn ssh_connect(
     app: tauri::AppHandle,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
     vault: tauri::State<'_, VaultState>,
-    tab_id: u32,
+    pane_id: u32,
     server_id: String,
     cols: u16,
     rows: u16,
     password: Option<String>,
 ) -> Result<(), String> {
     let window_label = window.label().to_string();
-    let key = session_key(&window_label, tab_id);
+    let key = session_key(&window_label, pane_id);
 
     // Find the server entry.
     let server = {
@@ -271,7 +271,7 @@ pub(crate) async fn ssh_connect(
         let state = remote.lock();
         if state.sessions.contains_key(&key) {
             return Err(format!(
-                "Tab {tab_id} already has an SSH session on window {window_label}"
+                "Pane {pane_id} already has an SSH session on window {window_label}"
             ));
         }
         (Arc::clone(&state.pending_prompts), state.paths.clone())
@@ -336,13 +336,13 @@ pub(crate) async fn ssh_connect(
                 "pty-exit",
                 PtyExitEvent {
                     window_label: wl.clone(),
-                    tab_id,
+                    pane_id,
                 },
             );
         }
     });
 
-    spawn_output_forwarder(&app, &window_label, tab_id, output_rx);
+    spawn_output_forwarder(&app, &window_label, pane_id, output_rx);
 
     // After successful connect: if no vault account was linked, offer to save.
     if !used_vault {
@@ -368,7 +368,7 @@ pub(crate) async fn ssh_quick_connect(
     app: tauri::AppHandle,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
     vault: tauri::State<'_, VaultState>,
-    tab_id: u32,
+    pane_id: u32,
     spec: String,
     cols: u16,
     rows: u16,
@@ -397,13 +397,13 @@ pub(crate) async fn ssh_quick_connect(
 
     // Don't persist quick-connect entries to config — they're ephemeral.
     let window_label = window.label().to_string();
-    let key = session_key(&window_label, tab_id);
+    let key = session_key(&window_label, pane_id);
 
     let (pending_prompts, paths) = {
         let state = remote.lock();
         if state.sessions.contains_key(&key) {
             return Err(format!(
-                "Tab {tab_id} already has an SSH session on window {window_label}"
+                "Pane {pane_id} already has an SSH session on window {window_label}"
             ));
         }
         (Arc::clone(&state.pending_prompts), state.paths.clone())
@@ -452,13 +452,13 @@ pub(crate) async fn ssh_quick_connect(
                 "pty-exit",
                 PtyExitEvent {
                     window_label: wl.clone(),
-                    tab_id,
+                    pane_id,
                 },
             );
         }
     });
 
-    spawn_output_forwarder(&app, &window_label, tab_id, output_rx);
+    spawn_output_forwarder(&app, &window_label, pane_id, output_rx);
 
     // After successful quick-connect: if a password was used, offer to save
     // the credentials to the vault and create a persistent server entry.
@@ -486,10 +486,10 @@ pub(crate) async fn ssh_quick_connect(
 pub(crate) fn ssh_write(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     data: String,
 ) -> Result<(), String> {
-    let key = session_key(window.label(), tab_id);
+    let key = session_key(window.label(), pane_id);
     let state = remote.lock();
     let session = state.sessions.get(&key).ok_or("SSH session not found")?;
     session
@@ -503,11 +503,11 @@ pub(crate) fn ssh_write(
 pub(crate) fn ssh_resize(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let key = session_key(window.label(), tab_id);
+    let key = session_key(window.label(), pane_id);
     let state = remote.lock();
     let session = state.sessions.get(&key).ok_or("SSH session not found")?;
     session
@@ -521,9 +521,9 @@ pub(crate) fn ssh_resize(
 pub(crate) fn ssh_disconnect(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
 ) {
-    let key = session_key(window.label(), tab_id);
+    let key = session_key(window.label(), pane_id);
     let mut state = remote.lock();
     if let Some(session) = state.sessions.remove(&key) {
         let _ = session.input_tx.send(ChannelInput::Shutdown);
@@ -887,9 +887,9 @@ pub(crate) fn remote_duplicate_server(
 fn get_ssh_handle(
     state: &RemoteState,
     window_label: &str,
-    tab_id: u32,
+    pane_id: u32,
 ) -> Result<Arc<conch_remote::russh::client::Handle<ConchSshHandler>>, String> {
-    let key = session_key(window_label, tab_id);
+    let key = session_key(window_label, pane_id);
     state
         .sessions
         .get(&key)
@@ -901,12 +901,12 @@ fn get_ssh_handle(
 pub(crate) async fn sftp_list_dir(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
 ) -> Result<Vec<conch_remote::sftp::FileEntry>, String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::list_dir(&ssh, &path).await
 }
@@ -915,12 +915,12 @@ pub(crate) async fn sftp_list_dir(
 pub(crate) async fn sftp_stat(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
 ) -> Result<conch_remote::sftp::FileEntry, String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::stat(&ssh, &path).await
 }
@@ -929,14 +929,14 @@ pub(crate) async fn sftp_stat(
 pub(crate) async fn sftp_read_file(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
     offset: u64,
     length: u64,
 ) -> Result<conch_remote::sftp::ReadFileResult, String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::read_file(&ssh, &path, offset, length as usize).await
 }
@@ -945,13 +945,13 @@ pub(crate) async fn sftp_read_file(
 pub(crate) async fn sftp_write_file(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
     data: String,
 ) -> Result<u64, String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::write_file(&ssh, &path, &data).await
 }
@@ -960,12 +960,12 @@ pub(crate) async fn sftp_write_file(
 pub(crate) async fn sftp_mkdir(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
 ) -> Result<(), String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::mkdir(&ssh, &path).await
 }
@@ -974,13 +974,13 @@ pub(crate) async fn sftp_mkdir(
 pub(crate) async fn sftp_rename(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     from: String,
     to: String,
 ) -> Result<(), String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::rename(&ssh, &from, &to).await
 }
@@ -989,13 +989,13 @@ pub(crate) async fn sftp_rename(
 pub(crate) async fn sftp_remove(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
     is_dir: bool,
 ) -> Result<(), String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::remove(&ssh, &path, is_dir).await
 }
@@ -1004,12 +1004,12 @@ pub(crate) async fn sftp_remove(
 pub(crate) async fn sftp_realpath(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
 ) -> Result<String, String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::realpath(&ssh, &path).await
 }
@@ -1051,13 +1051,13 @@ pub(crate) fn local_remove(path: String, is_dir: bool) -> Result<(), String> {
 pub(crate) async fn transfer_download(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     remote_path: String,
     local_path: String,
 ) -> Result<String, String> {
     let (ssh, transfer_id, progress_tx, registry) = {
         let state = remote.lock();
-        let ssh = get_ssh_handle(&state, window.label(), tab_id)?;
+        let ssh = get_ssh_handle(&state, window.label(), pane_id)?;
         let tid = uuid::Uuid::new_v4().to_string();
         let ptx = state.transfer_progress_tx.clone();
         let reg = Arc::clone(&state.transfers);
@@ -1078,13 +1078,13 @@ pub(crate) async fn transfer_download(
 pub(crate) async fn transfer_upload(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     local_path: String,
     remote_path: String,
 ) -> Result<String, String> {
     let (ssh, transfer_id, progress_tx, registry) = {
         let state = remote.lock();
-        let ssh = get_ssh_handle(&state, window.label(), tab_id)?;
+        let ssh = get_ssh_handle(&state, window.label(), pane_id)?;
         let tid = uuid::Uuid::new_v4().to_string();
         let ptx = state.transfer_progress_tx.clone();
         let reg = Arc::clone(&state.transfers);

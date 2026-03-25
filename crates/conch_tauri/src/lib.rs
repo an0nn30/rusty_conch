@@ -87,14 +87,14 @@ pub(crate) struct TauriState {
 #[derive(Clone, serde::Serialize)]
 struct PtyOutputEvent {
     window_label: String,
-    tab_id: u32,
+    pane_id: u32,
     data: String,
 }
 
 #[derive(Clone, serde::Serialize)]
 struct PtyExitEvent {
     window_label: String,
-    tab_id: u32,
+    pane_id: u32,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -112,8 +112,8 @@ fn resolved_shell(shell: &conch_core::config::TerminalShell) -> (Option<&str>, &
     }
 }
 
-fn session_key(window_label: &str, tab_id: u32) -> String {
-    format!("{window_label}:{tab_id}")
+fn session_key(window_label: &str, pane_id: u32) -> String {
+    format!("{window_label}:{pane_id}")
 }
 
 #[tauri::command]
@@ -121,12 +121,12 @@ fn spawn_shell(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, TauriState>,
-    tab_id: u32,
+    pane_id: u32,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
     let window_label = window.label().to_string();
-    let key = session_key(&window_label, tab_id);
+    let key = session_key(&window_label, pane_id);
     let cfg = state.config.lock();
     let (shell, shell_args) = resolved_shell(&cfg.terminal.shell);
 
@@ -142,7 +142,7 @@ fn spawn_shell(
         let mut ptys = state.ptys.lock();
         if ptys.contains_key(&key) {
             return Err(format!(
-                "Tab {tab_id} already exists on window {window_label}"
+                "Pane {pane_id} already exists on window {window_label}"
             ));
         }
         ptys.insert(key.clone(), backend);
@@ -150,9 +150,9 @@ fn spawn_shell(
 
     let ptys = Arc::clone(&state.ptys);
     std::thread::Builder::new()
-        .name(format!("pty-reader-{window_label}-{tab_id}"))
+        .name(format!("pty-reader-{window_label}-{pane_id}"))
         .spawn(move || {
-            pty_reader_loop(&app, &ptys, key, window_label, tab_id, reader);
+            pty_reader_loop(&app, &ptys, key, window_label, pane_id, reader);
         })
         .map_err(|e| format!("Failed to spawn PTY reader thread: {e}"))?;
 
@@ -163,10 +163,10 @@ fn spawn_shell(
 fn write_to_pty(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, TauriState>,
-    tab_id: u32,
+    pane_id: u32,
     data: String,
 ) -> Result<(), String> {
-    let key = session_key(window.label(), tab_id);
+    let key = session_key(window.label(), pane_id);
     let guard = state.ptys.lock();
     let pty = guard.get(&key).ok_or("PTY not spawned")?;
     pty.write(data.as_bytes()).map_err(|e| format!("{e}"))
@@ -176,19 +176,19 @@ fn write_to_pty(
 fn resize_pty(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, TauriState>,
-    tab_id: u32,
+    pane_id: u32,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let key = session_key(window.label(), tab_id);
+    let key = session_key(window.label(), pane_id);
     let guard = state.ptys.lock();
     let pty = guard.get(&key).ok_or("PTY not spawned")?;
     pty.resize(cols, rows).map_err(|e| format!("{e}"))
 }
 
 #[tauri::command]
-fn close_pty(window: tauri::WebviewWindow, state: tauri::State<'_, TauriState>, tab_id: u32) {
-    let key = session_key(window.label(), tab_id);
+fn close_pty(window: tauri::WebviewWindow, state: tauri::State<'_, TauriState>, pane_id: u32) {
+    let key = session_key(window.label(), pane_id);
     state.ptys.lock().remove(&key);
 }
 
@@ -1263,7 +1263,7 @@ fn pty_reader_loop(
     pty_state: &Arc<Mutex<HashMap<String, PtyBackend>>>,
     pty_key: String,
     window_label: String,
-    tab_id: u32,
+    pane_id: u32,
     mut reader: Box<dyn std::io::Read + Send>,
 ) {
     let mut buf = [0u8; 8192];
@@ -1280,7 +1280,7 @@ fn pty_reader_loop(
                     "pty-exit",
                     PtyExitEvent {
                         window_label: window_label.clone(),
-                        tab_id,
+                        pane_id,
                     },
                 );
                 break;
@@ -1295,20 +1295,20 @@ fn pty_reader_loop(
                     "pty-output",
                     PtyOutputEvent {
                         window_label: window_label.clone(),
-                        tab_id,
+                        pane_id,
                         data: text,
                     },
                 );
             }
             Err(e) => {
-                log::error!("PTY read error on tab {tab_id}: {e}");
+                log::error!("PTY read error on pane {pane_id}: {e}");
                 pty_state.lock().remove(&pty_key);
                 let _ = handle.emit_to(
                     &window_label,
                     "pty-exit",
                     PtyExitEvent {
                         window_label: window_label.clone(),
-                        tab_id,
+                        pane_id,
                     },
                 );
                 break;
@@ -1320,6 +1320,11 @@ fn pty_reader_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_key_uses_pane_id() {
+        assert_eq!(session_key("main", 42), "main:42");
+    }
 
     #[test]
     fn tauri_state_default_has_no_pty() {
