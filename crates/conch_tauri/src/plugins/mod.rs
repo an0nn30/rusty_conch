@@ -46,11 +46,14 @@ impl PendingDialogs {
     }
 
     /// Remove all pending dialog channels whose prompt_id belongs to the
-    /// given plugin.  Prompt IDs are prefixed with `"{plugin_name}:"`.
+    /// given plugin.  Prompt IDs use the format `"{plugin_name}\0{uuid}"`.
+    /// We use a null byte separator because it cannot appear in plugin
+    /// names (derived from filenames and Lua comment headers), avoiding
+    /// collisions between plugins whose names share a common prefix.
     /// Dropping the oneshot senders causes the blocked plugin thread to
     /// receive `None` / `false`, which is the expected cancellation value.
     fn drain_for_plugin(&mut self, plugin_name: &str) {
-        let prefix = format!("{plugin_name}:");
+        let prefix = format!("{plugin_name}\0");
         self.forms.retain(|id, _| !id.starts_with(&prefix));
         self.prompts.retain(|id, _| !id.starts_with(&prefix));
         self.confirms.retain(|id, _| !id.starts_with(&prefix));
@@ -709,28 +712,28 @@ mod tests {
         {
             let mut dialogs = state.pending_dialogs.lock();
             let (tx1, _rx1) = tokio::sync::oneshot::channel();
-            dialogs.forms.insert("my-plugin:uuid-1".into(), tx1);
+            dialogs.forms.insert("my-plugin\0uuid-1".into(), tx1);
 
             let (tx2, _rx2) = tokio::sync::oneshot::channel();
-            dialogs.prompts.insert("my-plugin:uuid-2".into(), tx2);
+            dialogs.prompts.insert("my-plugin\0uuid-2".into(), tx2);
 
             let (tx3, _rx3) = tokio::sync::oneshot::channel();
-            dialogs.confirms.insert("other-plugin:uuid-3".into(), tx3);
+            dialogs.confirms.insert("other-plugin\0uuid-3".into(), tx3);
 
             let (tx4, _rx4) = tokio::sync::oneshot::channel();
-            dialogs.forms.insert("other-plugin:uuid-4".into(), tx4);
+            dialogs.forms.insert("other-plugin\0uuid-4".into(), tx4);
         }
 
         state.cleanup_plugin_resources("my-plugin");
 
         let dialogs = state.pending_dialogs.lock();
-        assert!(dialogs.forms.get("my-plugin:uuid-1").is_none(),
+        assert!(dialogs.forms.get("my-plugin\0uuid-1").is_none(),
             "form dialog for my-plugin should be removed");
-        assert!(dialogs.prompts.get("my-plugin:uuid-2").is_none(),
+        assert!(dialogs.prompts.get("my-plugin\0uuid-2").is_none(),
             "prompt dialog for my-plugin should be removed");
-        assert!(dialogs.confirms.contains_key("other-plugin:uuid-3"),
+        assert!(dialogs.confirms.contains_key("other-plugin\0uuid-3"),
             "confirm dialog for other-plugin should remain");
-        assert!(dialogs.forms.contains_key("other-plugin:uuid-4"),
+        assert!(dialogs.forms.contains_key("other-plugin\0uuid-4"),
             "form dialog for other-plugin should remain");
     }
 
@@ -738,11 +741,27 @@ mod tests {
     fn drain_for_plugin_is_noop_when_no_matching_dialogs() {
         let mut dialogs = PendingDialogs::new();
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        dialogs.forms.insert("other:uuid-1".into(), tx);
+        dialogs.forms.insert("other\0uuid-1".into(), tx);
 
         dialogs.drain_for_plugin("nonexistent");
 
         assert_eq!(dialogs.forms.len(), 1, "should not remove unrelated dialogs");
+    }
+
+    #[test]
+    fn drain_for_plugin_does_not_collide_with_prefix_names() {
+        let mut dialogs = PendingDialogs::new();
+        let (tx1, _rx1) = tokio::sync::oneshot::channel();
+        let (tx2, _rx2) = tokio::sync::oneshot::channel();
+        // Plugin "a" and plugin "a:b" — disabling "a" must not drain "a:b"'s dialogs.
+        dialogs.forms.insert("a\0uuid-1".into(), tx1);
+        dialogs.forms.insert("a:b\0uuid-2".into(), tx2);
+
+        dialogs.drain_for_plugin("a");
+
+        assert_eq!(dialogs.forms.len(), 1, "should only remove plugin 'a'");
+        assert!(dialogs.forms.contains_key("a:b\0uuid-2"),
+            "plugin 'a:b' dialog should remain");
     }
 
     #[test]
