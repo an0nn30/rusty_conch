@@ -561,7 +561,11 @@ mod tests {
 
         // After zeroize, the password and key_passphrase strings should be empty
         // (zeroize on String overwrites the buffer and sets length to 0).
-        assert_eq!(creds.password.as_deref(), Some(""), "password should be zeroized");
+        assert_eq!(
+            creds.password.as_deref(),
+            Some(""),
+            "password should be zeroized"
+        );
         assert_eq!(
             creds.key_passphrase.as_deref(),
             Some(""),

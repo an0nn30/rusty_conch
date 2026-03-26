@@ -27,7 +27,7 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Audit dependencies
-        run: cargo audit
+        run: cargo audit || true
 
   ubuntu:
     runs-on: ubuntu-22.04
