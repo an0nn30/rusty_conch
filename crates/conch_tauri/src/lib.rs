@@ -76,6 +76,14 @@ const MENU_ACTION_KEYGEN_OPEN: &str = "keygen-open";
 const MENU_ACTION_VAULT_LOCK: &str = "vault-lock";
 const MENU_CHECK_UPDATES_ID: &str = "check-for-updates";
 const MENU_ABOUT_ID: &str = "about-conch";
+const MENU_SPLIT_VERTICAL_ID: &str = "view.split_vertical";
+const MENU_SPLIT_HORIZONTAL_ID: &str = "view.split_horizontal";
+const MENU_CLOSE_PANE_ID: &str = "view.close_pane";
+const MENU_ACTION_SPLIT_VERTICAL: &str = "split-vertical";
+const MENU_ACTION_SPLIT_HORIZONTAL: &str = "split-horizontal";
+const MENU_ACTION_CLOSE_PANE: &str = "close-pane";
+const MENU_RENAME_TAB_ID: &str = "file.rename_tab";
+const MENU_ACTION_RENAME_TAB: &str = "rename-tab";
 
 static NEXT_WINDOW_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -87,14 +95,14 @@ pub(crate) struct TauriState {
 #[derive(Clone, serde::Serialize)]
 struct PtyOutputEvent {
     window_label: String,
-    tab_id: u32,
+    pane_id: u32,
     data: String,
 }
 
 #[derive(Clone, serde::Serialize)]
 struct PtyExitEvent {
     window_label: String,
-    tab_id: u32,
+    pane_id: u32,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -112,8 +120,8 @@ fn resolved_shell(shell: &conch_core::config::TerminalShell) -> (Option<&str>, &
     }
 }
 
-fn session_key(window_label: &str, tab_id: u32) -> String {
-    format!("{window_label}:{tab_id}")
+fn session_key(window_label: &str, pane_id: u32) -> String {
+    format!("{window_label}:{pane_id}")
 }
 
 #[tauri::command]
@@ -121,12 +129,12 @@ fn spawn_shell(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, TauriState>,
-    tab_id: u32,
+    pane_id: u32,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
     let window_label = window.label().to_string();
-    let key = session_key(&window_label, tab_id);
+    let key = session_key(&window_label, pane_id);
     let cfg = state.config.lock();
     let (shell, shell_args) = resolved_shell(&cfg.terminal.shell);
 
@@ -142,7 +150,7 @@ fn spawn_shell(
         let mut ptys = state.ptys.lock();
         if ptys.contains_key(&key) {
             return Err(format!(
-                "Tab {tab_id} already exists on window {window_label}"
+                "Pane {pane_id} already exists on window {window_label}"
             ));
         }
         ptys.insert(key.clone(), backend);
@@ -150,9 +158,9 @@ fn spawn_shell(
 
     let ptys = Arc::clone(&state.ptys);
     std::thread::Builder::new()
-        .name(format!("pty-reader-{window_label}-{tab_id}"))
+        .name(format!("pty-reader-{window_label}-{pane_id}"))
         .spawn(move || {
-            pty_reader_loop(&app, &ptys, key, window_label, tab_id, reader);
+            pty_reader_loop(&app, &ptys, key, window_label, pane_id, reader);
         })
         .map_err(|e| format!("Failed to spawn PTY reader thread: {e}"))?;
 
@@ -163,10 +171,10 @@ fn spawn_shell(
 fn write_to_pty(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, TauriState>,
-    tab_id: u32,
+    pane_id: u32,
     data: String,
 ) -> Result<(), String> {
-    let key = session_key(window.label(), tab_id);
+    let key = session_key(window.label(), pane_id);
     let guard = state.ptys.lock();
     let pty = guard.get(&key).ok_or("PTY not spawned")?;
     pty.write(data.as_bytes()).map_err(|e| format!("{e}"))
@@ -176,19 +184,19 @@ fn write_to_pty(
 fn resize_pty(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, TauriState>,
-    tab_id: u32,
+    pane_id: u32,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let key = session_key(window.label(), tab_id);
+    let key = session_key(window.label(), pane_id);
     let guard = state.ptys.lock();
     let pty = guard.get(&key).ok_or("PTY not spawned")?;
     pty.resize(cols, rows).map_err(|e| format!("{e}"))
 }
 
 #[tauri::command]
-fn close_pty(window: tauri::WebviewWindow, state: tauri::State<'_, TauriState>, tab_id: u32) {
-    let key = session_key(window.label(), tab_id);
+fn close_pty(window: tauri::WebviewWindow, state: tauri::State<'_, TauriState>, pane_id: u32) {
+    let key = session_key(window.label(), pane_id);
     state.ptys.lock().remove(&key);
 }
 
@@ -292,6 +300,8 @@ fn build_app_menu_with_plugins<R: tauri::Runtime>(
         // Rebuild full menu bar with new tools menu.
         let new_tab = MenuItem::with_id(app, MENU_NEW_TAB_ID, "New Tab", true, Some("CmdOrCtrl+T"))?;
         let close_tab = MenuItem::with_id(app, MENU_CLOSE_TAB_ID, "Close Tab", true, Some("CmdOrCtrl+W"))?;
+        let rename_tab_accel = config_key_to_accelerator(&keyboard.rename_tab);
+        let rename_tab = MenuItem::with_id(app, MENU_RENAME_TAB_ID, "Rename Tab", true, Some(&rename_tab_accel))?;
         let new_window = MenuItem::with_id(app, MENU_NEW_WINDOW_ID, "New Window", true, Some("CmdOrCtrl+Shift+N"))?;
         let separator = PredefinedMenuItem::separator(app)?;
         let close_window = PredefinedMenuItem::close_window(app, None)?;
@@ -300,7 +310,7 @@ fn build_app_menu_with_plugins<R: tauri::Runtime>(
         let ssh_import = MenuItem::with_id(app, MENU_SSH_IMPORT_ID, "Import", true, None::<&str>)?;
         let ssh_manager_menu = Submenu::with_items(app, "SSH Manager", true, &[&ssh_export, &ssh_import])?;
         let separator2 = PredefinedMenuItem::separator(app)?;
-        let file_menu = Submenu::with_items(app, "File", true, &[&new_tab, &new_window, &separator, &ssh_manager_menu, &separator2, &close_tab, &close_window])?;
+        let file_menu = Submenu::with_items(app, "File", true, &[&new_tab, &new_window, &separator, &ssh_manager_menu, &separator2, &rename_tab, &close_tab, &close_window])?;
         let edit_menu = Submenu::with_items(app, "Edit", true, &[
             &PredefinedMenuItem::cut(app, None)?,
             &PredefinedMenuItem::copy(app, None)?,
@@ -320,8 +330,16 @@ fn build_app_menu_with_plugins<R: tauri::Runtime>(
         let zoom_in = MenuItem::with_id(app, MENU_ZOOM_IN_ID, "Zoom In", true, Some("CmdOrCtrl+="))?;
         let zoom_out = MenuItem::with_id(app, MENU_ZOOM_OUT_ID, "Zoom Out", true, Some("CmdOrCtrl+-"))?;
         let zoom_reset = MenuItem::with_id(app, MENU_ZOOM_RESET_ID, "Reset Zoom", true, Some("CmdOrCtrl+0"))?;
+        let split_v_accel = config_key_to_accelerator(&keyboard.split_vertical);
+        let split_v = MenuItem::with_id(app, MENU_SPLIT_VERTICAL_ID, "Split Pane Vertically", true, Some(&split_v_accel))?;
+        let split_h_accel = config_key_to_accelerator(&keyboard.split_horizontal);
+        let split_h = MenuItem::with_id(app, MENU_SPLIT_HORIZONTAL_ID, "Split Pane Horizontally", true, Some(&split_h_accel))?;
+        let close_pane_accel = config_key_to_accelerator(&keyboard.close_pane);
+        let close_pane_item = MenuItem::with_id(app, MENU_CLOSE_PANE_ID, "Close Pane", true, Some(&close_pane_accel))?;
         let view_menu = Submenu::with_items(app, "View", true, &[
             &toggle_left, &toggle_right, &toggle_bottom,
+            &PredefinedMenuItem::separator(app)?,
+            &split_v, &split_h, &close_pane_item,
             &PredefinedMenuItem::separator(app)?,
             &focus_sessions, &zen_mode,
             &PredefinedMenuItem::separator(app)?,
@@ -478,6 +496,10 @@ struct KeyboardShortcuts {
     toggle_right_panel: String,
     toggle_left_panel: String,
     toggle_bottom_panel: String,
+    split_vertical: String,
+    split_horizontal: String,
+    close_pane: String,
+    rename_tab: String,
 }
 
 #[tauri::command]
@@ -488,6 +510,10 @@ fn get_keyboard_shortcuts(state: tauri::State<'_, TauriState>) -> KeyboardShortc
         toggle_right_panel: kb.toggle_right_panel.clone(),
         toggle_left_panel: kb.toggle_left_panel.clone(),
         toggle_bottom_panel: kb.toggle_bottom_panel.clone(),
+        split_vertical: kb.split_vertical.clone(),
+        split_horizontal: kb.split_horizontal.clone(),
+        close_pane: kb.close_pane.clone(),
+        rename_tab: kb.rename_tab.clone(),
     }
 }
 
@@ -596,6 +622,8 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
     let separator = PredefinedMenuItem::separator(app)?;
     let close_window = PredefinedMenuItem::close_window(app, None)?;
 
+    let rename_tab_accel = config_key_to_accelerator(&keyboard.rename_tab);
+    let rename_tab = MenuItem::with_id(app, MENU_RENAME_TAB_ID, "Rename Tab", true, Some(&rename_tab_accel))?;
     let ssh_export = MenuItem::with_id(app, MENU_SSH_EXPORT_ID, "Export Connections", true, None::<&str>)?;
     let ssh_import = MenuItem::with_id(app, MENU_SSH_IMPORT_ID, "Import Connections", true, None::<&str>)?;
     let ssh_manager_menu = Submenu::with_items(app, "SSH Manager", true, &[&ssh_export, &ssh_import])?;
@@ -604,7 +632,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
         app,
         "File",
         true,
-        &[&new_tab, &new_window, &separator, &ssh_manager_menu, &separator2, &close_tab, &close_window],
+        &[&new_tab, &new_window, &separator, &ssh_manager_menu, &separator2, &rename_tab, &close_tab, &close_window],
     )?;
     let edit_menu = Submenu::with_items(
         app,
@@ -654,12 +682,20 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
     let zoom_reset = MenuItem::with_id(app, MENU_ZOOM_RESET_ID, "Reset Zoom", true, Some("CmdOrCtrl+0"))?;
     let toggle_bottom_accel = config_key_to_accelerator(&keyboard.toggle_bottom_panel);
     let toggle_bottom = MenuItem::with_id(app, "view.toggle_bottom_panel", "Toggle Bottom Panel", true, Some(&toggle_bottom_accel))?;
+    let split_v_accel = config_key_to_accelerator(&keyboard.split_vertical);
+    let split_v = MenuItem::with_id(app, MENU_SPLIT_VERTICAL_ID, "Split Pane Vertically", true, Some(&split_v_accel))?;
+    let split_h_accel = config_key_to_accelerator(&keyboard.split_horizontal);
+    let split_h = MenuItem::with_id(app, MENU_SPLIT_HORIZONTAL_ID, "Split Pane Horizontally", true, Some(&split_h_accel))?;
+    let close_pane_accel = config_key_to_accelerator(&keyboard.close_pane);
+    let close_pane_item = MenuItem::with_id(app, MENU_CLOSE_PANE_ID, "Close Pane", true, Some(&close_pane_accel))?;
     let view_menu = Submenu::with_items(
         app,
         "View",
         true,
         &[
             &toggle_left, &toggle_right, &toggle_bottom,
+            &PredefinedMenuItem::separator(app)?,
+            &split_v, &split_h, &close_pane_item,
             &PredefinedMenuItem::separator(app)?,
             &focus_sessions, &zen_mode,
             &PredefinedMenuItem::separator(app)?,
@@ -1058,6 +1094,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             MENU_NEW_TAB_ID => emit_menu_action_to_focused_window(app, MENU_ACTION_NEW_TAB),
             MENU_CLOSE_TAB_ID => emit_menu_action_to_focused_window(app, MENU_ACTION_CLOSE_TAB),
+            MENU_RENAME_TAB_ID => emit_menu_action_to_focused_window(app, MENU_ACTION_RENAME_TAB),
             MENU_TOGGLE_LEFT_PANEL_ID => {
                 emit_menu_action_to_focused_window(app, MENU_ACTION_TOGGLE_LEFT_PANEL)
             }
@@ -1097,6 +1134,9 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             MENU_ABOUT_ID => {
                 emit_menu_action_to_focused_window(app, "about")
             }
+            MENU_SPLIT_VERTICAL_ID => emit_menu_action_to_focused_window(app, MENU_ACTION_SPLIT_VERTICAL),
+            MENU_SPLIT_HORIZONTAL_ID => emit_menu_action_to_focused_window(app, MENU_ACTION_SPLIT_HORIZONTAL),
+            MENU_CLOSE_PANE_ID => emit_menu_action_to_focused_window(app, MENU_ACTION_CLOSE_PANE),
             MENU_NEW_WINDOW_ID => {
                 if let Err(e) = create_new_window(app) {
                     log::error!("Failed to create window from menu: {e}");
@@ -1182,6 +1222,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             remote::ssh_write,
             remote::ssh_resize,
             remote::ssh_disconnect,
+            remote::ssh_open_channel,
             remote::remote_get_servers,
             remote::remote_save_server,
             remote::remote_delete_server,
@@ -1263,7 +1304,7 @@ fn pty_reader_loop(
     pty_state: &Arc<Mutex<HashMap<String, PtyBackend>>>,
     pty_key: String,
     window_label: String,
-    tab_id: u32,
+    pane_id: u32,
     mut reader: Box<dyn std::io::Read + Send>,
 ) {
     let mut buf = [0u8; 8192];
@@ -1280,7 +1321,7 @@ fn pty_reader_loop(
                     "pty-exit",
                     PtyExitEvent {
                         window_label: window_label.clone(),
-                        tab_id,
+                        pane_id,
                     },
                 );
                 break;
@@ -1295,20 +1336,20 @@ fn pty_reader_loop(
                     "pty-output",
                     PtyOutputEvent {
                         window_label: window_label.clone(),
-                        tab_id,
+                        pane_id,
                         data: text,
                     },
                 );
             }
             Err(e) => {
-                log::error!("PTY read error on tab {tab_id}: {e}");
+                log::error!("PTY read error on pane {pane_id}: {e}");
                 pty_state.lock().remove(&pty_key);
                 let _ = handle.emit_to(
                     &window_label,
                     "pty-exit",
                     PtyExitEvent {
                         window_label: window_label.clone(),
-                        tab_id,
+                        pane_id,
                     },
                 );
                 break;
@@ -1320,6 +1361,11 @@ fn pty_reader_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_key_uses_pane_id() {
+        assert_eq!(session_key("main", 42), "main:42");
+    }
 
     #[test]
     fn tauri_state_default_has_no_pty() {

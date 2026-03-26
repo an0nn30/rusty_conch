@@ -110,7 +110,7 @@ fn desktop_remote_paths() -> RemotePaths {
 fn spawn_output_forwarder(
     app: &tauri::AppHandle,
     window_label: &str,
-    tab_id: u32,
+    pane_id: u32,
     mut output_rx: mpsc::UnboundedReceiver<Vec<u8>>,
 ) {
     let app = app.clone();
@@ -127,7 +127,7 @@ fn spawn_output_forwarder(
                 "pty-output",
                 PtyOutputEvent {
                     window_label: wl.clone(),
-                    tab_id,
+                    pane_id,
                     data: text,
                 },
             );
@@ -184,10 +184,19 @@ impl PendingPrompts {
 // Session state
 // ---------------------------------------------------------------------------
 
+/// A shared SSH connection that may serve multiple pane channels.
+pub(crate) struct SshConnection {
+    pub ssh_handle: Arc<conch_remote::russh::client::Handle<ConchSshHandler>>,
+    pub host: String,
+    pub user: String,
+    pub port: u16,
+    pub ref_count: u32,
+}
+
 /// A live SSH session tracked by the backend.
 pub(crate) struct SshSession {
     pub input_tx: mpsc::UnboundedSender<ChannelInput>,
-    pub ssh_handle: Arc<conch_remote::russh::client::Handle<ConchSshHandler>>,
+    pub connection_id: String,
     pub host: String,
     pub user: String,
     pub port: u16,
@@ -195,8 +204,11 @@ pub(crate) struct SshSession {
 
 /// Shared state for all remote operations.
 pub(crate) struct RemoteState {
-    /// SSH sessions keyed by `"{window_label}:{tab_id}"` (same as local PTY keys).
+    /// SSH sessions keyed by `"{window_label}:{pane_id}"` (same as local PTY keys).
     pub sessions: HashMap<String, SshSession>,
+    /// Shared SSH connections keyed by `"conn:{window_label}:{pane_id}"`.
+    /// Multiple sessions may reference the same connection via `connection_id`.
+    pub connections: HashMap<String, SshConnection>,
     /// Server configuration.
     pub config: SshConfig,
     /// Hosts imported from `~/.ssh/config`.
@@ -220,6 +232,7 @@ impl RemoteState {
         let ssh_config_entries = conch_remote::config::parse_ssh_config();
         Self {
             sessions: HashMap::new(),
+            connections: HashMap::new(),
             config,
             ssh_config_entries,
             pending_prompts: Arc::new(Mutex::new(PendingPrompts::new())),
@@ -235,8 +248,12 @@ impl RemoteState {
 // Tauri commands
 // ---------------------------------------------------------------------------
 
-fn session_key(window_label: &str, tab_id: u32) -> String {
-    format!("{window_label}:{tab_id}")
+fn session_key(window_label: &str, pane_id: u32) -> String {
+    format!("{window_label}:{pane_id}")
+}
+
+fn connection_key(window_label: &str, pane_id: u32) -> String {
+    format!("conn:{window_label}:{pane_id}")
 }
 
 /// Connect to an SSH server and open a shell channel in a tab.
@@ -246,14 +263,14 @@ pub(crate) async fn ssh_connect(
     app: tauri::AppHandle,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
     vault: tauri::State<'_, VaultState>,
-    tab_id: u32,
+    pane_id: u32,
     server_id: String,
     cols: u16,
     rows: u16,
     password: Option<String>,
 ) -> Result<(), String> {
     let window_label = window.label().to_string();
-    let key = session_key(&window_label, tab_id);
+    let key = session_key(&window_label, pane_id);
 
     // Find the server entry.
     let server = {
@@ -271,7 +288,7 @@ pub(crate) async fn ssh_connect(
         let state = remote.lock();
         if state.sessions.contains_key(&key) {
             return Err(format!(
-                "Tab {tab_id} already has an SSH session on window {window_label}"
+                "Pane {pane_id} already has an SSH session on window {window_label}"
             ));
         }
         (Arc::clone(&state.pending_prompts), state.paths.clone())
@@ -302,15 +319,26 @@ pub(crate) async fn ssh_connect(
     // Request initial resize.
     let _ = input_tx.send(ChannelInput::Resize { cols, rows });
 
-    // Store the session.
+    // Store the connection and session.
+    let conn_key = connection_key(&window_label, pane_id);
     let remote_clone = Arc::clone(&*remote);
     {
         let mut state = remote_clone.lock();
+        state.connections.insert(
+            conn_key.clone(),
+            SshConnection {
+                ssh_handle: Arc::new(ssh_handle),
+                host: server.host.clone(),
+                user: credentials.username.clone(),
+                port: server.port,
+                ref_count: 1,
+            },
+        );
         state.sessions.insert(
             key.clone(),
             SshSession {
                 input_tx,
-                ssh_handle: Arc::new(ssh_handle),
+                connection_id: conn_key.clone(),
                 host: server.host.clone(),
                 user: credentials.username.clone(),
                 port: server.port,
@@ -327,8 +355,17 @@ pub(crate) async fn ssh_connect(
         let exited_naturally =
             conch_remote::ssh::channel_loop(channel, input_rx, output_tx).await;
 
-        // Clean up session.
-        remote_for_loop.lock().sessions.remove(&key_for_loop);
+        // Clean up session and decrement connection ref count.
+        let mut state = remote_for_loop.lock();
+        if let Some(session) = state.sessions.remove(&key_for_loop) {
+            if let Some(conn) = state.connections.get_mut(&session.connection_id) {
+                conn.ref_count -= 1;
+                if conn.ref_count == 0 {
+                    state.connections.remove(&session.connection_id);
+                }
+            }
+        }
+        drop(state);
 
         if exited_naturally {
             let _ = app_handle.emit_to(
@@ -336,13 +373,13 @@ pub(crate) async fn ssh_connect(
                 "pty-exit",
                 PtyExitEvent {
                     window_label: wl.clone(),
-                    tab_id,
+                    pane_id,
                 },
             );
         }
     });
 
-    spawn_output_forwarder(&app, &window_label, tab_id, output_rx);
+    spawn_output_forwarder(&app, &window_label, pane_id, output_rx);
 
     // After successful connect: if no vault account was linked, offer to save.
     if !used_vault {
@@ -368,7 +405,7 @@ pub(crate) async fn ssh_quick_connect(
     app: tauri::AppHandle,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
     vault: tauri::State<'_, VaultState>,
-    tab_id: u32,
+    pane_id: u32,
     spec: String,
     cols: u16,
     rows: u16,
@@ -397,13 +434,13 @@ pub(crate) async fn ssh_quick_connect(
 
     // Don't persist quick-connect entries to config — they're ephemeral.
     let window_label = window.label().to_string();
-    let key = session_key(&window_label, tab_id);
+    let key = session_key(&window_label, pane_id);
 
     let (pending_prompts, paths) = {
         let state = remote.lock();
         if state.sessions.contains_key(&key) {
             return Err(format!(
-                "Tab {tab_id} already has an SSH session on window {window_label}"
+                "Pane {pane_id} already has an SSH session on window {window_label}"
             ));
         }
         (Arc::clone(&state.pending_prompts), state.paths.clone())
@@ -423,14 +460,25 @@ pub(crate) async fn ssh_quick_connect(
     let (output_tx, output_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let _ = input_tx.send(ChannelInput::Resize { cols, rows });
 
+    let conn_key = connection_key(&window_label, pane_id);
     let remote_clone = Arc::clone(&*remote);
     {
         let mut state = remote_clone.lock();
+        state.connections.insert(
+            conn_key.clone(),
+            SshConnection {
+                ssh_handle: Arc::new(ssh_handle),
+                host: entry.host.clone(),
+                user: credentials.username.clone(),
+                port: entry.port,
+                ref_count: 1,
+            },
+        );
         state.sessions.insert(
             key.clone(),
             SshSession {
                 input_tx,
-                ssh_handle: Arc::new(ssh_handle),
+                connection_id: conn_key.clone(),
                 host: entry.host.clone(),
                 user: credentials.username.clone(),
                 port: entry.port,
@@ -445,20 +493,29 @@ pub(crate) async fn ssh_quick_connect(
     tokio::spawn(async move {
         let exited_naturally =
             conch_remote::ssh::channel_loop(channel, input_rx, output_tx).await;
-        remote_for_loop.lock().sessions.remove(&key_for_loop);
+        let mut state = remote_for_loop.lock();
+        if let Some(session) = state.sessions.remove(&key_for_loop) {
+            if let Some(conn) = state.connections.get_mut(&session.connection_id) {
+                conn.ref_count -= 1;
+                if conn.ref_count == 0 {
+                    state.connections.remove(&session.connection_id);
+                }
+            }
+        }
+        drop(state);
         if exited_naturally {
             let _ = app_handle.emit_to(
                 &wl,
                 "pty-exit",
                 PtyExitEvent {
                     window_label: wl.clone(),
-                    tab_id,
+                    pane_id,
                 },
             );
         }
     });
 
-    spawn_output_forwarder(&app, &window_label, tab_id, output_rx);
+    spawn_output_forwarder(&app, &window_label, pane_id, output_rx);
 
     // After successful quick-connect: if a password was used, offer to save
     // the credentials to the vault and create a persistent server entry.
@@ -486,10 +543,10 @@ pub(crate) async fn ssh_quick_connect(
 pub(crate) fn ssh_write(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     data: String,
 ) -> Result<(), String> {
-    let key = session_key(window.label(), tab_id);
+    let key = session_key(window.label(), pane_id);
     let state = remote.lock();
     let session = state.sessions.get(&key).ok_or("SSH session not found")?;
     session
@@ -503,11 +560,11 @@ pub(crate) fn ssh_write(
 pub(crate) fn ssh_resize(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let key = session_key(window.label(), tab_id);
+    let key = session_key(window.label(), pane_id);
     let state = remote.lock();
     let session = state.sessions.get(&key).ok_or("SSH session not found")?;
     session
@@ -517,17 +574,111 @@ pub(crate) fn ssh_resize(
 }
 
 /// Disconnect an SSH session.
+///
+/// Signals the channel loop to shut down. The loop's cleanup block handles
+/// session removal and connection ref-count decrement.
 #[tauri::command]
 pub(crate) fn ssh_disconnect(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
 ) {
-    let key = session_key(window.label(), tab_id);
-    let mut state = remote.lock();
-    if let Some(session) = state.sessions.remove(&key) {
+    let key = session_key(window.label(), pane_id);
+    let state = remote.lock();
+    if let Some(session) = state.sessions.get(&key) {
         let _ = session.input_tx.send(ChannelInput::Shutdown);
     }
+}
+
+/// Open a new shell channel on an existing SSH connection.
+///
+/// This allows a split pane to reuse an SSH connection that was established
+/// by another pane, avoiding a second authentication round-trip.
+#[tauri::command]
+pub(crate) async fn ssh_open_channel(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
+    pane_id: u32,
+    connection_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let window_label = window.label().to_string();
+    let key = session_key(&window_label, pane_id);
+
+    let ssh_handle = {
+        let state = remote.lock();
+        let conn = state
+            .connections
+            .get(&connection_id)
+            .ok_or_else(|| format!("SSH connection '{connection_id}' not found"))?;
+        Arc::clone(&conn.ssh_handle)
+    };
+
+    let channel = conch_remote::ssh::open_shell_channel(&ssh_handle, cols, rows).await?;
+
+    let (input_tx, input_rx) = mpsc::unbounded_channel();
+    let (output_tx, output_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let _ = input_tx.send(ChannelInput::Resize { cols, rows });
+
+    let (host, user, port) = {
+        let state = remote.lock();
+        let conn = state
+            .connections
+            .get(&connection_id)
+            .ok_or_else(|| format!("SSH connection '{connection_id}' disappeared"))?;
+        (conn.host.clone(), conn.user.clone(), conn.port)
+    };
+
+    let remote_clone = Arc::clone(&*remote);
+    {
+        let mut state = remote_clone.lock();
+        if let Some(conn) = state.connections.get_mut(&connection_id) {
+            conn.ref_count += 1;
+        }
+        state.sessions.insert(
+            key.clone(),
+            SshSession {
+                input_tx,
+                connection_id: connection_id.clone(),
+                host,
+                user,
+                port,
+            },
+        );
+    }
+
+    let remote_for_loop = Arc::clone(&remote_clone);
+    let key_for_loop = key.clone();
+    let wl = window_label.clone();
+    let conn_id = connection_id.clone();
+    let app_handle = app.clone();
+    tokio::spawn(async move {
+        let exited = conch_remote::ssh::channel_loop(channel, input_rx, output_tx).await;
+        let mut state = remote_for_loop.lock();
+        state.sessions.remove(&key_for_loop);
+        if let Some(conn) = state.connections.get_mut(&conn_id) {
+            conn.ref_count -= 1;
+            if conn.ref_count == 0 {
+                state.connections.remove(&conn_id);
+            }
+        }
+        drop(state);
+        if exited {
+            let _ = app_handle.emit_to(
+                &wl,
+                "pty-exit",
+                PtyExitEvent {
+                    window_label: wl.clone(),
+                    pane_id,
+                },
+            );
+        }
+    });
+
+    spawn_output_forwarder(&app, &window_label, pane_id, output_rx);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -883,30 +1034,37 @@ pub(crate) fn remote_duplicate_server(
 // SFTP commands
 // ---------------------------------------------------------------------------
 
-/// Helper to get the SSH handle for a session by window/tab.
+/// Helper to get the SSH handle for a session by window/pane.
+///
+/// Looks up the session's `connection_id` and retrieves the shared handle
+/// from the connections map.
 fn get_ssh_handle(
     state: &RemoteState,
     window_label: &str,
-    tab_id: u32,
+    pane_id: u32,
 ) -> Result<Arc<conch_remote::russh::client::Handle<ConchSshHandler>>, String> {
-    let key = session_key(window_label, tab_id);
-    state
+    let key = session_key(window_label, pane_id);
+    let session = state
         .sessions
         .get(&key)
-        .map(|s| Arc::clone(&s.ssh_handle))
-        .ok_or_else(|| format!("No SSH session for {key}"))
+        .ok_or_else(|| format!("No SSH session for {key}"))?;
+    state
+        .connections
+        .get(&session.connection_id)
+        .map(|c| Arc::clone(&c.ssh_handle))
+        .ok_or_else(|| format!("No SSH connection for {}", session.connection_id))
 }
 
 #[tauri::command]
 pub(crate) async fn sftp_list_dir(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
 ) -> Result<Vec<conch_remote::sftp::FileEntry>, String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::list_dir(&ssh, &path).await
 }
@@ -915,12 +1073,12 @@ pub(crate) async fn sftp_list_dir(
 pub(crate) async fn sftp_stat(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
 ) -> Result<conch_remote::sftp::FileEntry, String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::stat(&ssh, &path).await
 }
@@ -929,14 +1087,14 @@ pub(crate) async fn sftp_stat(
 pub(crate) async fn sftp_read_file(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
     offset: u64,
     length: u64,
 ) -> Result<conch_remote::sftp::ReadFileResult, String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::read_file(&ssh, &path, offset, length as usize).await
 }
@@ -945,13 +1103,13 @@ pub(crate) async fn sftp_read_file(
 pub(crate) async fn sftp_write_file(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
     data: String,
 ) -> Result<u64, String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::write_file(&ssh, &path, &data).await
 }
@@ -960,12 +1118,12 @@ pub(crate) async fn sftp_write_file(
 pub(crate) async fn sftp_mkdir(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
 ) -> Result<(), String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::mkdir(&ssh, &path).await
 }
@@ -974,13 +1132,13 @@ pub(crate) async fn sftp_mkdir(
 pub(crate) async fn sftp_rename(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     from: String,
     to: String,
 ) -> Result<(), String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::rename(&ssh, &from, &to).await
 }
@@ -989,13 +1147,13 @@ pub(crate) async fn sftp_rename(
 pub(crate) async fn sftp_remove(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
     is_dir: bool,
 ) -> Result<(), String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::remove(&ssh, &path, is_dir).await
 }
@@ -1004,12 +1162,12 @@ pub(crate) async fn sftp_remove(
 pub(crate) async fn sftp_realpath(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     path: String,
 ) -> Result<String, String> {
     let ssh = {
         let state = remote.lock();
-        get_ssh_handle(&state, window.label(), tab_id)?
+        get_ssh_handle(&state, window.label(), pane_id)?
     };
     conch_remote::sftp::realpath(&ssh, &path).await
 }
@@ -1051,13 +1209,13 @@ pub(crate) fn local_remove(path: String, is_dir: bool) -> Result<(), String> {
 pub(crate) async fn transfer_download(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     remote_path: String,
     local_path: String,
 ) -> Result<String, String> {
     let (ssh, transfer_id, progress_tx, registry) = {
         let state = remote.lock();
-        let ssh = get_ssh_handle(&state, window.label(), tab_id)?;
+        let ssh = get_ssh_handle(&state, window.label(), pane_id)?;
         let tid = uuid::Uuid::new_v4().to_string();
         let ptx = state.transfer_progress_tx.clone();
         let reg = Arc::clone(&state.transfers);
@@ -1078,13 +1236,13 @@ pub(crate) async fn transfer_download(
 pub(crate) async fn transfer_upload(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<Mutex<RemoteState>>>,
-    tab_id: u32,
+    pane_id: u32,
     local_path: String,
     remote_path: String,
 ) -> Result<String, String> {
     let (ssh, transfer_id, progress_tx, registry) = {
         let state = remote.lock();
-        let ssh = get_ssh_handle(&state, window.label(), tab_id)?;
+        let ssh = get_ssh_handle(&state, window.label(), pane_id)?;
         let tid = uuid::Uuid::new_v4().to_string();
         let ptx = state.transfer_progress_tx.clone();
         let reg = Arc::clone(&state.transfers);
@@ -1564,6 +1722,27 @@ mod tests {
         assert!(state.sessions.is_empty());
     }
 
+    #[test]
+    fn connection_key_format() {
+        let key = connection_key("main", 1);
+        assert_eq!(key, "conn:main:1");
+    }
+
+    #[test]
+    fn connection_key_differs_from_session_key() {
+        let ck = connection_key("main", 1);
+        let sk = session_key("main", 1);
+        assert_ne!(ck, sk);
+        assert!(ck.starts_with("conn:"));
+    }
+
+    #[test]
+    fn remote_state_new_has_no_connections() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = RemoteState::new(tx);
+        assert!(state.connections.is_empty());
+    }
+
     /// Build a minimal RemoteState for testing (no config files, no SSH config).
     fn test_state_with(
         config: SshConfig,
@@ -1572,6 +1751,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         RemoteState {
             sessions: HashMap::new(),
+            connections: HashMap::new(),
             config,
             ssh_config_entries,
             pending_prompts: Arc::new(Mutex::new(PendingPrompts::new())),

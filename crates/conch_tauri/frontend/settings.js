@@ -668,6 +668,7 @@
         shortcuts: [
           { key: 'new_tab', label: 'New Tab' },
           { key: 'close_tab', label: 'Close Tab' },
+          { key: 'rename_tab', label: 'Rename Tab' },
           { key: 'new_window', label: 'New Window' },
           { key: 'quit', label: 'Quit' },
         ],
@@ -679,6 +680,18 @@
           { key: 'toggle_left_panel', label: 'Toggle File Explorer' },
           { key: 'toggle_right_panel', label: 'Toggle Sessions Panel' },
           { key: 'toggle_bottom_panel', label: 'Toggle Bottom Panel' },
+        ],
+      },
+      {
+        label: 'Split Panes',
+        shortcuts: [
+          { key: 'split_vertical', label: 'Split Pane Vertically' },
+          { key: 'split_horizontal', label: 'Split Pane Horizontally' },
+          { key: 'close_pane', label: 'Close Pane' },
+          { key: 'navigate_pane_up', label: 'Navigate Pane Up' },
+          { key: 'navigate_pane_down', label: 'Navigate Pane Down' },
+          { key: 'navigate_pane_left', label: 'Navigate Pane Left' },
+          { key: 'navigate_pane_right', label: 'Navigate Pane Right' },
         ],
       },
     ];
