@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use conch_plugin_sdk::widgets::{PluginEvent, Widget};
 use mlua::prelude::*;
+use mlua::StdLib;
 use tokio::sync::mpsc;
 
 use crate::bus::PluginMail;
@@ -81,7 +82,24 @@ fn lua_plugin_thread(
     meta: &LuaPluginMeta,
     mut mailbox: mpsc::Receiver<PluginMail>,
 ) {
-    let lua = Lua::new();
+    let lua = match Lua::new_with(
+        StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
+        LuaOptions::default(),
+    ) {
+        Ok(vm) => vm,
+        Err(e) => {
+            log::error!("Failed to create sandboxed Lua VM: {e}");
+            return;
+        }
+    };
+
+    // Remove dangerous base globals that survive stdlib restriction.
+    // loadfile/dofile can read arbitrary files; require can load C modules.
+    for name in &["loadfile", "dofile", "require"] {
+        if let Err(e) = lua.globals().set(*name, mlua::Value::Nil) {
+            log::warn!("Failed to remove global '{name}': {e}");
+        }
+    }
 
     // Register API tables with the safe trait-based HostApi.
     if let Err(e) = api::register_all(&lua, Arc::clone(&host_api)) {
@@ -338,5 +356,91 @@ mod tests {
     fn discover_returns_empty_for_nonexistent() {
         let plugins = discover(Path::new("/nonexistent"));
         assert!(plugins.is_empty());
+    }
+
+    /// Helper: create a sandboxed Lua VM identical to what plugins get.
+    fn sandboxed_lua() -> Lua {
+        let lua = Lua::new_with(
+            StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
+            LuaOptions::default(),
+        )
+        .expect("Failed to create sandboxed Lua VM");
+        for name in &["loadfile", "dofile", "require"] {
+            lua.globals().set(*name, mlua::Value::Nil).unwrap();
+        }
+        lua
+    }
+
+    #[test]
+    fn sandbox_os_not_available() {
+        let lua = sandboxed_lua();
+        let result: LuaValue = lua.load("return os").eval().unwrap();
+        assert_eq!(result, LuaValue::Nil, "os global must be nil in sandbox");
+    }
+
+    #[test]
+    fn sandbox_io_not_available() {
+        let lua = sandboxed_lua();
+        let result: LuaValue = lua.load("return io").eval().unwrap();
+        assert_eq!(result, LuaValue::Nil, "io global must be nil in sandbox");
+    }
+
+    #[test]
+    fn sandbox_debug_not_available() {
+        let lua = sandboxed_lua();
+        let result: LuaValue = lua.load("return debug").eval().unwrap();
+        assert_eq!(result, LuaValue::Nil, "debug global must be nil in sandbox");
+    }
+
+    #[test]
+    fn sandbox_loadfile_not_available() {
+        let lua = sandboxed_lua();
+        let result: LuaValue = lua.load("return loadfile").eval().unwrap();
+        assert_eq!(result, LuaValue::Nil, "loadfile global must be nil in sandbox");
+    }
+
+    #[test]
+    fn sandbox_require_not_available() {
+        let lua = sandboxed_lua();
+        let result: LuaValue = lua.load("return require").eval().unwrap();
+        assert_eq!(result, LuaValue::Nil, "require global must be nil in sandbox");
+    }
+
+    #[test]
+    fn sandbox_string_available() {
+        let lua = sandboxed_lua();
+        let result: String = lua.load(r#"return string.upper("hello")"#).eval().unwrap();
+        assert_eq!(result, "HELLO", "string library must be available");
+    }
+
+    #[test]
+    fn sandbox_table_available() {
+        let lua = sandboxed_lua();
+        let result: i64 = lua
+            .load("local t = {3,1,2}; table.sort(t); return t[1]")
+            .eval()
+            .unwrap();
+        assert_eq!(result, 1, "table library must be available");
+    }
+
+    #[test]
+    fn sandbox_math_available() {
+        let lua = sandboxed_lua();
+        let result: f64 = lua.load("return math.abs(-42)").eval().unwrap();
+        assert!((result - 42.0).abs() < f64::EPSILON, "math library must be available");
+    }
+
+    #[test]
+    fn sandbox_utf8_available() {
+        let lua = sandboxed_lua();
+        let result: i64 = lua.load(r#"return utf8.len("hello")"#).eval().unwrap();
+        assert_eq!(result, 5, "utf8 library must be available");
+    }
+
+    #[test]
+    fn sandbox_coroutine_available() {
+        let lua = sandboxed_lua();
+        let result: String = lua.load("return type(coroutine.create)").eval().unwrap();
+        assert_eq!(result, "function", "coroutine library must be available");
     }
 }
