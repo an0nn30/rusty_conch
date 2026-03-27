@@ -162,13 +162,13 @@ impl JavaPluginManager {
             if path.extension().and_then(|e| e.to_str()) != Some("jar") {
                 continue;
             }
-            eprintln!("[jvm] probing JAR: {}", path.display());
+            log::debug!("[jvm] probing JAR: {}", path.display());
             match self.probe_jar_metadata(&path) {
                 Ok(meta) => {
-                    eprintln!("[jvm] found plugin: {} v{}", meta.name, meta.version);
+                    log::debug!("[jvm] found plugin: {} v{}", meta.name, meta.version);
                     found.push((path, meta));
                 }
-                Err(e) => eprintln!("[jvm] FAILED to probe {}: {e}", path.display()),
+                Err(e) => log::warn!("[jvm] FAILED to probe {}: {e}", path.display()),
             }
         }
         found

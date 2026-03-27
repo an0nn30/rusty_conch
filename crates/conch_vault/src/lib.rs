@@ -86,8 +86,11 @@ impl VaultManager {
         Ok(())
     }
 
-    /// Lock the vault and clear decrypted data from memory.
-    pub fn lock(&self) {
+    /// Seal the vault: lock it and clear decrypted data from memory.
+    ///
+    /// Named `seal` (rather than `lock`) to avoid confusion with Mutex::lock
+    /// on the `Arc<Mutex<VaultManager>>` wrapper used by the app.
+    pub fn seal(&self) {
         self.lock_manager.lock();
         self.clear_memory();
     }
@@ -300,7 +303,7 @@ mod tests {
         assert!(mgr.vault_exists());
         assert!(!mgr.is_locked());
 
-        mgr.lock();
+        mgr.seal();
         assert!(mgr.is_locked());
 
         mgr.unlock(b"master").unwrap();
@@ -311,7 +314,7 @@ mod tests {
     fn unlock_wrong_password_fails() {
         let (mgr, _dir) = make_manager();
         mgr.create(b"correct").unwrap();
-        mgr.lock();
+        mgr.seal();
 
         let result = mgr.unlock(b"wrong");
         assert!(matches!(result, Err(VaultError::WrongPassword)));
@@ -356,7 +359,7 @@ mod tests {
     fn operations_fail_when_locked() {
         let (mgr, _dir) = make_manager();
         mgr.create(b"master").unwrap();
-        mgr.lock();
+        mgr.seal();
 
         assert!(matches!(mgr.list_accounts(), Err(VaultError::Locked)));
         assert!(matches!(

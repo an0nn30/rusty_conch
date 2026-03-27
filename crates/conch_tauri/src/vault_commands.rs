@@ -145,7 +145,7 @@ pub(crate) async fn vault_unlock(
 
 #[tauri::command]
 pub(crate) fn vault_lock(vault: tauri::State<'_, VaultState>) {
-    vault.lock().lock();
+    vault.lock().seal();
 }
 
 #[tauri::command]

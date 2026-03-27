@@ -34,6 +34,7 @@ pub(crate) const MENU_ABOUT_ID: &str = "about-conch";
 pub(crate) const MENU_SPLIT_VERTICAL_ID: &str = "view.split_vertical";
 pub(crate) const MENU_SPLIT_HORIZONTAL_ID: &str = "view.split_horizontal";
 pub(crate) const MENU_CLOSE_PANE_ID: &str = "view.close_pane";
+pub(crate) const MENU_TOGGLE_BOTTOM_PANEL_ID: &str = "view.toggle_bottom_panel";
 pub(crate) const MENU_RENAME_TAB_ID: &str = "file.rename_tab";
 
 // ---------------------------------------------------------------------------
@@ -61,6 +62,9 @@ pub(crate) const MENU_ACTION_SPLIT_VERTICAL: &str = "split-vertical";
 pub(crate) const MENU_ACTION_SPLIT_HORIZONTAL: &str = "split-horizontal";
 pub(crate) const MENU_ACTION_CLOSE_PANE: &str = "close-pane";
 pub(crate) const MENU_ACTION_RENAME_TAB: &str = "rename-tab";
+pub(crate) const MENU_ACTION_TOGGLE_BOTTOM_PANEL: &str = "toggle-bottom-panel";
+pub(crate) const MENU_ACTION_CHECK_UPDATES: &str = "check-for-updates";
+pub(crate) const MENU_ACTION_ABOUT: &str = "about";
 
 // ---------------------------------------------------------------------------
 // Menu action event payload
@@ -208,7 +212,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
     let toggle_bottom_accel = config_key_to_accelerator(&keyboard.toggle_bottom_panel);
     let toggle_bottom = MenuItem::with_id(
         app,
-        "view.toggle_bottom_panel",
+        MENU_TOGGLE_BOTTOM_PANEL_ID,
         "Toggle Bottom Panel",
         true,
         Some(&toggle_bottom_accel),
@@ -544,7 +548,7 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
         let toggle_bottom_accel = config_key_to_accelerator(&keyboard.toggle_bottom_panel);
         let toggle_bottom = MenuItem::with_id(
             app,
-            "view.toggle_bottom_panel",
+            MENU_TOGGLE_BOTTOM_PANEL_ID,
             "Toggle Bottom Panel",
             true,
             Some(&toggle_bottom_accel),

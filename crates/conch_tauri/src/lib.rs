@@ -283,8 +283,8 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             menu::MENU_ZOOM_RESET_ID => {
                 menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_ZOOM_RESET)
             }
-            "view.toggle_bottom_panel" => {
-                menu::emit_menu_action_to_focused_window(app, "toggle-bottom-panel")
+            menu::MENU_TOGGLE_BOTTOM_PANEL_ID => {
+                menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_TOGGLE_BOTTOM_PANEL)
             }
             menu::MENU_TOGGLE_RIGHT_PANEL_ID => {
                 menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_TOGGLE_RIGHT_PANEL)
@@ -314,9 +314,11 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
                 menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_VAULT_LOCK)
             }
             menu::MENU_CHECK_UPDATES_ID => {
-                menu::emit_menu_action_to_focused_window(app, "check-for-updates")
+                menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_CHECK_UPDATES)
             }
-            menu::MENU_ABOUT_ID => menu::emit_menu_action_to_focused_window(app, "about"),
+            menu::MENU_ABOUT_ID => {
+                menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_ABOUT)
+            }
             menu::MENU_SPLIT_VERTICAL_ID => {
                 menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_SPLIT_VERTICAL)
             }
