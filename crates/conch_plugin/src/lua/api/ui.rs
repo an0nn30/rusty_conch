@@ -1,103 +1,15 @@
-//! Lua API table registration — `ui`, `app` tables with widget sugar.
-//!
-//! Each `ui.panel_*` function is syntactic sugar that constructs a `Widget`
-//! enum variant and pushes it onto the widget accumulator. The accumulator
-//! is drained after `render()` to produce the JSON widget tree.
-
-use std::cell::RefCell;
-use std::sync::Arc;
+//! `ui.*` Lua table — widget sugar, layout containers, and dialogs.
 
 use conch_plugin_sdk::widgets::*;
 use mlua::prelude::*;
 
-use crate::HostApi;
-
-// ---------------------------------------------------------------------------
-// Widget accumulator — thread-local stack of widget lists
-// ---------------------------------------------------------------------------
-
-/// Accumulates widgets during a `render()` call.
-///
-/// Uses a stack to support nested layout containers (`panel_horizontal`,
-/// `panel_vertical`, etc.). The top of the stack is the current target.
-pub struct WidgetAccumulator {
-    stack: Vec<Vec<Widget>>,
-}
-
-impl WidgetAccumulator {
-    pub fn new() -> Self {
-        Self {
-            stack: vec![vec![]],
-        }
-    }
-
-    pub fn push_widget(&mut self, widget: Widget) {
-        if let Some(top) = self.stack.last_mut() {
-            top.push(widget);
-        }
-    }
-
-    pub fn push_scope(&mut self) {
-        self.stack.push(vec![]);
-    }
-
-    pub fn pop_scope(&mut self) -> Vec<Widget> {
-        self.stack.pop().unwrap_or_default()
-    }
-
-    pub fn clear(&mut self) {
-        self.stack.clear();
-        self.stack.push(vec![]);
-    }
-
-    pub fn take_widgets(&mut self) -> Vec<Widget> {
-        std::mem::take(self.stack.last_mut().unwrap_or(&mut vec![]))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Host API bridge — wraps the raw HostApi pointer for Lua access
-// ---------------------------------------------------------------------------
-
-/// Wraps an `Arc<dyn HostApi>` so it can be stored as Lua app data.
-pub struct HostApiBridge {
-    api: Arc<dyn HostApi>,
-}
-
-impl HostApiBridge {
-    pub fn new(api: Arc<dyn HostApi>) -> Self {
-        Self { api }
-    }
-
-    fn api(&self) -> &dyn HostApi {
-        &*self.api
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Registration — create and populate all Lua API tables
-// ---------------------------------------------------------------------------
-
-/// Register all API tables on the Lua VM.
-///
-/// Stores a `WidgetAccumulator` and `HostApiBridge` as app data.
-pub fn register_all(lua: &Lua, host_api: Arc<dyn HostApi>) -> LuaResult<()> {
-    lua.set_app_data(RefCell::new(WidgetAccumulator::new()));
-    lua.set_app_data(HostApiBridge::new(host_api));
-
-    register_ui_table(lua)?;
-    register_app_table(lua)?;
-    register_session_table(lua)?;
-    register_net_table(lua)?;
-
-    Ok(())
-}
+use super::{with_acc, with_host_api};
 
 // ---------------------------------------------------------------------------
 // ui.* table
 // ---------------------------------------------------------------------------
 
-fn register_ui_table(lua: &Lua) -> LuaResult<()> {
+pub(super) fn register_ui_table(lua: &Lua) -> LuaResult<()> {
     let ui = lua.create_table()?;
 
     // -- Widget accumulator control --
@@ -488,360 +400,6 @@ fn register_ui_table(lua: &Lua) -> LuaResult<()> {
 }
 
 // ---------------------------------------------------------------------------
-// app.* table
-// ---------------------------------------------------------------------------
-
-fn register_app_table(lua: &Lua) -> LuaResult<()> {
-    let app = lua.create_table()?;
-
-    app.set(
-        "log",
-        lua.create_function(|lua, (level, msg): (String, String)| {
-            let level_num = match level.as_str() {
-                "trace" => 0u8,
-                "debug" => 1,
-                "info" => 2,
-                "warn" => 3,
-                "error" => 4,
-                _ => 2,
-            };
-            with_host_api(lua, |api| api.log(level_num, &msg));
-            Ok(())
-        })?,
-    )?;
-
-    app.set(
-        "clipboard",
-        lua.create_function(|lua, text: String| {
-            with_host_api(lua, |api| api.clipboard_set(&text));
-            Ok(())
-        })?,
-    )?;
-
-    app.set(
-        "clipboard_get",
-        lua.create_function(|lua, ()| {
-            let result = with_host_api(lua, |api| api.clipboard_get());
-            Ok(result)
-        })?,
-    )?;
-
-    app.set(
-        "publish",
-        lua.create_function(|lua, (event_type, data): (String, LuaValue)| {
-            let data_json = serde_json::to_string(&lua_value_to_json(data)?)
-                .unwrap_or_else(|_| "{}".to_string());
-            with_host_api(lua, |api| api.publish_event(&event_type, &data_json));
-            Ok(())
-        })?,
-    )?;
-
-    app.set(
-        "subscribe",
-        lua.create_function(|lua, event_type: String| {
-            with_host_api(lua, |api| api.subscribe(&event_type));
-            Ok(())
-        })?,
-    )?;
-
-    app.set(
-        "notify",
-        lua.create_function(
-            |lua, (title, body, level, duration_ms): (String, String, Option<String>, Option<u64>)| {
-                let notif = serde_json::json!({
-                    "title": title,
-                    "body": body,
-                    "level": level.unwrap_or_else(|| "info".into()),
-                    "duration_ms": duration_ms.unwrap_or(3000),
-                });
-                let json = notif.to_string();
-                with_host_api(lua, |api| api.notify(&json));
-                Ok(())
-            },
-        )?,
-    )?;
-
-    app.set(
-        "register_service",
-        lua.create_function(|lua, name: String| {
-            with_host_api(lua, |api| api.register_service(&name));
-            Ok(())
-        })?,
-    )?;
-
-    app.set(
-        "register_menu_item",
-        lua.create_function(
-            |lua, (menu, label, action, keybind): (String, String, String, Option<String>)| {
-                with_host_api(lua, |api| {
-                    api.register_menu_item(&menu, &label, &action, keybind.as_deref());
-                });
-                Ok(())
-            },
-        )?,
-    )?;
-
-    app.set(
-        "query_plugin",
-        lua.create_function(
-            |lua, (target, method, args): (String, String, Option<LuaValue>)| {
-                let args_json = match args {
-                    Some(v) => serde_json::to_string(&lua_value_to_json(v)?)
-                        .unwrap_or_else(|_| "null".to_string()),
-                    None => "null".to_string(),
-                };
-                let result =
-                    with_host_api(lua, |api| api.query_plugin(&target, &method, &args_json));
-                Ok(result)
-            },
-        )?,
-    )?;
-
-    app.set(
-        "get_config",
-        lua.create_function(|lua, key: String| {
-            let result = with_host_api(lua, |api| api.get_config(&key));
-            Ok(result)
-        })?,
-    )?;
-
-    app.set(
-        "set_config",
-        lua.create_function(|lua, (key, value): (String, String)| {
-            with_host_api(lua, |api| api.set_config(&key, &value));
-            Ok(())
-        })?,
-    )?;
-
-    lua.globals().set("app", app)?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// session.* table (stubs — requires session backend wiring)
-// ---------------------------------------------------------------------------
-
-fn register_session_table(lua: &Lua) -> LuaResult<()> {
-    let session = lua.create_table()?;
-
-    session.set(
-        "platform",
-        lua.create_function(|_lua, ()| {
-            let platform = if cfg!(target_os = "macos") {
-                "macos"
-            } else if cfg!(target_os = "linux") {
-                "linux"
-            } else if cfg!(target_os = "windows") {
-                "windows"
-            } else {
-                "unknown"
-            };
-            Ok(platform.to_string())
-        })?,
-    )?;
-
-    // Execute a command locally (not in the terminal PTY).
-    // For SSH session exec, use app.query_plugin("ssh", "exec", {...}).
-    session.set(
-        "exec",
-        lua.create_function(|_lua, cmd: String| -> LuaResult<LuaTable> {
-            let result = _lua.create_table()?;
-            match std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&cmd)
-                .output()
-            {
-                Ok(output) => {
-                    result.set(
-                        "stdout",
-                        String::from_utf8_lossy(&output.stdout).to_string(),
-                    )?;
-                    result.set(
-                        "stderr",
-                        String::from_utf8_lossy(&output.stderr).to_string(),
-                    )?;
-                    result.set("exit_code", output.status.code().unwrap_or(-1))?;
-                    result.set("status", "ok")?;
-                }
-                Err(e) => {
-                    result.set("stdout", "")?;
-                    result.set("stderr", e.to_string())?;
-                    result.set("exit_code", -1)?;
-                    result.set("status", "error")?;
-                }
-            }
-            Ok(result)
-        })?,
-    )?;
-
-    // Get info about the currently active session.
-    // Returns a table with basic session info. For detailed info about SSH
-    // sessions, use app.query_plugin("ssh", "get_sessions").
-    session.set(
-        "current",
-        lua.create_function(|_lua, ()| -> LuaResult<LuaTable> {
-            let tbl = _lua.create_table()?;
-            let platform = if cfg!(target_os = "macos") {
-                "macos"
-            } else if cfg!(target_os = "linux") {
-                "linux"
-            } else if cfg!(target_os = "windows") {
-                "windows"
-            } else {
-                "unknown"
-            };
-            tbl.set("platform", platform)?;
-            tbl.set("type", "local")?;
-            Ok(tbl)
-        })?,
-    )?;
-
-    // Write bytes to the focused window's active terminal session (PTY).
-    // The write is queued and delivered on the next frame.
-    session.set(
-        "write",
-        lua.create_function(|lua, text: String| {
-            with_host_api(lua, |api| api.write_to_pty(text.as_bytes()));
-            Ok(())
-        })?,
-    )?;
-
-    // Open a new local shell tab in the focused window.
-    // Args: (command?, plain?)
-    //   command: optional string to write to the new tab's PTY
-    //   plain: if true, use OS default shell ignoring terminal.shell config
-    session.set(
-        "new_tab",
-        lua.create_function(|lua, (command, plain): (Option<String>, Option<bool>)| {
-            with_host_api(lua, |api| {
-                api.new_tab(command.as_deref(), plain.unwrap_or(false))
-            });
-            Ok(())
-        })?,
-    )?;
-
-    lua.globals().set("session", session)?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// net.* table (stubs — network ops would be implemented host-side)
-// ---------------------------------------------------------------------------
-
-fn register_net_table(lua: &Lua) -> LuaResult<()> {
-    let net = lua.create_table()?;
-
-    net.set(
-        "time",
-        lua.create_function(|_lua, ()| {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let secs = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64();
-            Ok(secs)
-        })?,
-    )?;
-
-    net.set(
-        "resolve",
-        lua.create_function(|_lua, host: String| -> LuaResult<Vec<String>> {
-            use std::net::ToSocketAddrs;
-            let addr = format!("{host}:0");
-            match addr.to_socket_addrs() {
-                Ok(addrs) => Ok(addrs.map(|a| a.ip().to_string()).collect()),
-                Err(_) => Ok(vec![]),
-            }
-        })?,
-    )?;
-
-    net.set(
-        "scan",
-        lua.create_function(
-            |_lua,
-             (host, ports, timeout_ms, _concurrency): (
-                String,
-                Vec<u16>,
-                Option<u64>,
-                Option<u32>,
-            )|
-             -> LuaResult<Vec<LuaTable>> {
-                use std::net::{TcpStream, ToSocketAddrs};
-                use std::time::Duration;
-
-                let timeout = Duration::from_millis(timeout_ms.unwrap_or(1000));
-                let mut results = Vec::new();
-
-                for port in ports {
-                    let addr_str = format!("{host}:{port}");
-                    let open = match addr_str.to_socket_addrs() {
-                        Ok(mut addrs) => {
-                            if let Some(addr) = addrs.next() {
-                                TcpStream::connect_timeout(&addr, timeout).is_ok()
-                            } else {
-                                false
-                            }
-                        }
-                        Err(_) => false,
-                    };
-                    if open {
-                        let tbl = _lua.create_table()?;
-                        tbl.set("port", port)?;
-                        tbl.set("open", true)?;
-                        results.push(tbl);
-                    }
-                }
-
-                Ok(results)
-            },
-        )?,
-    )?;
-
-    lua.globals().set("net", net)?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Helpers — widget accumulator + host API access
-// ---------------------------------------------------------------------------
-
-/// Borrow the widget accumulator, call the closure, then release.
-fn with_acc<F, R>(lua: &Lua, f: F) -> R
-where
-    F: FnOnce(&mut WidgetAccumulator) -> R,
-{
-    with_acc_pub(lua, f)
-}
-
-/// Public version of `with_acc` for use by the runner module.
-pub fn with_acc_pub<F, R>(lua: &Lua, f: F) -> R
-where
-    F: FnOnce(&mut WidgetAccumulator) -> R,
-{
-    let cell = lua
-        .app_data_ref::<RefCell<WidgetAccumulator>>()
-        .expect("WidgetAccumulator not set");
-    let mut acc = cell.borrow_mut();
-    f(&mut acc)
-}
-
-/// Borrow the HostApi trait object, call the closure.
-fn with_host_api<F, R>(lua: &Lua, f: F) -> R
-where
-    F: FnOnce(&dyn HostApi) -> R,
-{
-    let bridge = lua
-        .app_data_ref::<HostApiBridge>()
-        .expect("HostApiBridge not set");
-    f(bridge.api())
-}
-
-/// Take the accumulated widgets from the current render call.
-pub fn take_widgets(lua: &Lua) -> Vec<Widget> {
-    with_acc(lua, |acc| acc.take_widgets())
-}
-
-// ---------------------------------------------------------------------------
 // Lua → Rust type conversions
 // ---------------------------------------------------------------------------
 
@@ -1088,38 +646,6 @@ fn lua_to_tab_panes(tbl: &LuaTable) -> LuaResult<Vec<TabPane>> {
         .collect()
 }
 
-/// Convert a Lua value to serde_json::Value.
-fn lua_value_to_json(value: LuaValue) -> LuaResult<serde_json::Value> {
-    match value {
-        LuaValue::Nil => Ok(serde_json::Value::Null),
-        LuaValue::Boolean(b) => Ok(serde_json::Value::Bool(b)),
-        LuaValue::Integer(i) => Ok(serde_json::json!(i)),
-        LuaValue::Number(n) => Ok(serde_json::json!(n)),
-        LuaValue::String(s) => Ok(serde_json::Value::String(s.to_str()?.to_string())),
-        LuaValue::Table(t) => {
-            // Check if this is an array (sequential integer keys from 1).
-            let len = t.raw_len();
-            if len > 0 {
-                let mut arr = Vec::new();
-                for v in t.clone().sequence_values::<LuaValue>() {
-                    arr.push(lua_value_to_json(v?)?);
-                }
-                if arr.len() == len {
-                    return Ok(serde_json::Value::Array(arr));
-                }
-            }
-            // Otherwise, treat as object.
-            let mut map = serde_json::Map::new();
-            for pair in t.pairs::<String, LuaValue>() {
-                let (k, v) = pair?;
-                map.insert(k, lua_value_to_json(v)?);
-            }
-            Ok(serde_json::Value::Object(map))
-        }
-        _ => Ok(serde_json::Value::Null),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Dialog helpers — call through HostApi
 // ---------------------------------------------------------------------------
@@ -1223,48 +749,48 @@ fn json_to_lua_value(lua: &Lua, value: &serde_json::Value) -> LuaResult<LuaValue
     }
 }
 
+/// Convert a Lua value to serde_json::Value.
+pub(super) fn lua_value_to_json(value: LuaValue) -> LuaResult<serde_json::Value> {
+    match value {
+        LuaValue::Nil => Ok(serde_json::Value::Null),
+        LuaValue::Boolean(b) => Ok(serde_json::Value::Bool(b)),
+        LuaValue::Integer(i) => Ok(serde_json::json!(i)),
+        LuaValue::Number(n) => Ok(serde_json::json!(n)),
+        LuaValue::String(s) => Ok(serde_json::Value::String(s.to_str()?.to_string())),
+        LuaValue::Table(t) => {
+            // Check if this is an array (sequential integer keys from 1).
+            let len = t.raw_len();
+            if len > 0 {
+                let mut arr = Vec::new();
+                for v in t.clone().sequence_values::<LuaValue>() {
+                    arr.push(lua_value_to_json(v?)?);
+                }
+                if arr.len() == len {
+                    return Ok(serde_json::Value::Array(arr));
+                }
+            }
+            // Otherwise, treat as object.
+            let mut map = serde_json::Map::new();
+            for pair in t.pairs::<String, LuaValue>() {
+                let (k, v) = pair?;
+                map.insert(k, lua_value_to_json(v)?);
+            }
+            Ok(serde_json::Value::Object(map))
+        }
+        _ => Ok(serde_json::Value::Null),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lua::api::{WidgetAccumulator, take_widgets};
+    use std::cell::RefCell;
 
     fn make_test_lua() -> Lua {
         let lua = Lua::new();
         lua.set_app_data(RefCell::new(WidgetAccumulator::new()));
         lua
-    }
-
-    #[test]
-    fn widget_accumulator_basic() {
-        let mut acc = WidgetAccumulator::new();
-        acc.push_widget(Widget::Separator);
-        acc.push_widget(Widget::Heading { text: "Hi".into() });
-        let widgets = acc.take_widgets();
-        assert_eq!(widgets.len(), 2);
-    }
-
-    #[test]
-    fn widget_accumulator_nested_scope() {
-        let mut acc = WidgetAccumulator::new();
-        acc.push_widget(Widget::Separator);
-        acc.push_scope();
-        acc.push_widget(Widget::Heading {
-            text: "Child".into(),
-        });
-        let children = acc.pop_scope();
-        assert_eq!(children.len(), 1);
-        // Parent still has the separator.
-        let parent = acc.take_widgets();
-        assert_eq!(parent.len(), 1);
-    }
-
-    #[test]
-    fn widget_accumulator_clear() {
-        let mut acc = WidgetAccumulator::new();
-        acc.push_widget(Widget::Separator);
-        acc.push_widget(Widget::Separator);
-        acc.clear();
-        let widgets = acc.take_widgets();
-        assert!(widgets.is_empty());
     }
 
     #[test]
