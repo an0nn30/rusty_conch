@@ -19,10 +19,24 @@ pub use terminal::*;
 pub use window::*;
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Atomic write utility
+// ---------------------------------------------------------------------------
+
+/// Write data to a file atomically: write to a temporary file first,
+/// then rename to the target path. This prevents corruption from
+/// partial writes due to crashes or power loss.
+pub fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, data)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // UserConfig — ~/.config/conch/config.toml
@@ -125,7 +139,8 @@ pub fn save_user_config(config: &UserConfig) -> Result<()> {
         fs::create_dir_all(&dir)?;
     }
     let contents = toml::to_string_pretty(config).context("Failed to serialize config")?;
-    fs::write(config_path(), contents)?;
+    atomic_write(&config_path(), contents.as_bytes())
+        .context("Failed to write config.toml atomically")?;
     Ok(())
 }
 
@@ -152,7 +167,8 @@ pub fn save_persistent_state(state: &PersistentState) -> Result<()> {
         fs::create_dir_all(&dir)?;
     }
     let contents = toml::to_string_pretty(state).context("Failed to serialize state")?;
-    fs::write(state_path(), contents)?;
+    atomic_write(&state_path(), contents.as_bytes())
+        .context("Failed to write state.toml atomically")?;
     Ok(())
 }
 
@@ -202,6 +218,44 @@ mod tests {
             !toml_str.contains("\n[font]\n"),
             "Legacy [font] section should not appear in serialized output, got:\n{toml_str}"
         );
+    }
+
+    #[test]
+    fn atomic_write_creates_file_with_correct_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        atomic_write(&path, b"hello world").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_tmp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        atomic_write(&path, b"{\"key\": \"value\"}").unwrap();
+        let tmp = path.with_extension("tmp");
+        assert!(
+            !tmp.exists(),
+            ".tmp file should not remain after successful write"
+        );
+    }
+
+    #[test]
+    fn atomic_write_overwrites_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        std::fs::write(&path, "old content").unwrap();
+        atomic_write(&path, b"new content").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new content");
+    }
+
+    #[test]
+    fn atomic_write_empty_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.toml");
+        atomic_write(&path, b"").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        assert!(!path.with_extension("tmp").exists());
     }
 
     #[test]

@@ -217,7 +217,12 @@ impl HostApi for TauriHostApi {
             .join(&self.name);
         let _ = fs::create_dir_all(&dir);
         let path = dir.join(format!("{key}.json"));
-        let _ = fs::write(&path, value);
+        if let Err(e) = conch_core::config::atomic_write(&path, value.as_bytes()) {
+            log::error!(
+                "[plugin:{}] Failed to save config key '{key}' atomically: {e}",
+                self.name
+            );
+        }
     }
 
     fn clipboard_set(&self, text: &str) {
