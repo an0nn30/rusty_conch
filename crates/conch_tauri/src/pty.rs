@@ -61,7 +61,7 @@ pub(crate) fn spawn_shell(
 ) -> Result<(), String> {
     let window_label = window.label().to_string();
     let key = session_key(&window_label, pane_id);
-    let cfg = state.config.lock();
+    let cfg = state.config.read();
     let (shell, shell_args) = resolved_shell(&cfg.terminal.shell);
 
     let backend = PtyBackend::new(cols, rows, shell, shell_args, &cfg.terminal.env)

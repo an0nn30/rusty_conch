@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use conch_plugin::HostApi;
 use conch_plugin::bus::PluginBus;
 use conch_plugin_sdk::PanelLocation;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use tauri::Emitter;
 
@@ -23,8 +23,8 @@ pub(crate) struct TauriHostApi {
     pub name: String,
     pub app_handle: tauri::AppHandle,
     pub bus: std::sync::Arc<PluginBus>,
-    pub panels: std::sync::Arc<Mutex<HashMap<u64, PanelInfo>>>,
-    pub menu_items: std::sync::Arc<Mutex<Vec<PluginMenuItem>>>,
+    pub panels: std::sync::Arc<RwLock<HashMap<u64, PanelInfo>>>,
+    pub menu_items: std::sync::Arc<RwLock<Vec<PluginMenuItem>>>,
     pub pending_dialogs: std::sync::Arc<Mutex<PendingDialogs>>,
 }
 
@@ -81,7 +81,7 @@ impl HostApi for TauriHostApi {
             _ => "right",
         };
 
-        self.panels.lock().insert(
+        self.panels.write().insert(
             handle,
             PanelInfo {
                 plugin_name: self.name.clone(),
@@ -107,7 +107,7 @@ impl HostApi for TauriHostApi {
     }
 
     fn set_widgets(&self, handle: u64, widgets_json: &str) {
-        if let Some(panel) = self.panels.lock().get_mut(&handle) {
+        if let Some(panel) = self.panels.write().get_mut(&handle) {
             panel.widgets_json = widgets_json.to_string();
         }
 
@@ -265,7 +265,7 @@ impl HostApi for TauriHostApi {
             action: action.to_string(),
             keybind: keybind.map(String::from),
         };
-        self.menu_items.lock().push(item.clone());
+        self.menu_items.write().push(item.clone());
 
         // Also emit to frontend for immediate update.
         let _ = self.app_handle.emit("plugin-menu-item", &item);

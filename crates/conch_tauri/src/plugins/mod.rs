@@ -12,7 +12,7 @@ use std::sync::Arc;
 use conch_plugin::bus::PluginBus;
 use conch_plugin::jvm::runtime::JavaPluginManager;
 use conch_plugin::lua::runner;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use tauri::Emitter;
 
@@ -79,8 +79,8 @@ struct PluginPanelsRemoved {
 
 pub(crate) struct PluginState {
     pub bus: Arc<PluginBus>,
-    pub panels: Arc<Mutex<HashMap<u64, PanelInfo>>>,
-    pub menu_items: Arc<Mutex<Vec<PluginMenuItem>>>,
+    pub panels: Arc<RwLock<HashMap<u64, PanelInfo>>>,
+    pub menu_items: Arc<RwLock<Vec<PluginMenuItem>>>,
     pub pending_dialogs: Arc<Mutex<PendingDialogs>>,
     pub running_lua: Vec<runner::RunningLuaPlugin>,
     pub java_mgr: Option<JavaPluginManager>,
@@ -91,8 +91,8 @@ impl PluginState {
     pub fn new(plugins_config: conch_core::config::PluginsConfig) -> Self {
         Self {
             bus: Arc::new(PluginBus::new()),
-            panels: Arc::new(Mutex::new(HashMap::new())),
-            menu_items: Arc::new(Mutex::new(Vec::new())),
+            panels: Arc::new(RwLock::new(HashMap::new())),
+            menu_items: Arc::new(RwLock::new(Vec::new())),
             pending_dialogs: Arc::new(Mutex::new(PendingDialogs::new())),
             running_lua: Vec::new(),
             java_mgr: None,
@@ -149,7 +149,7 @@ impl PluginState {
     fn cleanup_plugin_resources(&self, plugin_name: &str) -> Vec<u64> {
         // Collect and remove panels owned by this plugin.
         let mut removed_handles = Vec::new();
-        self.panels.lock().retain(|handle, info| {
+        self.panels.write().retain(|handle, info| {
             if info.plugin_name == plugin_name {
                 removed_handles.push(*handle);
                 false
@@ -160,7 +160,7 @@ impl PluginState {
 
         // Remove menu items registered by this plugin.
         self.menu_items
-            .lock()
+            .write()
             .retain(|item| item.plugin != plugin_name);
 
         // Drop pending dialog channels owned by this plugin.
@@ -579,7 +579,7 @@ pub(crate) fn dialog_respond_confirm(
 pub(crate) fn get_plugin_menu_items(
     state: tauri::State<'_, Arc<Mutex<PluginState>>>,
 ) -> Vec<PluginMenuItem> {
-    state.lock().menu_items.lock().clone()
+    state.lock().menu_items.read().clone()
 }
 
 /// Trigger a plugin menu action (sends menu_action event to the plugin).
@@ -602,7 +602,7 @@ pub(crate) fn trigger_plugin_menu_action(
 pub(crate) fn get_plugin_panels(
     state: tauri::State<'_, Arc<Mutex<PluginState>>>,
 ) -> Vec<PanelInfo> {
-    state.lock().panels.lock().values().cloned().collect()
+    state.lock().panels.read().values().cloned().collect()
 }
 
 /// Get the widget JSON for a specific panel.
@@ -614,7 +614,7 @@ pub(crate) fn get_panel_widgets(
     state
         .lock()
         .panels
-        .lock()
+        .read()
         .get(&handle)
         .map(|p| p.widgets_json.clone())
 }
@@ -662,7 +662,7 @@ mod tests {
     #[test]
     fn plugin_state_new_is_empty() {
         let state = PluginState::new(conch_core::config::PluginsConfig::default());
-        assert!(state.panels.lock().is_empty());
+        assert!(state.panels.read().is_empty());
         assert!(state.running_lua.is_empty());
     }
 
@@ -698,7 +698,7 @@ mod tests {
 
         // Insert panels for two different plugins.
         {
-            let mut panels = state.panels.lock();
+            let mut panels = state.panels.write();
             panels.insert(
                 1,
                 PanelInfo {
@@ -741,7 +741,7 @@ mod tests {
         assert!(removed.contains(&1));
         assert!(removed.contains(&3));
 
-        let panels = state.panels.lock();
+        let panels = state.panels.read();
         assert_eq!(panels.len(), 1, "only other-plugin panel should remain");
         assert!(panels.contains_key(&2));
     }
@@ -751,7 +751,7 @@ mod tests {
         let state = PluginState::new(conch_core::config::PluginsConfig::default());
 
         {
-            let mut items = state.menu_items.lock();
+            let mut items = state.menu_items.write();
             items.push(PluginMenuItem {
                 plugin: "my-plugin".into(),
                 menu: "Tools".into(),
@@ -777,7 +777,7 @@ mod tests {
 
         state.cleanup_plugin_resources("my-plugin");
 
-        let items = state.menu_items.lock();
+        let items = state.menu_items.read();
         assert_eq!(items.len(), 1, "only other-plugin menu item should remain");
         assert_eq!(items[0].plugin, "other-plugin");
     }

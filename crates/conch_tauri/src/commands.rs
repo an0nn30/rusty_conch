@@ -22,7 +22,7 @@ use crate::theme;
 /// Return general app config the frontend needs.
 #[tauri::command]
 pub(crate) fn get_app_config(state: tauri::State<'_, TauriState>) -> serde_json::Value {
-    let cfg = state.config.lock();
+    let cfg = state.config.read();
     let dec = format!("{:?}", cfg.window.decorations).to_lowercase();
     serde_json::json!({
         "appearance_mode": format!("{:?}", cfg.colors.appearance_mode).to_lowercase(),
@@ -65,7 +65,7 @@ pub(crate) fn get_home_dir() -> String {
 
 #[tauri::command]
 pub(crate) fn get_theme_colors(state: tauri::State<'_, TauriState>) -> theme::ThemeColors {
-    let cfg = state.config.lock();
+    let cfg = state.config.read();
     theme::resolve_theme_colors(&cfg)
 }
 
@@ -84,7 +84,7 @@ pub(crate) struct TerminalDisplayConfig {
 
 #[tauri::command]
 pub(crate) fn get_terminal_config(state: tauri::State<'_, TauriState>) -> TerminalDisplayConfig {
-    let cfg = state.config.lock();
+    let cfg = state.config.read();
     let font = cfg.resolved_terminal_font();
     let cursor = &cfg.terminal.cursor.style;
     let cursor_style = match cursor.shape.to_lowercase().as_str() {
@@ -122,7 +122,7 @@ pub(crate) struct KeyboardShortcuts {
 
 #[tauri::command]
 pub(crate) fn get_keyboard_shortcuts(state: tauri::State<'_, TauriState>) -> KeyboardShortcuts {
-    let cfg = state.config.lock();
+    let cfg = state.config.read();
     let kb = &cfg.conch.keyboard;
     KeyboardShortcuts {
         toggle_right_panel: kb.toggle_right_panel.clone(),
@@ -248,7 +248,7 @@ pub(crate) fn rebuild_menu(
         .map(|c| c.conch.keyboard)
         .unwrap_or_default();
 
-    let plugin_items = plugin_state.lock().menu_items.lock().clone();
+    let plugin_items = plugin_state.lock().menu_items.read().clone();
 
     // On Windows the custom titlebar handles menus; skip native menu.
     if cfg!(target_os = "windows") {

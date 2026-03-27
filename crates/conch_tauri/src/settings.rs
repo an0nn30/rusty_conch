@@ -14,7 +14,7 @@ pub(crate) struct SaveSettingsResult {
 
 #[tauri::command]
 pub(crate) fn get_all_settings(state: tauri::State<'_, TauriState>) -> serde_json::Value {
-    let cfg = state.config.lock();
+    let cfg = state.config.read();
     serde_json::to_value(&*cfg).unwrap_or_default()
 }
 
@@ -47,13 +47,13 @@ pub(crate) fn save_settings(
         serde_json::from_value(settings).map_err(|e| format!("Invalid settings: {e}"))?;
 
     let restart_required = {
-        let old_config = state.config.lock();
+        let old_config = state.config.read();
         needs_restart(&old_config, &new_config)
     };
 
     // Update in-memory config before disk write.
     {
-        let mut cfg = state.config.lock();
+        let mut cfg = state.config.write();
         *cfg = new_config.clone();
     }
 

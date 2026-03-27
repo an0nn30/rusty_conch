@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use conch_core::config::{self, UserConfig};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use pty_backend::PtyBackend;
 use remote::RemoteState;
 use tauri::{Emitter, Manager};
@@ -33,7 +33,7 @@ use tauri_plugin_updater::UpdaterExt;
 
 pub(crate) struct TauriState {
     ptys: Arc<Mutex<HashMap<String, PtyBackend>>>,
-    config: Mutex<UserConfig>,
+    config: RwLock<UserConfig>,
 }
 
 /// Launch the Tauri-based UI.
@@ -89,7 +89,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
         .plugin(tauri_plugin_notification::init())
         .manage(TauriState {
             ptys: Arc::new(Mutex::new(HashMap::new())),
-            config: Mutex::new(config),
+            config: RwLock::new(config),
         })
         .manage(Arc::clone(&remote_state))
         .manage(Arc::clone(&plugin_state))
@@ -145,7 +145,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
                         .name("plugin-menu-rebuild".into())
                         .spawn(move || {
                             std::thread::sleep(std::time::Duration::from_millis(500));
-                            let plugin_items = menu_ps.lock().menu_items.lock().clone();
+                            let plugin_items = menu_ps.lock().menu_items.read().clone();
                             if !plugin_items.is_empty() {
                                 match menu::build_app_menu_with_plugins(
                                     &menu_handle,
@@ -349,7 +349,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
                             // plugin name on the bus is different (e.g., "Form Test").
                             let real_plugin = ps_guard
                                 .menu_items
-                                .lock()
+                                .read()
                                 .iter()
                                 .find(|i| i.plugin == source_name && i.action == action)
                                 .map(|i| i.plugin.clone());
@@ -527,7 +527,7 @@ mod tests {
     fn tauri_state_default_has_no_pty() {
         let state = TauriState {
             ptys: Arc::new(Mutex::new(HashMap::new())),
-            config: Mutex::new(UserConfig::default()),
+            config: RwLock::new(UserConfig::default()),
         };
         assert!(state.ptys.lock().is_empty());
     }
