@@ -4,6 +4,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::remote::RemoteState;
@@ -22,14 +23,17 @@ pub(crate) struct UnlockVaultRequest {
     pub password: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct VaultStatusResponse {
     pub exists: bool,
     pub locked: bool,
+    #[ts(as = "f64")]
     pub seconds_remaining: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct AccountResponse {
     pub id: Uuid,
     pub display_name: String,
@@ -91,7 +95,8 @@ pub(crate) struct KeyGenRequest {
     pub save_path: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct KeyGenResponse {
     pub fingerprint: String,
     pub public_key: String,
@@ -313,7 +318,8 @@ pub(crate) fn vault_generate_key(
     })
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct GeneratedKeyResponse {
     pub id: Uuid,
     pub algorithm: String,

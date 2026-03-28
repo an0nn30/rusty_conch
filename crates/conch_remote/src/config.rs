@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
 /// Write data to a file atomically: write to a temporary file first,
@@ -28,7 +29,8 @@ fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct ServerEntry {
     pub id: String,
     pub label: String,
@@ -54,7 +56,8 @@ pub struct ServerEntry {
     pub proxy_jump: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct ServerFolder {
     pub id: String,
     pub name: String,
@@ -62,7 +65,8 @@ pub struct ServerFolder {
     pub entries: Vec<ServerEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct SavedTunnel {
     pub id: Uuid,
     pub label: String,
@@ -256,7 +260,8 @@ pub fn save_config(config_dir: &Path, config: &SshConfig) {
 
 /// Portable export format — contains servers (with folders) and tunnels.
 /// Passwords and absolute key paths are intentionally excluded.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct ExportPayload {
     pub version: u32,
     pub folders: Vec<ServerFolder>,

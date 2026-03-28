@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde::Serialize;
+use ts_rs::TS;
 
 use conch_remote::config::{ExportPayload, SavedTunnel, ServerEntry, ServerFolder};
 
@@ -14,14 +15,16 @@ use crate::vault_commands::VaultState;
 // Response types
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct ServerListResponse {
     folders: Vec<ServerFolder>,
     ungrouped: Vec<ServerEntry>,
     ssh_config: Vec<ServerEntry>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct ActiveSession {
     key: String,
     host: String,

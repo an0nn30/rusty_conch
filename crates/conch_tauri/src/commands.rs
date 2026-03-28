@@ -9,6 +9,7 @@ use std::sync::Arc;
 use conch_core::config;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::TauriState;
 use crate::menu;
@@ -73,7 +74,8 @@ pub(crate) fn get_theme_colors(state: tauri::State<'_, TauriState>) -> theme::Th
 // Terminal config (font, cursor, scroll)
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct TerminalDisplayConfig {
     font_family: String,
     font_size: f64,
@@ -109,7 +111,8 @@ pub(crate) fn get_terminal_config(state: tauri::State<'_, TauriState>) -> Termin
 // ---------------------------------------------------------------------------
 
 /// Keyboard shortcuts exposed to the frontend.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct KeyboardShortcuts {
     toggle_right_panel: String,
     toggle_left_panel: String,
@@ -149,7 +152,8 @@ pub(crate) struct WindowLayout {
 }
 
 /// Layout state sent to the frontend on load.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct SavedLayout {
     window_width: f64,
     window_height: f64,

@@ -15,11 +15,13 @@ use conch_plugin::lua::runner;
 use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::Emitter;
+use ts_rs::TS;
 
 use tauri_host_api::TauriHostApi;
 
 /// Metadata for a registered plugin panel.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
 pub(crate) struct PanelInfo {
     pub plugin_name: String,
     pub panel_name: String,
@@ -61,7 +63,8 @@ impl PendingDialogs {
 }
 
 /// A menu item registered by a plugin.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
 pub(crate) struct PluginMenuItem {
     pub plugin: String,
     pub menu: String,
@@ -328,7 +331,8 @@ fn plugin_search_paths(extra: &[String]) -> Vec<std::path::PathBuf> {
 // Plugin manager types
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
 pub(crate) struct DiscoveredPlugin {
     pub name: String,
     pub description: String,
