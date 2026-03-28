@@ -1,10 +1,12 @@
 //! Color theme loading — converts Alacritty .toml themes to CSS-compatible values.
 
 use serde::Serialize;
+use ts_rs::TS;
 
 use conch_core::config::UserConfig;
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct ThemeColors {
     pub background: String,
     pub foreground: String,

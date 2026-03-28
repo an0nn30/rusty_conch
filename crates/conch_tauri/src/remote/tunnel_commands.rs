@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde::Serialize;
+use ts_rs::TS;
 
 use conch_remote::callbacks::RemoteCallbacks;
 use conch_remote::config::SavedTunnel;
@@ -18,7 +19,8 @@ use crate::vault_commands::VaultState;
 // Response types
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct TunnelWithStatus {
     #[serde(flatten)]
     tunnel: SavedTunnel,

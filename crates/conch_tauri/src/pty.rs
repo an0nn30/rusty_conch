@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tauri::Emitter;
+use ts_rs::TS;
 
 use crate::TauriState;
 use crate::pty_backend::PtyBackend;
@@ -16,14 +17,16 @@ use crate::pty_backend::PtyBackend;
 // Event payloads
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, TS)]
+#[ts(export)]
 pub(crate) struct PtyOutputEvent {
     pub window_label: String,
     pub pane_id: u32,
     pub data: String,
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, TS)]
+#[ts(export)]
 pub(crate) struct PtyExitEvent {
     pub window_label: String,
     pub pane_id: u32,

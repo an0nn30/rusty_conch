@@ -5,16 +5,20 @@
 
 use russh_sftp::client::SftpSession;
 use serde::Serialize;
+use ts_rs::TS;
 
 use crate::error::RemoteError;
 use crate::handler::ConchSshHandler;
 
 /// A file entry returned from SFTP or local filesystem operations.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct FileEntry {
     pub name: String,
     pub is_dir: bool,
+    #[ts(as = "f64")]
     pub size: u64,
+    #[ts(as = "Option<f64>")]
     pub modified: Option<u64>,
     pub permissions: Option<String>,
 }
@@ -121,9 +125,11 @@ pub async fn read_file(
     })
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub struct ReadFileResult {
     pub data: String,
+    #[ts(as = "f64")]
     pub bytes_read: u64,
 }
 

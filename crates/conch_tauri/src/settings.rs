@@ -3,11 +3,13 @@
 use conch_core::config::{self, UserConfig};
 use serde::Serialize;
 use tauri::Emitter;
+use ts_rs::TS;
 
 use crate::TauriState;
 use crate::theme;
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub(crate) struct SaveSettingsResult {
     restart_required: bool,
 }

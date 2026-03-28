@@ -10,6 +10,7 @@ use russh::client;
 use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::callbacks::{RemoteCallbacks, RemotePaths};
@@ -21,7 +22,8 @@ use crate::handler::ConchSshHandler;
 // Tunnel status
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum TunnelStatus {
     Connecting,
@@ -29,7 +31,8 @@ pub enum TunnelStatus {
     Error(String),
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 pub struct TunnelInfo {
     pub id: String,
     pub status: TunnelStatus,

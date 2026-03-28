@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::sync::mpsc;
+use ts_rs::TS;
 
 use crate::error::RemoteError;
 use crate::handler::ConchSshHandler;
@@ -19,14 +20,16 @@ use crate::sftp::open_sftp;
 // Transfer types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferKind {
     Download,
     Upload,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferStatus {
     Pending,
@@ -36,12 +39,15 @@ pub enum TransferStatus {
     Cancelled,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
 pub struct TransferProgress {
     pub transfer_id: String,
     pub kind: TransferKind,
     pub status: TransferStatus,
+    #[ts(as = "f64")]
     pub bytes_transferred: u64,
+    #[ts(as = "f64")]
     pub total_bytes: u64,
     pub file_name: String,
     pub error: Option<String>,

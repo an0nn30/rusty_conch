@@ -66,7 +66,8 @@ pub(crate) const MENU_ACTION_RENAME_TAB: &str = "rename-tab";
 // Menu action event payload
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub(crate) struct MenuActionEvent {
     pub window_label: String,
     pub action: String,
