@@ -2257,8 +2257,10 @@
         // Listen for plugin panel registrations and create panel containers.
         listenOnCurrentWindow('plugin-panel-registered', async (event) => {
           const { handle, plugin, name, location } = event.payload;
-          // For now, add plugin panels as additional content in the right sidebar.
-          // Future: support left/bottom panel locations with tabbed UI.
+          // Bottom-panel plugins are routed to the tabbed bottom panel via
+          // plugin-widgets.js — skip creating a sidebar container for them.
+          if (location === 'bottom') return;
+          // Add non-bottom plugin panels as additional content in the right sidebar.
           const sshPanel = document.getElementById('ssh-panel');
           if (!sshPanel) return;
 
@@ -2289,6 +2291,24 @@
             }
           } catch (e) {
             console.error('Initial plugin render failed:', e);
+          }
+        });
+
+        // Clean up sidebar containers when a plugin is disabled/unloaded.
+        listenOnCurrentWindow('plugin-panels-removed', (event) => {
+          const { handles } = event.payload;
+          for (const handle of handles) {
+            const container = document.querySelector(`[data-plugin-handle="${handle}"]`);
+            if (container) {
+              // Remove the separator and header preceding the container.
+              const prev = container.previousElementSibling;
+              if (prev && prev.classList.contains('ssh-section-header')) {
+                const sep = prev.previousElementSibling;
+                if (sep && sep.classList.contains('ssh-panel-separator')) sep.remove();
+                prev.remove();
+              }
+              container.remove();
+            }
           }
         });
       }

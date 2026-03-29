@@ -34,14 +34,16 @@
       }
     });
 
-    // Listen for plugin panel removal and clean up bottom panel tabs.
-    listen('plugin-panel-removed', (event) => {
-      const { handle, plugin } = event.payload;
-      if (bottomPanelHandles.has(handle)) {
-        bottomPanelHandles.delete(handle);
-        if (window.notificationPanel) {
-          window.notificationPanel.removePluginTab('plugin-' + plugin);
+    // Listen for plugin panel removal (batch event) and clean up bottom panel tabs.
+    listen('plugin-panels-removed', (event) => {
+      const { plugin, handles } = event.payload;
+      for (const handle of handles) {
+        if (bottomPanelHandles.has(handle)) {
+          bottomPanelHandles.delete(handle);
         }
+      }
+      if (window.notificationPanel) {
+        window.notificationPanel.removePluginTab('plugin-' + plugin);
       }
     });
 
