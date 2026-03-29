@@ -779,11 +779,24 @@
     // Sub-group: Font
     addSectionLabel(c, 'Font');
 
-    const fontFamilyInput = makeInput('text', pendingSettings.terminal.font.normal.family);
-    fontFamilyInput.addEventListener('input', () => {
-      pendingSettings.terminal.font.normal.family = fontFamilyInput.value;
+    const fontFamilySelect = document.createElement('select');
+    fontFamilySelect.className = 'settings-select';
+    const defaultOpt = document.createElement('option');
+    defaultOpt.value = '';
+    defaultOpt.textContent = 'System Default';
+    if (!pendingSettings.terminal.font.normal.family) defaultOpt.selected = true;
+    fontFamilySelect.appendChild(defaultOpt);
+    for (const f of cachedFonts.monospace) {
+      const opt = document.createElement('option');
+      opt.value = f;
+      opt.textContent = f;
+      if (f === pendingSettings.terminal.font.normal.family) opt.selected = true;
+      fontFamilySelect.appendChild(opt);
+    }
+    fontFamilySelect.addEventListener('change', () => {
+      pendingSettings.terminal.font.normal.family = fontFamilySelect.value;
     });
-    addRow(c, 'Font Family', null, fontFamilyInput);
+    addRow(c, 'Font Family', null, fontFamilySelect);
 
     const fontSizeInput = makeInput('number', pendingSettings.terminal.font.size);
     fontSizeInput.addEventListener('input', () => {
