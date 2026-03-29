@@ -1217,7 +1217,7 @@
 
     // Sub-group: Installed Plugins
     const installedHeader = document.createElement('div');
-    installedHeader.style.cssText = 'display:flex; justify-content:space-between; align-items:center;';
+    installedHeader.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding-right:10px;';
     const installedLabel = document.createElement('div');
     installedLabel.className = 'settings-section-label';
     installedLabel.textContent = 'Installed Plugins';
