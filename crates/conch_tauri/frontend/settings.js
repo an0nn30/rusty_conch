@@ -11,6 +11,7 @@
   let originalSettings = null;
   let cachedThemes = [];
   let cachedPlugins = [];
+  let cachedFonts = { all: [], monospace: [] };
 
   const SECTIONS = [
     { group: 'General', items: [
@@ -39,15 +40,17 @@
     if (document.getElementById('settings-overlay')) { close(); return; }
 
     try {
-      const [settings, themes, plugins] = await Promise.all([
+      const [settings, themes, plugins, fonts] = await Promise.all([
         invoke('get_all_settings'),
         invoke('list_themes'),
         invoke('scan_plugins'),
+        invoke('list_system_fonts'),
       ]);
       originalSettings = JSON.parse(JSON.stringify(settings));
       pendingSettings = JSON.parse(JSON.stringify(settings));
       cachedThemes = themes;
       cachedPlugins = plugins;
+      cachedFonts = fonts;
       currentSection = 'appearance';
       renderDialog();
     } catch (e) {
@@ -545,15 +548,24 @@
     addSectionLabel(c, 'UI Font');
 
     // Font Family
-    const fontInput = document.createElement('input');
-    fontInput.type = 'text';
-    fontInput.className = 'settings-input';
-    fontInput.placeholder = 'System Default';
-    fontInput.value = pendingSettings.conch.ui.font_family || '';
-    fontInput.addEventListener('input', () => {
-      pendingSettings.conch.ui.font_family = fontInput.value;
+    const fontSelect = document.createElement('select');
+    fontSelect.className = 'settings-select';
+    const defaultOpt = document.createElement('option');
+    defaultOpt.value = '';
+    defaultOpt.textContent = 'System Default';
+    if (!pendingSettings.conch.ui.font_family) defaultOpt.selected = true;
+    fontSelect.appendChild(defaultOpt);
+    for (const f of cachedFonts.all) {
+      const opt = document.createElement('option');
+      opt.value = f;
+      opt.textContent = f;
+      if (f === pendingSettings.conch.ui.font_family) opt.selected = true;
+      fontSelect.appendChild(opt);
+    }
+    fontSelect.addEventListener('change', () => {
+      pendingSettings.conch.ui.font_family = fontSelect.value;
     });
-    addRow(c, 'Font Family', null, fontInput);
+    addRow(c, 'Font Family', null, fontSelect);
 
     // Font Size
     const sizeInput = document.createElement('input');
