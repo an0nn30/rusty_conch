@@ -399,6 +399,16 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             }
         })
         .on_window_event(|window, event| {
+            // IntelliJ-style modal focus: clicking the main window while
+            // the settings window is open redirects focus to settings.
+            if let tauri::WindowEvent::Focused(true) = event {
+                if window.label() != "settings" {
+                    if let Some(settings_win) = window.app_handle().get_webview_window("settings") {
+                        let _ = settings_win.set_focus();
+                    }
+                }
+            }
+
             if let tauri::WindowEvent::Destroyed = event {
                 let label = window.label().to_string();
                 log::info!("Window '{label}' destroyed — starting cleanup");
