@@ -6,6 +6,7 @@
 
 pub(crate) mod cleanup;
 mod commands;
+pub(crate) mod fonts;
 mod ipc;
 pub(crate) mod menu;
 pub mod platform;
