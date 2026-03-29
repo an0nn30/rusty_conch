@@ -1258,7 +1258,7 @@
         row.style.cssText = 'background:var(--bg); border-radius:6px; padding:8px 10px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;';
 
         const left = document.createElement('div');
-        left.style.cssText = 'display:flex; align-items:center; gap:8px; min-width:0;';
+        left.style.cssText = 'display:flex; align-items:center; gap:8px; min-width:0; flex:1; overflow:hidden;';
 
         // Type badge
         const badge = document.createElement('span');

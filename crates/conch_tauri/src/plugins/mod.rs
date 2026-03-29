@@ -320,6 +320,13 @@ fn plugin_search_paths(extra: &[String]) -> Vec<std::path::PathBuf> {
         paths.push(expanded);
     }
 
+    // Deduplicate paths so the same directory isn't scanned twice.
+    let mut seen = std::collections::HashSet::new();
+    paths.retain(|p| {
+        let key = p.canonicalize().unwrap_or_else(|_| p.clone());
+        seen.insert(key)
+    });
+
     paths
 }
 
@@ -694,6 +701,26 @@ mod tests {
     fn search_paths_expands_tilde() {
         let paths = plugin_search_paths(&["~/my-plugins".to_string()]);
         assert!(paths.iter().any(|p| !p.to_string_lossy().starts_with('~')));
+    }
+
+    #[test]
+    fn search_paths_deduplicates() {
+        // The default plugins dir is always included; passing it again as an
+        // extra path should not produce duplicates.
+        let config_dir = conch_core::config::config_dir();
+        let plugins_dir = config_dir.join("plugins");
+        let extra = vec![plugins_dir.to_string_lossy().to_string()];
+        let paths = plugin_search_paths(&extra);
+        let count = paths
+            .iter()
+            .filter(|p| {
+                p.canonicalize().unwrap_or_else(|_| (*p).clone())
+                    == plugins_dir
+                        .canonicalize()
+                        .unwrap_or_else(|_| plugins_dir.clone())
+            })
+            .count();
+        assert_eq!(count, 1, "plugins dir should appear exactly once");
     }
 
     #[test]
