@@ -652,7 +652,7 @@ mod tests {
                 conch_vault::AuthMethod::Password("pw123".into()),
             )
             .unwrap();
-        mgr.lock();
+        mgr.seal();
         let vault: VaultState = Arc::new(Mutex::new(mgr));
 
         let mut server = make_server("test", "example.com", "root", 22);

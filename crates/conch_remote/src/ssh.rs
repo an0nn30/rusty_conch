@@ -200,7 +200,15 @@ pub async fn connect_and_open_shell(
         .map_err(|e| RemoteError::Connection(format!("Channel open failed: {e}")))?;
 
     channel
-        .request_pty(false, "xterm-256color", 80, 24, 0, 0, &[])
+        .request_pty(
+            false,
+            "xterm-256color",
+            crate::DEFAULT_PTY_COLS as u32,
+            crate::DEFAULT_PTY_ROWS as u32,
+            0,
+            0,
+            &[],
+        )
         .await
         .map_err(|e| RemoteError::Connection(format!("PTY request failed: {e}")))?;
 
