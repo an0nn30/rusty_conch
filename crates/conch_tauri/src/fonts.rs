@@ -130,7 +130,11 @@ pub(crate) async fn list_system_fonts(
     let current = {
         let cfg = state.config.read();
         let family = cfg.resolved_terminal_font().normal.family.clone();
-        if family.is_empty() { None } else { Some(family) }
+        if family.is_empty() {
+            None
+        } else {
+            Some(family)
+        }
     };
     tokio::task::spawn_blocking(move || enumerate_system_fonts(current.as_deref()))
         .await
@@ -144,7 +148,10 @@ mod tests {
     #[test]
     fn enumerate_returns_non_empty_lists() {
         let fonts = enumerate_system_fonts(None);
-        assert!(!fonts.all.is_empty(), "System should have at least one font");
+        assert!(
+            !fonts.all.is_empty(),
+            "System should have at least one font"
+        );
         assert!(
             !fonts.monospace.is_empty(),
             "System should have at least one monospace font"
