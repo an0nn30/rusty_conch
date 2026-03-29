@@ -2241,6 +2241,10 @@
       if (window.settings) {
         window.settings.init({ invoke, listen: listenOnCurrentWindow });
       }
+      // Listen for restart-required from the settings window.
+      listenOnCurrentWindow('settings-restart-required', () => {
+        if (window.toast) window.toast.warn('Restart Required', 'Some changes require a restart to take effect.');
+      });
 
       // ---- Plugin widget renderer init ----
       if (window.pluginWidgets) {
@@ -2520,7 +2524,10 @@
           return;
         }
         if (action === 'settings') {
-          if (window.settings) window.settings.open();
+          invoke('open_settings_window').catch(() => {
+            // Fallback to overlay if window creation fails.
+            if (window.settings) window.settings.open();
+          });
           return;
         }
         if (action === 'manage-tunnels' && window.tunnelManager) {

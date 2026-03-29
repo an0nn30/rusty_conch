@@ -50,6 +50,53 @@ pub(crate) async fn open_new_window(app: tauri::AppHandle) -> Result<(), String>
     .map_err(|e| e.to_string())
 }
 
+/// Tauri command to open the settings in a dedicated window.
+///
+/// If a settings window is already open, focuses it instead of creating a
+/// duplicate.
+#[tauri::command]
+pub(crate) async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        // Focus existing settings window if already open.
+        if let Some(win) = handle.get_webview_window("settings") {
+            let _ = win.set_focus();
+            let _ = tx.send(Ok(()));
+            return;
+        }
+        let result = create_settings_window(&handle).map_err(|e| {
+            log::error!("Failed to create settings window: {e}");
+            e.to_string()
+        });
+        let _ = tx.send(result);
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv().map_err(|e| e.to_string())?
+}
+
+fn create_settings_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
+    let user_cfg = config::load_user_config().unwrap_or_default();
+    let theme = appearance_to_theme(&user_cfg.colors.appearance_mode);
+
+    // Use custom titlebar on Windows/Linux (same as main window).
+    let use_custom_titlebar = cfg!(target_os = "windows") || cfg!(target_os = "linux");
+
+    let win = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("Settings — Conch")
+        .inner_size(780.0, 560.0)
+        .resizable(true)
+        .min_inner_size(600.0, 400.0)
+        .decorations(!use_custom_titlebar)
+        .theme(theme)
+        .build()?;
+
+    // Remove the app-level menu from this window so it has no menu bar.
+    let _ = win.remove_menu();
+
+    Ok(())
+}
+
 pub(crate) fn create_new_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
     let label = loop {
         let id = NEXT_WINDOW_ID.fetch_add(1, Ordering::Relaxed);

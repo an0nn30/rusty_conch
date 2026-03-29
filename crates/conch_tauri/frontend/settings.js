@@ -12,6 +12,8 @@
   let cachedThemes = [];
   let cachedPlugins = [];
   let cachedFonts = { all: [], monospace: [] };
+  let standaloneMode = false;   // true when running in its own window
+  let standaloneRoot = null;    // root element in standalone mode
 
   const SECTIONS = [
     { group: 'General', items: [
@@ -58,8 +60,108 @@
     }
   }
 
+  /** Open settings in a standalone window (called from settings.html). */
+  async function openInWindow(rootEl) {
+    standaloneMode = true;
+    standaloneRoot = rootEl;
+
+    try {
+      const [settings, themes, plugins, fonts] = await Promise.all([
+        invoke('get_all_settings'),
+        invoke('list_themes'),
+        invoke('scan_plugins'),
+        invoke('list_system_fonts'),
+      ]);
+      originalSettings = JSON.parse(JSON.stringify(settings));
+      pendingSettings = JSON.parse(JSON.stringify(settings));
+      cachedThemes = themes;
+      cachedPlugins = plugins;
+      cachedFonts = fonts;
+      currentSection = 'appearance';
+      renderStandalone();
+    } catch (e) {
+      if (window.toast) window.toast.error('Settings', 'Failed to load settings: ' + e);
+    }
+  }
+
+  /** Render settings as a full-window layout (no overlay, no modal). */
+  function renderStandalone() {
+    const root = standaloneRoot;
+    root.innerHTML = '';
+
+    // Title bar (also serves as drag region)
+    const title = document.createElement('div');
+    title.className = 'settings-title';
+    title.textContent = 'Settings';
+    title.setAttribute('data-tauri-drag-region', '');
+    root.appendChild(title);
+
+    // Body = sidebar + content
+    const body = document.createElement('div');
+    body.className = 'settings-body';
+
+    const sidebar = document.createElement('div');
+    sidebar.className = 'settings-sidebar';
+    sidebar.id = 'settings-sidebar';
+    for (const group of SECTIONS) {
+      const groupEl = document.createElement('div');
+      groupEl.className = 'settings-sidebar-group';
+      groupEl.textContent = group.group;
+      sidebar.appendChild(groupEl);
+      for (const item of group.items) {
+        const itemEl = document.createElement('div');
+        itemEl.className = 'settings-sidebar-item' + (item.id === currentSection ? ' active' : '');
+        itemEl.textContent = item.label;
+        itemEl.dataset.section = item.id;
+        itemEl.addEventListener('click', () => selectSection(item.id));
+        sidebar.appendChild(itemEl);
+      }
+    }
+    body.appendChild(sidebar);
+
+    const content = document.createElement('div');
+    content.className = 'settings-content';
+    content.id = 'settings-content';
+    body.appendChild(content);
+
+    root.appendChild(body);
+
+    // Footer
+    const footer = document.createElement('div');
+    footer.className = 'settings-footer';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'ssh-form-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', close);
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'ssh-form-btn primary';
+    applyBtn.textContent = 'Apply';
+    applyBtn.addEventListener('click', applySettings);
+    footer.appendChild(cancelBtn);
+    footer.appendChild(applyBtn);
+    root.appendChild(footer);
+
+    // Escape to close the settings window.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (recordingEl) return;  // let recording handler handle it
+        close();
+      }
+    });
+
+    renderCurrentSection();
+  }
+
   function close() {
     stopRecording();
+    if (standaloneMode) {
+      // In standalone window mode, close the window itself.
+      const tauri = window.__TAURI__;
+      if (tauri) {
+        tauri.window.getCurrentWindow().close();
+      }
+      return;
+    }
     const el = document.getElementById('settings-overlay');
     if (el) el.remove();
     if (escapeHandler) {
@@ -1301,8 +1403,14 @@
   async function applySettings() {
     try {
       const result = await invoke('save_settings', { settings: pendingSettings });
+      if (standaloneMode && result && result.restart_required) {
+        // Emit to the main window so the toast is visible after this window closes.
+        try {
+          await window.__TAURI__.event.emit('settings-restart-required');
+        } catch (_) {}
+      }
       close();
-      if (result && result.restart_required) {
+      if (!standaloneMode && result && result.restart_required) {
         if (window.toast) window.toast.warn('Restart Required', 'Some changes require a restart to take effect.');
       }
     } catch (e) {
@@ -1310,5 +1418,5 @@
     }
   }
 
-  exports.settings = { init, open, close };
+  exports.settings = { init, open, openInWindow, close };
 })(window);

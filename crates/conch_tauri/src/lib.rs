@@ -399,9 +399,27 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             }
         })
         .on_window_event(|window, event| {
+            // IntelliJ-style modal focus: clicking the main window while
+            // the settings window is open redirects focus to settings.
+            if let tauri::WindowEvent::Focused(true) = event {
+                if window.label() != "settings" {
+                    if let Some(settings_win) = window.app_handle().get_webview_window("settings") {
+                        let _ = settings_win.set_focus();
+                    }
+                }
+            }
+
             if let tauri::WindowEvent::Destroyed = event {
                 let label = window.label().to_string();
                 log::info!("Window '{label}' destroyed — starting cleanup");
+
+                // When the main window closes, also close child windows
+                // (settings, etc.) so they don't linger as orphans.
+                if label == "main" {
+                    if let Some(settings_win) = window.app_handle().get_webview_window("settings") {
+                        let _ = settings_win.close();
+                    }
+                }
 
                 // Clean up PTY sessions for this window.
                 if let Some(state) = window.try_state::<TauriState>() {
@@ -438,6 +456,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             commands::get_about_info,
             commands::get_home_dir,
             windows::open_new_window,
+            windows::open_settings_window,
             commands::rebuild_menu,
             settings::get_all_settings,
             settings::save_settings,
