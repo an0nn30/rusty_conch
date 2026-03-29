@@ -801,6 +801,8 @@ dependencies = [
  "conch_plugin_sdk",
  "conch_remote",
  "conch_vault",
+ "core-foundation 0.9.4",
+ "core-text",
  "dirs",
  "env_logger",
  "font-kit",
