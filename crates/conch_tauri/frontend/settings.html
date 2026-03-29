@@ -22,6 +22,9 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       color: var(--fg);
     }
+    body {
+      display: flex; flex-direction: column;
+    }
 
     /* ---- Custom titlebar (Windows/Linux) ---- */
     #settings-titlebar {
@@ -55,11 +58,12 @@
     /* ---- Settings layout (standalone window mode) ---- */
     #settings-root {
       display: flex; flex-direction: column;
-      width: 100%; height: 100%;
+      width: 100%; flex: 1; min-height: 0;
     }
     #settings-root .settings-title {
       padding: 10px 18px 8px; font-size: 15px; font-weight: 600;
       border-bottom: 1px solid var(--tab-border);
+      flex-shrink: 0;
     }
     #settings-root .settings-body {
       display: flex; flex: 1; overflow: hidden; min-height: 0;
@@ -85,6 +89,7 @@
     #settings-root .settings-footer {
       display: flex; justify-content: flex-end; gap: 8px;
       padding: 10px 18px 14px; border-top: 1px solid var(--tab-border);
+      flex-shrink: 0;
     }
 
     /* ---- Shared settings form elements ---- */
