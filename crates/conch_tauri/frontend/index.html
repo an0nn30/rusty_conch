@@ -2464,6 +2464,42 @@
         });
       }
 
+      function isTextInputTarget(el) {
+        if (!el) return false;
+        const tag = (el.tagName || '').toUpperCase();
+        if (tag === 'TEXTAREA') return true;
+        if (tag === 'INPUT') {
+          const t = (el.type || 'text').toLowerCase();
+          return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(t);
+        }
+        if (typeof el.isContentEditable === 'boolean' && el.isContentEditable) return true;
+        return false;
+      }
+
+      function writeTextToCurrentPane(text) {
+        const pane = currentPane();
+        if (!pane || !pane.spawned || typeof text !== 'string' || text.length === 0) return false;
+        const cmd = pane.type === 'ssh' ? 'ssh_write' : 'write_to_pty';
+        invoke(cmd, { paneId: pane.paneId, data: text }).catch((e) => {
+          console.error('paste write error:', e);
+        });
+        pane.term.focus();
+        return true;
+      }
+
+      async function pasteIntoCurrentPane(explicitText) {
+        if (typeof explicitText === 'string') {
+          return writeTextToCurrentPane(explicitText);
+        }
+        try {
+          const text = await navigator.clipboard.readText();
+          return writeTextToCurrentPane(text);
+        } catch (e) {
+          showStatus('Paste failed: clipboard unavailable');
+          return false;
+        }
+      }
+
       // ---- Terminal context menu ----
       const termContextMenu = document.getElementById('terminal-context-menu');
 
@@ -2551,6 +2587,34 @@
         }
       }, true);
 
+      // Reliable paste pipeline for terminal panes.
+      // Route keyboard/menu/browser paste through one path when focus is not in
+      // a text input, so terminal paste remains consistent.
+      document.addEventListener('keydown', (e) => {
+        const isPasteCombo = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'v';
+        if (!isPasteCombo) return;
+        if (isTextInputTarget(e.target) || isTextInputTarget(document.activeElement)) return;
+        if (!currentPane()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        pasteIntoCurrentPane();
+      }, true);
+
+      document.addEventListener('paste', (e) => {
+        if (isTextInputTarget(e.target) || isTextInputTarget(document.activeElement)) return;
+        if (!currentPane()) return;
+        const text = e.clipboardData && e.clipboardData.getData
+          ? e.clipboardData.getData('text/plain')
+          : '';
+        e.preventDefault();
+        e.stopPropagation();
+        if (text && text.length > 0) {
+          writeTextToCurrentPane(text);
+        } else {
+          pasteIntoCurrentPane();
+        }
+      }, true);
+
       await listenOnCurrentWindow('pty-output', (event) => {
         const payload = event.payload || {};
         const windowLabel = payload.window_label;
@@ -2580,6 +2644,36 @@
       // Shared menu action handler — used by both the native menu event
       // listener and the custom titlebar menus.
       function handleMenuAction(action) {
+        if (action === 'paste') {
+          pasteIntoCurrentPane();
+          return;
+        }
+        if (action === 'copy') {
+          const pane = currentPane();
+          const text = pane && pane.term ? pane.term.getSelection() : '';
+          if (text) {
+            navigator.clipboard.writeText(text).catch(() => {});
+          } else if (isTextInputTarget(document.activeElement)) {
+            document.execCommand('copy');
+          }
+          return;
+        }
+        if (action === 'cut') {
+          if (isTextInputTarget(document.activeElement)) {
+            document.execCommand('cut');
+          }
+          return;
+        }
+        if (action === 'select-all') {
+          const active = document.activeElement;
+          if (isTextInputTarget(active) && typeof active.select === 'function') {
+            active.select();
+          } else {
+            const pane = currentPane();
+            if (pane && pane.term) pane.term.selectAll();
+          }
+          return;
+        }
         if (action === 'new-tab') {
           createTab().catch((e) => showStatus('Failed to create tab: ' + String(e)));
           return;
