@@ -23,6 +23,56 @@ use permission_host_api::{PermissionCheckedHostApi, PermissionProfile};
 const HOST_PLUGIN_API_MAJOR: u64 = conch_plugin_sdk::HOST_PLUGIN_API_MAJOR;
 const HOST_PLUGIN_API_MINOR: u64 = conch_plugin_sdk::HOST_PLUGIN_API_MINOR;
 
+fn supported_capability_set() -> &'static [&'static str] {
+    &[
+        "ui.menu",
+        "ui.panel",
+        "ui.notify",
+        "ui.dialog",
+        "clipboard.read",
+        "clipboard.write",
+        "config.read",
+        "config.write",
+        "bus.publish",
+        "bus.subscribe",
+        "bus.query",
+        "session.write",
+        "session.new_tab",
+        "session.exec",
+        "session.open",
+        "session.close",
+        "session.status",
+        "net.resolve",
+        "net.scan",
+    ]
+}
+
+fn normalize_and_validate_permissions(
+    plugin_name: &str,
+    declared: &[String],
+) -> Result<Vec<String>, String> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let supported = supported_capability_set();
+    let mut out = Vec::new();
+    for raw in declared {
+        let cap = raw.trim().to_ascii_lowercase();
+        if cap.is_empty() {
+            continue;
+        }
+        if !supported.contains(&cap.as_str()) {
+            return Err(format!(
+                "Plugin '{}' declares unknown capability '{}'",
+                plugin_name, cap
+            ));
+        }
+        if seen.insert(cap.clone()) {
+            out.push(cap);
+        }
+    }
+    Ok(out)
+}
+
 fn ensure_plugin_api_compatible(plugin_name: &str, required: Option<&str>) -> Result<(), String> {
     let Some(req) = required.map(str::trim).filter(|r| !r.is_empty()) else {
         // Legacy plugin with no declared API requirement: allow in Phase 1.
@@ -163,7 +213,7 @@ impl PluginState {
         // Store/refresh permission profile for this plugin.
         let profile = match declared_permissions {
             Some(perms) => PermissionProfile::from_declared(perms),
-            None => PermissionProfile::legacy_allow_all(),
+            None => PermissionProfile::deny_all(),
         };
         self.permission_profiles
             .write()
@@ -284,9 +334,18 @@ impl PluginState {
                     log::warn!("{err}");
                     continue;
                 }
+                let normalized_permissions =
+                    match normalize_and_validate_permissions(&plugin.meta.name, &plugin.meta.permissions)
+                    {
+                        Ok(p) => p,
+                        Err(err) => {
+                            log::warn!("{err}");
+                            continue;
+                        }
+                    };
                 let name = plugin.meta.name.clone();
                 let host_api =
-                    self.make_host_api(&name, app_handle, Some(&plugin.meta.permissions));
+                    self.make_host_api(&name, app_handle, Some(&normalized_permissions));
                 let mailbox_rx = self.bus.register_plugin(&name);
                 let Some(mailbox_tx) = self.bus.sender_for(&name) else {
                     continue;
@@ -311,10 +370,20 @@ impl PluginState {
                     match mgr.probe_jar_name(jar_path) {
                         Some(probe_name) if probe_name == *saved_name => {
                             let declared = mgr.probe_jar_permissions(jar_path);
-                            profiles.write().insert(
-                                probe_name.clone(),
-                                PermissionProfile::from_declared(&declared),
-                            );
+                            let normalized = match normalize_and_validate_permissions(
+                                &probe_name,
+                                &declared,
+                            ) {
+                                Ok(p) => p,
+                                Err(err) => {
+                                    log::warn!("{err}");
+                                    found = true;
+                                    break;
+                                }
+                            };
+                            profiles
+                                .write()
+                                .insert(probe_name.clone(), PermissionProfile::from_declared(&normalized));
                             if let Err(err) = ensure_plugin_api_compatible(
                                 saved_name,
                                 mgr.probe_jar_api_requirement(jar_path).as_deref(),
@@ -434,6 +503,7 @@ pub(crate) struct DiscoveredPlugin {
     pub source: String, // "lua" or "java"
     pub path: String,
     pub loaded: bool,
+    pub permissions: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +537,7 @@ pub(crate) fn scan_plugins(
                 source: "Lua".into(),
                 path: plugin.path.to_string_lossy().to_string(),
                 loaded: loaded_names.contains(&plugin.meta.name),
+                permissions: plugin.meta.permissions.clone(),
             });
         }
     }
@@ -497,6 +568,7 @@ pub(crate) fn scan_plugins(
                             source: "Java".into(),
                             path: path.to_string_lossy().to_string(),
                             loaded,
+                            permissions: mgr.probe_jar_permissions(&path),
                         });
                     }
                 }
@@ -530,8 +602,10 @@ pub(crate) fn enable_plugin(
             .find(|p| p.meta.name == name)
             .ok_or_else(|| format!("Plugin '{name}' not found at {path}"))?;
         ensure_plugin_api_compatible(&plugin.meta.name, plugin.meta.api_required.as_deref())?;
+        let normalized_permissions =
+            normalize_and_validate_permissions(&plugin.meta.name, &plugin.meta.permissions)?;
 
-        let host_api = ps.make_host_api(&name, &app, Some(&plugin.meta.permissions));
+        let host_api = ps.make_host_api(&name, &app, Some(&normalized_permissions));
 
         let mailbox_rx = ps.bus.register_plugin(&name);
         let mailbox_tx = ps
@@ -552,9 +626,10 @@ pub(crate) fn enable_plugin(
                 return Ok(());
             }
             let declared = mgr.probe_jar_permissions(std::path::Path::new(&path));
+            let normalized = normalize_and_validate_permissions(&name, &declared)?;
             profiles
                 .write()
-                .insert(name.clone(), PermissionProfile::from_declared(&declared));
+                .insert(name.clone(), PermissionProfile::from_declared(&normalized));
             ensure_plugin_api_compatible(&name, mgr.probe_jar_api_requirement(std::path::Path::new(&path)).as_deref())?;
             mgr.load_plugin(std::path::Path::new(&path))
                 .map(|_| ())
@@ -1018,4 +1093,24 @@ mod tests {
         assert!(!api_requirement_matches(">=1 <2"));
         assert!(!api_requirement_matches("latest"));
     }
+
+    #[test]
+    fn normalize_permissions_rejects_unknown_capability() {
+        let out = normalize_and_validate_permissions(
+            "x",
+            &["ui.menu".into(), "definitely.not.valid".into()],
+        );
+        assert!(out.is_err());
+    }
+
+    #[test]
+    fn normalize_permissions_dedupes_and_normalizes_case() {
+        let out = normalize_and_validate_permissions(
+            "x",
+            &["UI.MENU".into(), " ui.menu ".into(), "clipboard.read".into()],
+        )
+        .unwrap();
+        assert_eq!(out, vec!["ui.menu".to_string(), "clipboard.read".to_string()]);
+    }
+
 }

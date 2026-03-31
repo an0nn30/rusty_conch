@@ -57,7 +57,6 @@ tempfile = "3"
 [features]
 default = ["vault_eager_import"]
 vault_eager_import = ["conch_vault/vault_eager_import"]
-plugin_permissions_enforce = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

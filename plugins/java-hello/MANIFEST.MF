@@ -1,2 +1,4 @@
 Manifest-Version: 1.0
 Plugin-Class: conch.plugin.hello.HelloPlugin
+Plugin-Api: ^1.0
+Plugin-Permissions: ui.menu

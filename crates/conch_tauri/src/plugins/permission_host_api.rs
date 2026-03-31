@@ -1,17 +1,14 @@
 //! Permission-checked HostApi wrapper.
 //!
-//! Phase 2 scaffolding:
-//! - Plugins declare requested capabilities.
-//! - Host checks capability before each sensitive HostApi call.
-//! - By default, denied checks are logged but allowed (compat mode).
-//! - With `plugin_permissions_enforce`, denied checks are blocked.
+//! Plugins declare requested capabilities.
+//! Host checks capabilities before sensitive HostApi calls and denies by default.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use conch_plugin::HostApi;
 use conch_plugin_sdk::PanelLocation;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PermissionProfile {
@@ -20,9 +17,9 @@ pub(crate) struct PermissionProfile {
 }
 
 impl PermissionProfile {
-    pub fn legacy_allow_all() -> Self {
+    pub fn deny_all() -> Self {
         Self {
-            allow_all: true,
+            allow_all: false,
             allowed: HashSet::new(),
         }
     }
@@ -46,6 +43,7 @@ pub(crate) struct PermissionCheckedHostApi {
     inner: Arc<dyn HostApi>,
     base_plugin_name: String,
     profiles: Arc<RwLock<HashMap<String, PermissionProfile>>>,
+    denied_notices: Mutex<HashSet<String>>,
 }
 
 impl PermissionCheckedHostApi {
@@ -58,6 +56,7 @@ impl PermissionCheckedHostApi {
             inner,
             base_plugin_name,
             profiles,
+            denied_notices: Mutex::new(HashSet::new()),
         }
     }
 
@@ -84,27 +83,29 @@ impl PermissionCheckedHostApi {
                 return true;
             }
         } else {
-            // Missing profile: keep compat behavior for now.
-            return true;
+            let msg = format!(
+                "Plugin '{}' attempted '{}' but has no permission profile. Access denied.",
+                plugin_name, method
+            );
+            self.warn_user_once(&plugin_name, method, capability, &msg);
+            return false;
         }
 
-        let enforce = cfg!(feature = "plugin_permissions_enforce");
-        if enforce {
-            log::warn!(
-                "[plugin:{}] denied '{}' (missing capability '{}')",
-                plugin_name,
-                method,
-                capability
-            );
-            false
-        } else {
-            log::warn!(
-                "[plugin:{}] missing capability '{}' for '{}' (compat mode: allowing)",
-                plugin_name,
-                capability,
-                method
-            );
-            true
+        let msg = format!(
+            "Plugin '{}' was denied '{}' (missing capability '{}').",
+            plugin_name, method, capability
+        );
+        self.warn_user_once(&plugin_name, method, capability, &msg);
+        false
+    }
+
+    fn warn_user_once(&self, plugin_name: &str, method: &str, capability: &str, msg: &str) {
+        log::warn!("{msg}");
+        let key = format!("{plugin_name}:{method}:{capability}");
+        let mut seen = self.denied_notices.lock();
+        if seen.insert(key) {
+            self.inner
+                .show_error("Plugin Permission Denied", msg);
         }
     }
 }
@@ -112,6 +113,10 @@ impl PermissionCheckedHostApi {
 impl HostApi for PermissionCheckedHostApi {
     fn plugin_name(&self) -> &str {
         self.inner.plugin_name()
+    }
+
+    fn check_permission(&self, capability: &str) -> bool {
+        self.check_capability("check_permission", capability)
     }
 
     fn register_panel(&self, location: PanelLocation, name: &str, icon: Option<&str>) -> u64 {
@@ -301,5 +306,78 @@ impl HostApi for PermissionCheckedHostApi {
             return None;
         }
         self.inner.session_prompt(handle, prompt_type, msg, detail)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use conch_plugin_sdk::PanelLocation;
+
+    struct MockHost {
+        name: String,
+        errors: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl HostApi for MockHost {
+        fn plugin_name(&self) -> &str { &self.name }
+        fn register_panel(&self, _: PanelLocation, _: &str, _: Option<&str>) -> u64 { 1 }
+        fn set_widgets(&self, _: u64, _: &str) {}
+        fn log(&self, _: u8, _: &str) {}
+        fn notify(&self, _: &str) {}
+        fn set_status(&self, _: Option<&str>, _: u8, _: f32) {}
+        fn publish_event(&self, _: &str, _: &str) {}
+        fn subscribe(&self, _: &str) {}
+        fn query_plugin(&self, _: &str, _: &str, _: &str) -> Option<String> { None }
+        fn register_service(&self, _: &str) {}
+        fn get_config(&self, _: &str) -> Option<String> { None }
+        fn set_config(&self, _: &str, _: &str) {}
+        fn clipboard_set(&self, _: &str) {}
+        fn clipboard_get(&self) -> Option<String> { Some("secret".into()) }
+        fn get_theme(&self) -> Option<String> { None }
+        fn register_menu_item(&self, _: &str, _: &str, _: &str, _: Option<&str>) {}
+        fn show_form(&self, _: &str) -> Option<String> { None }
+        fn show_confirm(&self, _: &str) -> bool { false }
+        fn show_prompt(&self, _: &str, _: &str) -> Option<String> { None }
+        fn show_alert(&self, _: &str, _: &str) {}
+        fn show_error(&self, _: &str, msg: &str) { self.errors.lock().push(msg.to_string()); }
+        fn show_context_menu(&self, _: &str) -> Option<String> { None }
+        fn write_to_pty(&self, _: &[u8]) {}
+        fn new_tab(&self, _: Option<&str>, _: bool) {}
+        fn open_session(&self, _: &str) -> u64 { 0 }
+        fn close_session(&self, _: u64) {}
+        fn set_session_status(&self, _: u64, _: u8, _: Option<&str>) {}
+        fn session_prompt(&self, _: u64, _: u8, _: &str, _: Option<&str>) -> Option<String> { None }
+    }
+
+    #[test]
+    fn denies_when_profile_missing() {
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let inner: Arc<dyn HostApi> = Arc::new(MockHost {
+            name: "test".into(),
+            errors: Arc::clone(&errors),
+        });
+        let profiles = Arc::new(RwLock::new(HashMap::new()));
+        let api = PermissionCheckedHostApi::new(inner, "missing".into(), profiles);
+        assert_eq!(api.clipboard_get(), None);
+        assert!(!errors.lock().is_empty(), "expected denial warning");
+    }
+
+    #[test]
+    fn allows_declared_capability() {
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let inner: Arc<dyn HostApi> = Arc::new(MockHost {
+            name: "test".into(),
+            errors: Arc::clone(&errors),
+        });
+        let mut map = HashMap::new();
+        map.insert(
+            "demo".into(),
+            PermissionProfile::from_declared(&["clipboard.read".into()]),
+        );
+        let profiles = Arc::new(RwLock::new(map));
+        let api = PermissionCheckedHostApi::new(inner, "demo".into(), profiles);
+        assert_eq!(api.clipboard_get().as_deref(), Some("secret"));
+        assert!(errors.lock().is_empty(), "no denial expected");
     }
 }

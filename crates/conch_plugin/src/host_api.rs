@@ -10,6 +10,9 @@ use conch_plugin_sdk::PanelLocation;
 /// Implemented by `TauriHostApi` in `conch_tauri`.
 pub trait HostApi: Send + Sync {
     fn plugin_name(&self) -> &str;
+    fn check_permission(&self, _capability: &str) -> bool {
+        true
+    }
 
     // -- Panel Management --
     fn register_panel(&self, location: PanelLocation, name: &str, icon: Option<&str>) -> u64;

@@ -58,7 +58,11 @@ dependencies {
 
 jar {
     manifest {
-        attributes 'Plugin-Class': 'com.example.MyPlugin'
+        attributes(
+            'Plugin-Class': 'com.example.MyPlugin',
+            'Plugin-Api': '^1.0',
+            'Plugin-Permissions': 'ui.menu'
+        )
     }
 }
 ```
@@ -143,7 +147,12 @@ dependencies {
 jar {
     manifest {
         // REQUIRED: tells Conch which class to load.
-        attributes 'Plugin-Class': 'com.example.MyPlugin'
+        // REQUIRED: explicit API + permission contract.
+        attributes(
+            'Plugin-Class': 'com.example.MyPlugin',
+            'Plugin-Api': '^1.0',
+            'Plugin-Permissions': 'ui.menu'
+        )
     }
 }
 ```
@@ -166,7 +175,11 @@ jar {
 > shadowJar {
 >     archiveClassifier.set('')
 >     manifest {
->         attributes 'Plugin-Class': 'com.example.MyPlugin'
+>         attributes(
+>             'Plugin-Class': 'com.example.MyPlugin',
+>             'Plugin-Api': '^1.0',
+>             'Plugin-Permissions': 'ui.menu'
+>         )
 >     }
 >     exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
 >     mergeServiceFiles()
@@ -195,6 +208,8 @@ jar {
                 <archive>
                     <manifestEntries>
                         <Plugin-Class>com.example.MyPlugin</Plugin-Class>
+                        <Plugin-Api>^1.0</Plugin-Api>
+                        <Plugin-Permissions>ui.menu</Plugin-Permissions>
                     </manifestEntries>
                 </archive>
             </configuration>
@@ -436,6 +451,8 @@ Lua plugins declare metadata in `-- plugin-*` comment headers at the top of the 
 | `-- plugin-name: Name` | Yes | Display name (used as the plugin's unique identifier) |
 | `-- plugin-description: ...` | No | Short description shown in Settings > Plugins |
 | `-- plugin-version: 1.0.0` | No | Semver version string (default: `"0.0.0"`) |
+| `-- plugin-api: ^1.0` | No | Required host plugin API version/range (legacy plugins may omit) |
+| `-- plugin-permissions: cap1, cap2` | No | Declared capability list for permission gating (e.g. `clipboard.read, ui.menu`) |
 | `-- plugin-type: action` | No | `"action"` (default) or `"panel"` |
 | `-- plugin-location: left` | No | Panel location: `"left"` (default for panel plugins), `"right"`, `"bottom"` |
 | `-- plugin-icon: icon.png` | No | Custom icon for the panel tab (filename relative to plugin location) |
@@ -452,6 +469,8 @@ Lua plugins declare metadata in `-- plugin-*` comment headers at the top of the 
 -- plugin-description: Live system information panel
 -- plugin-type: panel
 -- plugin-version: 1.3.0
+-- plugin-api: ^1.0
+-- plugin-permissions: ui.panel, ui.menu
 -- plugin-location: right
 -- plugin-icon: system-info.png
 -- plugin-keybind: open_panel = cmd+shift+i | Toggle System Info panel

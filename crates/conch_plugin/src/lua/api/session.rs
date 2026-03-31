@@ -31,8 +31,16 @@ pub(super) fn register_session_table(lua: &Lua) -> LuaResult<()> {
     // For SSH session exec, use app.query_plugin("ssh", "exec", {...}).
     session.set(
         "exec",
-        lua.create_function(|_lua, cmd: String| -> LuaResult<LuaTable> {
-            let result = _lua.create_table()?;
+        lua.create_function(|lua, cmd: String| -> LuaResult<LuaTable> {
+            let result = lua.create_table()?;
+            let allowed = with_host_api(lua, |api| api.check_permission("session.exec"))?;
+            if !allowed {
+                result.set("stdout", "")?;
+                result.set("stderr", "permission denied: session.exec")?;
+                result.set("exit_code", -1)?;
+                result.set("status", "error")?;
+                return Ok(result);
+            }
             match std::process::Command::new("sh")
                 .arg("-c")
                 .arg(&cmd)

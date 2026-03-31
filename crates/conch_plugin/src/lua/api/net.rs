@@ -1,6 +1,7 @@
 //! `net.*` Lua table — time, DNS resolution, port scanning.
 
 use mlua::prelude::*;
+use super::with_host_api;
 
 // ---------------------------------------------------------------------------
 // net.* table
@@ -23,7 +24,11 @@ pub(super) fn register_net_table(lua: &Lua) -> LuaResult<()> {
 
     net.set(
         "resolve",
-        lua.create_function(|_lua, host: String| -> LuaResult<Vec<String>> {
+        lua.create_function(|lua, host: String| -> LuaResult<Vec<String>> {
+            let allowed = with_host_api(lua, |api| api.check_permission("net.resolve"))?;
+            if !allowed {
+                return Ok(vec![]);
+            }
             use std::net::ToSocketAddrs;
             let addr = format!("{host}:0");
             match addr.to_socket_addrs() {
@@ -36,7 +41,7 @@ pub(super) fn register_net_table(lua: &Lua) -> LuaResult<()> {
     net.set(
         "scan",
         lua.create_function(
-            |_lua,
+            |lua,
              (host, ports, timeout_ms, _concurrency): (
                 String,
                 Vec<u16>,
@@ -44,6 +49,10 @@ pub(super) fn register_net_table(lua: &Lua) -> LuaResult<()> {
                 Option<u32>,
             )|
              -> LuaResult<Vec<LuaTable>> {
+                let allowed = with_host_api(lua, |api| api.check_permission("net.scan"))?;
+                if !allowed {
+                    return Ok(vec![]);
+                }
                 use std::net::{TcpStream, ToSocketAddrs};
                 use std::time::Duration;
 
@@ -63,7 +72,7 @@ pub(super) fn register_net_table(lua: &Lua) -> LuaResult<()> {
                         Err(_) => false,
                     };
                     if open {
-                        let tbl = _lua.create_table()?;
+                        let tbl = lua.create_table()?;
                         tbl.set("port", port)?;
                         tbl.set("open", true)?;
                         results.push(tbl);

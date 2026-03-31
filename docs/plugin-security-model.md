@@ -104,6 +104,7 @@ Java manifest:
 | `close_session` | `session.close` |
 | `set_session_status` | `session.status` |
 
+
 ## Consent UX
 
 When enabling a plugin:

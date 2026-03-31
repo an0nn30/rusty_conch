@@ -318,6 +318,15 @@
     container.appendChild(row);
   }
 
+  function escHtml(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
   // --- Theme preview helpers ---
 
   function span(cls, text) {
@@ -1312,6 +1321,14 @@
               await invoke('rebuild_menu').catch(() => {});
               if (window.toast) window.toast.info('Plugin Disabled', plugin.name);
             } else {
+              const perms = Array.isArray(plugin.permissions) ? plugin.permissions.filter(Boolean) : [];
+              if (perms.length > 0) {
+                const accepted = await confirmPluginPermissions(plugin.name, perms);
+                if (!accepted) {
+                  toggle.checked = false;
+                  return;
+                }
+              }
               await invoke('enable_plugin', { name: plugin.name, source: plugin.source, path: plugin.path });
               await invoke('rebuild_menu').catch(() => {});
               if (window.toast) window.toast.success('Plugin Enabled', plugin.name);
@@ -1331,6 +1348,58 @@
     }
 
     renderPluginList();
+  }
+
+  function confirmPluginPermissions(pluginName, permissions) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'ssh-overlay';
+
+      const items = permissions
+        .map((p) => `<div style="font-size:12px; color:var(--fg); line-height:1.5;">• ${escHtml(p)}</div>`)
+        .join('');
+
+      overlay.innerHTML = `
+        <div class="ssh-form" style="min-width:420px; max-width:620px;">
+          <div class="ssh-form-title">Plugin Permissions</div>
+          <div class="ssh-form-body">
+            <div style="margin-bottom:10px; font-size:12px; color:var(--fg);">
+              Plugin "${escHtml(pluginName)}" requests:
+            </div>
+            <div style="display:flex; flex-direction:column; gap:4px; margin-bottom:12px;">
+              ${items}
+            </div>
+            <div style="font-size:12px; color:var(--dim-fg);">
+              Allow and enable this plugin?
+            </div>
+          </div>
+          <div class="ssh-form-buttons">
+            <button class="ssh-form-btn" id="pp-deny">Deny</button>
+            <button class="ssh-form-btn primary" id="pp-allow">Allow</button>
+          </div>
+        </div>`;
+
+      const finish = (accepted) => {
+        document.removeEventListener('keydown', onKey, true);
+        overlay.remove();
+        resolve(accepted);
+      };
+
+      const onKey = (e) => {
+        if (e.key !== 'Escape') return;
+        e.preventDefault();
+        e.stopPropagation();
+        finish(false);
+      };
+
+      overlay.addEventListener('mousedown', (e) => {
+        if (e.target === overlay) finish(false);
+      });
+      overlay.querySelector('#pp-deny').addEventListener('click', () => finish(false));
+      overlay.querySelector('#pp-allow').addEventListener('click', () => finish(true));
+      document.addEventListener('keydown', onKey, true);
+      document.body.appendChild(overlay);
+    });
   }
 
   // --- Advanced section ---
