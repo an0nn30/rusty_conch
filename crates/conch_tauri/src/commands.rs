@@ -171,6 +171,20 @@ pub(crate) fn app_ready(window: tauri::WebviewWindow) {
 }
 
 #[tauri::command]
+pub(crate) fn open_devtools(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        window.open_devtools();
+        return Ok(());
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = window;
+        Err("Developer console is only available in debug builds.".to_string())
+    }
+}
+
+#[tauri::command]
 pub(crate) fn get_saved_layout() -> SavedLayout {
     let state = config::load_persistent_state().unwrap_or_default();
     SavedLayout {
@@ -242,6 +256,18 @@ pub(crate) fn get_zoom_level() -> f64 {
 #[tauri::command]
 pub(crate) fn current_window_label(window: tauri::WebviewWindow) -> String {
     window.label().to_string()
+}
+
+#[tauri::command]
+pub(crate) fn set_active_pane(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, TauriState>,
+    pane_id: u32,
+) {
+    state
+        .active_panes
+        .lock()
+        .insert(window.label().to_string(), pane_id);
 }
 
 // ---------------------------------------------------------------------------

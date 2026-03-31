@@ -34,6 +34,7 @@ use tauri_plugin_updater::UpdaterExt;
 
 pub(crate) struct TauriState {
     ptys: Arc<Mutex<HashMap<String, PtyBackend>>>,
+    active_panes: Arc<Mutex<HashMap<String, u32>>>,
     config: RwLock<UserConfig>,
 }
 
@@ -92,6 +93,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
         .plugin(tauri_plugin_notification::init())
         .manage(TauriState {
             ptys: Arc::new(Mutex::new(HashMap::new())),
+            active_panes: Arc::new(Mutex::new(HashMap::new())),
             config: RwLock::new(config),
         })
         .manage(Arc::clone(&remote_state))
@@ -322,6 +324,9 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             menu::MENU_ABOUT_ID => {
                 menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_ABOUT)
             }
+            menu::MENU_OPEN_DEVTOOLS_ID => {
+                menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_OPEN_DEVTOOLS)
+            }
             menu::MENU_SPLIT_VERTICAL_ID => {
                 menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_SPLIT_VERTICAL)
             }
@@ -447,6 +452,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_ready,
+            commands::open_devtools,
             commands::set_zoom_level,
             commands::get_zoom_level,
             pty::spawn_shell,
@@ -454,6 +460,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             pty::resize_pty,
             pty::close_pty,
             commands::current_window_label,
+            commands::set_active_pane,
             commands::get_saved_layout,
             commands::save_window_layout,
             commands::get_keyboard_shortcuts,

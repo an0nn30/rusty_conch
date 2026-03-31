@@ -1540,6 +1540,7 @@
           if (tab) tab.focusedPaneId = paneId;
           // Notify files panel so SFTP routing follows the focused pane.
           if (window.filesPanel) window.filesPanel.onTabChanged(pane);
+          invoke('set_active_pane', { paneId }).catch(() => {});
         }
       }
 
@@ -1726,7 +1727,15 @@
           cursorStyle: termCursorStyle,
           cursorBlink: termCursorBlink,
           scrollSensitivity: termScrollSensitivity,
+          macOptionIsMeta: true,
           allowProposedApi: true,
+        });
+        term.attachCustomKeyEventHandler((event) => {
+          if (shortcutDebugEnabled && shouldDebugKeyEvent(event)) {
+            const paneId = root && root.dataset ? root.dataset.paneId : '';
+            console.log(`[conch-keydbg] xterm.customKeyEvent pane=${paneId}`, formatKeyEventForDebug(event));
+          }
+          return true;
         });
         const fitAddon = new FitAddon.FitAddon();
         term.loadAddon(fitAddon);
@@ -2001,6 +2010,12 @@
         });
         term.onData((data) => {
           if (!pane.spawned) return;
+          if (shortcutDebugEnabled) {
+            console.log(
+              `[conch-keydbg] xterm.onData pane=${paneId} len=${data.length} esc=${data.includes('\x1b')}`,
+              JSON.stringify({ escaped: toDebugEscaped(data), hex: toDebugHex(data) })
+            );
+          }
           const cmd = pane.type === 'ssh' ? 'ssh_write' : 'write_to_pty';
           invoke(cmd, { paneId, data }).catch((e) => {
             console.error(cmd + ' error:', e);
@@ -2097,6 +2112,12 @@
         });
         term.onData((data) => {
           if (!pane.spawned) return;
+          if (shortcutDebugEnabled) {
+            console.log(
+              `[conch-keydbg] xterm.onData pane=${paneId} len=${data.length} esc=${data.includes('\x1b')}`,
+              JSON.stringify({ escaped: toDebugEscaped(data), hex: toDebugHex(data) })
+            );
+          }
           invoke('ssh_write', { paneId, data }).catch((e) => {
             console.error('ssh_write error:', e);
           });
@@ -3225,6 +3246,11 @@
           });
           return;
         }
+        if (action === 'open-devtools') {
+          invoke('open_devtools')
+            .catch((e) => showStatus('Failed to open developer console: ' + String(e)));
+          return;
+        }
       }
 
       await listenOnCurrentWindow('menu-action', (event) => {
@@ -3480,6 +3506,7 @@
       overlayFocusObserver.observe(document.body, { childList: true, subtree: true });
 
       const isMacPlatform = /mac/i.test(navigator.platform || '');
+      const shortcutDebugEnabled = true;
       let pluginCtrlAltShortcutFallbacks = [];
       let functionKeyShortcutFallbacks = [];
       const coreShortcutActionByKey = {
@@ -3496,6 +3523,48 @@
         split_horizontal: 'split-horizontal',
         close_pane: 'close-pane',
       };
+
+      function formatKeyEventForDebug(e) {
+        return JSON.stringify({
+          type: e.type,
+          key: e.key,
+          code: e.code,
+          keyCode: e.keyCode,
+          which: e.which,
+          altKey: e.altKey,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          shiftKey: e.shiftKey,
+          repeat: e.repeat,
+          defaultPrevented: e.defaultPrevented,
+          targetTag: e.target && e.target.tagName ? e.target.tagName : null,
+          targetClass: e.target && e.target.className ? String(e.target.className) : null,
+          activeTag: document.activeElement && document.activeElement.tagName ? document.activeElement.tagName : null,
+          activeClass: document.activeElement && document.activeElement.className ? String(document.activeElement.className) : null,
+        });
+      }
+
+      function toDebugHex(str) {
+        const out = [];
+        for (let i = 0; i < str.length; i++) {
+          out.push(str.charCodeAt(i).toString(16).padStart(2, '0'));
+        }
+        return out.join(' ');
+      }
+
+      function toDebugEscaped(str) {
+        return String(str)
+          .replace(/\x1b/g, '\\x1b')
+          .replace(/\r/g, '\\r')
+          .replace(/\n/g, '\\n')
+          .replace(/\t/g, '\\t');
+      }
+
+      function shouldDebugKeyEvent(e) {
+        if (!e) return false;
+        const key = String(e.key || '');
+        return e.altKey || e.ctrlKey || e.metaKey || key.startsWith('Arrow') || key === 'Escape' || /^F\d{1,2}$/.test(key);
+      }
 
       function normalizeShortcutEventForPluginFallback(e) {
         const parts = [];
@@ -3593,6 +3662,15 @@
         }
       }
 
+      document.addEventListener('keydown', (e) => {
+        if (!shortcutDebugEnabled || !shouldDebugKeyEvent(e)) return;
+        console.log('[conch-keydbg] keydown(capture)', formatKeyEventForDebug(e));
+      }, true);
+      document.addEventListener('keyup', (e) => {
+        if (!shortcutDebugEnabled || !shouldDebugKeyEvent(e)) return;
+        console.log('[conch-keydbg] keyup(capture)', formatKeyEventForDebug(e));
+      }, true);
+
       // Fallback shortcuts for cases where native menu accelerators are inconsistent
       // (notably function keys and some macOS ctrl+option plugin combos).
       document.addEventListener('keydown', (e) => {
@@ -3653,6 +3731,21 @@
           }
         }
       });
+
+      // macOS: make Option+Left/Right deterministic for tmux pane navigation.
+      document.addEventListener('keydown', (e) => {
+        if (!isMacPlatform) return;
+        if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        if (isTextInputTarget(e.target) || isTextInputTarget(document.activeElement)) return;
+        const pane = currentPane();
+        if (!pane || !pane.term) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // Send xterm-style Alt+Arrow CSI sequence so tmux can bind M-Left/M-Right.
+        const seq = e.key === 'ArrowLeft' ? '\x1b[1;3D' : '\x1b[1;3C';
+        writeTextToCurrentPane(seq);
+      }, true);
 
       // Pane navigation: Cmd+Alt+Arrow (Mac) / Ctrl+Alt+Arrow (other) to move focus between split panes.
       document.addEventListener('keydown', (e) => {

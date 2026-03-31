@@ -73,6 +73,11 @@
         ]
       },
       {
+        label: 'Debug', items: [
+          { id: 'open-devtools', label: 'Open Developer Console', shortcut: 'F12' },
+        ]
+      },
+      {
         label: 'Help', items: [
           { id: 'check-for-updates', label: 'Check for Updates\u2026' },
           { type: 'separator' },

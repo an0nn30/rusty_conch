@@ -31,6 +31,7 @@ pub(crate) const MENU_KEYGEN_ID: &str = "tools.generate_ssh_key";
 pub(crate) const MENU_VAULT_LOCK_ID: &str = "tools.lock_vault";
 pub(crate) const MENU_CHECK_UPDATES_ID: &str = "check-for-updates";
 pub(crate) const MENU_ABOUT_ID: &str = "about-conch";
+pub(crate) const MENU_OPEN_DEVTOOLS_ID: &str = "debug.open_devtools";
 pub(crate) const MENU_SPLIT_VERTICAL_ID: &str = "view.split_vertical";
 pub(crate) const MENU_SPLIT_HORIZONTAL_ID: &str = "view.split_horizontal";
 pub(crate) const MENU_CLOSE_PANE_ID: &str = "view.close_pane";
@@ -65,6 +66,7 @@ pub(crate) const MENU_ACTION_RENAME_TAB: &str = "rename-tab";
 pub(crate) const MENU_ACTION_TOGGLE_BOTTOM_PANEL: &str = "toggle-bottom-panel";
 pub(crate) const MENU_ACTION_CHECK_UPDATES: &str = "check-for-updates";
 pub(crate) const MENU_ACTION_ABOUT: &str = "about";
+pub(crate) const MENU_ACTION_OPEN_DEVTOOLS: &str = "open-devtools";
 
 // ---------------------------------------------------------------------------
 // Menu action event payload
@@ -318,6 +320,14 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
             &PredefinedMenuItem::fullscreen(app, None)?,
         ],
     )?;
+    let open_devtools = MenuItem::with_id(
+        app,
+        MENU_OPEN_DEVTOOLS_ID,
+        "Open Developer Console",
+        true,
+        Some("F12"),
+    )?;
+    let debug_menu = Submenu::with_items(app, "Debug", true, &[&open_devtools])?;
 
     #[cfg(target_os = "macos")]
     {
@@ -353,6 +363,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
                 &edit_menu,
                 &view_menu,
                 &tools_menu,
+                &debug_menu,
                 &window_menu,
             ],
         );
@@ -392,6 +403,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
                 &edit_menu,
                 &view_menu,
                 &tools_menu,
+                &debug_menu,
                 &window_menu,
                 &help_menu,
             ],
@@ -637,6 +649,14 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
                 &PredefinedMenuItem::fullscreen(app, None)?,
             ],
         )?;
+        let open_devtools = MenuItem::with_id(
+            app,
+            MENU_OPEN_DEVTOOLS_ID,
+            "Open Developer Console",
+            true,
+            Some("F12"),
+        )?;
+        let debug_menu = Submenu::with_items(app, "Debug", true, &[&open_devtools])?;
 
         #[cfg(target_os = "macos")]
         {
@@ -672,6 +692,7 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
                     &edit_menu,
                     &view_menu,
                     &new_tools,
+                    &debug_menu,
                     &window_menu,
                 ],
             );
@@ -711,6 +732,7 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
                     &edit_menu,
                     &view_menu,
                     &new_tools,
+                    &debug_menu,
                     &window_menu,
                     &help_menu,
                 ],

@@ -29,6 +29,14 @@ struct VaultAutoSavePromptEvent {
     auth_method: String,
 }
 
+fn debug_bytes_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 // ---------------------------------------------------------------------------
 // SSH Tauri commands
 // ---------------------------------------------------------------------------
@@ -199,6 +207,14 @@ pub(crate) fn ssh_write(
     data: String,
 ) -> Result<(), String> {
     let key = session_key(window.label(), pane_id);
+    if data.as_bytes().contains(&0x1b) {
+        log::debug!(
+            "[conch-keydbg] ssh_write pane={} len={} hex={}",
+            pane_id,
+            data.len(),
+            debug_bytes_hex(data.as_bytes())
+        );
+    }
     let state = remote.lock();
     let session = state.sessions.get(&key).ok_or("SSH session not found")?;
     session

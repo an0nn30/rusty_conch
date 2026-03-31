@@ -49,6 +49,14 @@ fn resolved_shell(shell: &conch_core::config::TerminalShell) -> (Option<&str>, &
     }
 }
 
+fn debug_bytes_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
@@ -104,6 +112,14 @@ pub(crate) fn write_to_pty(
     data: String,
 ) -> Result<(), String> {
     let key = session_key(window.label(), pane_id);
+    if data.as_bytes().contains(&0x1b) {
+        log::debug!(
+            "[conch-keydbg] write_to_pty pane={} len={} hex={}",
+            pane_id,
+            data.len(),
+            debug_bytes_hex(data.as_bytes())
+        );
+    }
     let guard = state.ptys.lock();
     let pty = guard.get(&key).ok_or("PTY not spawned")?;
     pty.write(data.as_bytes()).map_err(|e| format!("{e}"))

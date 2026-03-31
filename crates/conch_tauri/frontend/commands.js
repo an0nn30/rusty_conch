@@ -14,6 +14,7 @@ export const COMMANDS = {
   GET_APP_CONFIG: 'get_app_config',
   GET_ABOUT_INFO: 'get_about_info',
   GET_HOME_DIR: 'get_home_dir',
+  OPEN_DEVTOOLS: 'open_devtools',
   GET_THEME_COLORS: 'get_theme_colors',
   GET_TERMINAL_CONFIG: 'get_terminal_config',
   GET_KEYBOARD_SHORTCUTS: 'get_keyboard_shortcuts',
@@ -23,6 +24,7 @@ export const COMMANDS = {
   SET_ZOOM_LEVEL: 'set_zoom_level',
   GET_ZOOM_LEVEL: 'get_zoom_level',
   CURRENT_WINDOW_LABEL: 'current_window_label',
+  SET_ACTIVE_PANE: 'set_active_pane',
   REBUILD_MENU: 'rebuild_menu',
 
   // Windows
