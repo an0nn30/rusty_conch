@@ -320,6 +320,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
             &PredefinedMenuItem::fullscreen(app, None)?,
         ],
     )?;
+    #[cfg(debug_assertions)]
     let open_devtools = MenuItem::with_id(
         app,
         MENU_OPEN_DEVTOOLS_ID,
@@ -327,6 +328,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
         true,
         Some("F12"),
     )?;
+    #[cfg(debug_assertions)]
     let debug_menu = Submenu::with_items(app, "Debug", true, &[&open_devtools])?;
 
     #[cfg(target_os = "macos")]
@@ -355,18 +357,28 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
                 &PredefinedMenuItem::quit(app, None)?,
             ],
         )?;
-        return Menu::with_items(
-            app,
-            &[
-                &app_menu,
-                &file_menu,
-                &edit_menu,
-                &view_menu,
-                &tools_menu,
-                &debug_menu,
-                &window_menu,
-            ],
-        );
+        #[cfg(debug_assertions)]
+        {
+            return Menu::with_items(
+                app,
+                &[
+                    &app_menu,
+                    &file_menu,
+                    &edit_menu,
+                    &view_menu,
+                    &tools_menu,
+                    &debug_menu,
+                    &window_menu,
+                ],
+            );
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            return Menu::with_items(
+                app,
+                &[&app_menu, &file_menu, &edit_menu, &view_menu, &tools_menu, &window_menu],
+            );
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -396,18 +408,35 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
                 &close_window,
             ],
         )?;
-        Menu::with_items(
-            app,
-            &[
-                &file_menu,
-                &edit_menu,
-                &view_menu,
-                &tools_menu,
-                &debug_menu,
-                &window_menu,
-                &help_menu,
-            ],
-        )
+        #[cfg(debug_assertions)]
+        {
+            Menu::with_items(
+                app,
+                &[
+                    &file_menu,
+                    &edit_menu,
+                    &view_menu,
+                    &tools_menu,
+                    &debug_menu,
+                    &window_menu,
+                    &help_menu,
+                ],
+            )
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            Menu::with_items(
+                app,
+                &[
+                    &file_menu,
+                    &edit_menu,
+                    &view_menu,
+                    &tools_menu,
+                    &window_menu,
+                    &help_menu,
+                ],
+            )
+        }
     }
 }
 
@@ -649,6 +678,7 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
                 &PredefinedMenuItem::fullscreen(app, None)?,
             ],
         )?;
+        #[cfg(debug_assertions)]
         let open_devtools = MenuItem::with_id(
             app,
             MENU_OPEN_DEVTOOLS_ID,
@@ -656,6 +686,7 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
             true,
             Some("F12"),
         )?;
+        #[cfg(debug_assertions)]
         let debug_menu = Submenu::with_items(app, "Debug", true, &[&open_devtools])?;
 
         #[cfg(target_os = "macos")]
@@ -684,18 +715,28 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
                     &PredefinedMenuItem::quit(app, None)?,
                 ],
             )?;
-            return Menu::with_items(
-                app,
-                &[
-                    &app_menu,
-                    &file_menu,
-                    &edit_menu,
-                    &view_menu,
-                    &new_tools,
-                    &debug_menu,
-                    &window_menu,
-                ],
-            );
+            #[cfg(debug_assertions)]
+            {
+                return Menu::with_items(
+                    app,
+                    &[
+                        &app_menu,
+                        &file_menu,
+                        &edit_menu,
+                        &view_menu,
+                        &new_tools,
+                        &debug_menu,
+                        &window_menu,
+                    ],
+                );
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                return Menu::with_items(
+                    app,
+                    &[&app_menu, &file_menu, &edit_menu, &view_menu, &new_tools, &window_menu],
+                );
+            }
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -725,18 +766,35 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
                     &close_window,
                 ],
             )?;
-            return Menu::with_items(
-                app,
-                &[
-                    &file_menu,
-                    &edit_menu,
-                    &view_menu,
-                    &new_tools,
-                    &debug_menu,
-                    &window_menu,
-                    &help_menu,
-                ],
-            );
+            #[cfg(debug_assertions)]
+            {
+                return Menu::with_items(
+                    app,
+                    &[
+                        &file_menu,
+                        &edit_menu,
+                        &view_menu,
+                        &new_tools,
+                        &debug_menu,
+                        &window_menu,
+                        &help_menu,
+                    ],
+                );
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                return Menu::with_items(
+                    app,
+                    &[
+                        &file_menu,
+                        &edit_menu,
+                        &view_menu,
+                        &new_tools,
+                        &window_menu,
+                        &help_menu,
+                    ],
+                );
+            }
         }
     }
 

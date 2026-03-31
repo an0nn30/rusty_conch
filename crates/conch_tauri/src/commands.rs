@@ -30,6 +30,7 @@ pub(crate) fn get_app_config(state: tauri::State<'_, TauriState>) -> serde_json:
         "zen_mode_shortcut": cfg.conch.keyboard.zen_mode,
         "decorations": dec,
         "platform": std::env::consts::OS,
+        "debug_build": cfg!(debug_assertions),
         "notification_position": cfg.conch.ui.notification_position,
         "native_notifications": cfg.conch.ui.native_notifications,
         "ui_font_family": cfg.conch.ui.font_family,

@@ -13,9 +13,9 @@
   // Menu definition — mirrors the native Tauri menu built in Rust.
   // Shortcuts are display-only; the native menu handles actual accelerators.
   // -----------------------------------------------------------------------
-  function buildMenuDef(shortcuts) {
+  function buildMenuDef(shortcuts, debugBuild) {
     const ctrl = 'Ctrl';
-    return [
+    const menus = [
       {
         label: 'File', items: [
           { id: 'new-tab', label: 'New Tab', shortcut: `${ctrl}+T` },
@@ -73,11 +73,6 @@
         ]
       },
       {
-        label: 'Debug', items: [
-          { id: 'open-devtools', label: 'Open Developer Console', shortcut: 'F12' },
-        ]
-      },
-      {
         label: 'Help', items: [
           { id: 'check-for-updates', label: 'Check for Updates\u2026' },
           { type: 'separator' },
@@ -85,6 +80,14 @@
         ]
       },
     ];
+    if (debugBuild) {
+      menus.splice(5, 0, {
+        label: 'Debug', items: [
+          { id: 'open-devtools', label: 'Open Developer Console', shortcut: 'F12' },
+        ]
+      });
+    }
+    return menus;
   }
 
   // Format a shortcut string for display: "cmd+shift+t" -> "Ctrl+Shift+T"
@@ -145,9 +148,11 @@
     } catch (_) {}
 
     let zenShortcut = '';
+    let debugBuild = false;
     try {
       const cfg = await invoke('get_app_config');
       zenShortcut = cfg.zen_mode_shortcut || '';
+      debugBuild = !!cfg.debug_build;
     } catch (_) {}
     shortcuts.zen_mode = zenShortcut;
 
@@ -157,7 +162,7 @@
 
     // Build menu buttons
     const menuArea = el.querySelector('.titlebar-menu-area');
-    const menuDef = buildMenuDef(shortcuts);
+    const menuDef = buildMenuDef(shortcuts, debugBuild);
     for (const menu of menuDef) {
       const btn = document.createElement('button');
       btn.className = 'titlebar-menu-btn';
