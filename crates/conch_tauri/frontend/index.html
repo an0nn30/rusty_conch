@@ -4033,6 +4033,7 @@
         split_vertical: 'split-vertical',
         split_horizontal: 'split-horizontal',
         close_pane: 'close-pane',
+        settings: 'settings',
       };
 
       function formatKeyEventForDebug(e) {
@@ -4148,9 +4149,10 @@
             if (!action) continue;
             const combo = normalizeShortcutString(keyboard[settingsKey]);
             if (!combo) continue;
-            if (isFunctionKeyCombo(combo)) {
-              functionKeyNext.push({ combo, kind: 'core', action });
-            }
+            // All core shortcuts get a JS-level fallback so they work even
+            // when native menu accelerators don't fire (e.g. xterm.js focus,
+            // menu rebuild race conditions, or platform-specific quirks).
+            functionKeyNext.push({ combo, kind: 'core', action });
           }
 
           const byPluginAction = new Map();
