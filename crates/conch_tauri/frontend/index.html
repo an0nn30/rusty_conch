@@ -285,14 +285,36 @@
     }
     .zone-tab.active { color: var(--fg); background: var(--active-highlight, rgba(255,255,255,0.06)); }
     .zone-tab:hover { background: var(--selection, rgba(255,255,255,0.08)); }
-    .zone-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+    .zone-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: auto;
+      min-width: 0;
+      min-height: 0;
+    }
     .zone-divider {
       height: 4px; cursor: row-resize; background: transparent; flex-shrink: 0;
       transition: background 150ms;
     }
     .zone-divider.hidden { display: none; }
     .zone-divider:hover, .zone-divider.dragging { background: var(--dim-fg); }
-    .tool-window-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+    .tool-window-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+      min-width: 0;
+    }
+    .tool-window-scroll-viewport {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: auto;
+      min-height: 0;
+      min-width: 0;
+    }
     /* -- Side strips (IntelliJ-style outer-edge tab buttons) -- */
     .side-strip {
       display: flex; flex-direction: column; flex-shrink: 0;
@@ -313,6 +335,54 @@
     #left-strip .strip-btn { transform: rotate(180deg); }
     .strip-btn:hover { color: var(--fg); background: var(--selection, rgba(255,255,255,0.08)); }
     .strip-btn.active { color: var(--fg); border-left-color: var(--blue); background: var(--active-highlight, rgba(255,255,255,0.06)); }
+    .strip-btn.twm-strip-dragging { opacity: 0.65; }
+    .twm-dnd-overlay {
+      position: fixed; inset: 0; display: none; pointer-events: none; z-index: 9997;
+    }
+    .twm-dnd-zone {
+      position: fixed;
+      border: 1px solid color-mix(in srgb, var(--tab-border) 74%, white);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel-bg) 76%, transparent);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 16%, transparent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0.88;
+      transition: opacity 110ms ease, border-color 110ms ease, box-shadow 130ms ease;
+    }
+    .twm-dnd-zone.active {
+      border-color: color-mix(in srgb, var(--blue) 74%, white);
+      box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--blue) 52%, white), 0 0 18px color-mix(in srgb, var(--blue) 34%, transparent);
+      opacity: 1;
+    }
+    .twm-dnd-zone.forbidden {
+      opacity: 0.45;
+      border-style: dashed;
+    }
+    .twm-dnd-zone-title {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.4px;
+      color: var(--fg);
+      text-transform: uppercase;
+      text-shadow: 0 1px 0 rgba(0,0,0,0.25);
+      user-select: none;
+    }
+    .twm-dnd-label {
+      position: fixed;
+      left: 50%;
+      bottom: 14px;
+      transform: translateX(-50%);
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      color: var(--fg);
+      border: 1px solid color-mix(in srgb, var(--tab-border) 80%, white);
+      background: color-mix(in srgb, var(--panel-bg) 82%, black);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+      user-select: none;
+    }
     /* -- Zone header (title + tab buttons) -- */
     .zone-header {
       display: flex; align-items: center; justify-content: space-between;
@@ -634,8 +704,8 @@
       flex: 1;
       display: flex;
       flex-direction: column;
+      min-height: 0;
       overflow: hidden;
-      overflow-y: auto;
     }
     .ssh-panel-header {
       display: flex;
@@ -660,6 +730,13 @@
     }
     .ssh-quick-connect input:focus { border-color: var(--dim-fg); }
     .ssh-quick-connect input::placeholder { color: var(--dim-fg); }
+    .ssh-panel-body {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-bottom: 8px;
+    }
     .ssh-active-sessions { }
     .ssh-section-header {
       padding: 6px 10px 3px; font-size: var(--ui-font-small); text-transform: uppercase;
@@ -726,7 +803,7 @@
     }
     .ssh-tunnel-empty { padding: 4px 14px; font-size: var(--ui-font-small); color: var(--dim-fg); }
     .ssh-tunnels-section { }
-    .ssh-server-list { flex: 1; overflow-y: auto; overflow-x: hidden; padding-bottom: 8px; }
+    .ssh-server-list { overflow: visible; }
     .ssh-folder { }
     .ssh-folder-header {
       display: flex; align-items: center; gap: 4px;
@@ -1746,29 +1823,30 @@
         if (!tab || !tab.treeRoot) return false;
 
         if (zone === 'center') {
-          setFocusedPane(dragPaneId);
+          if (targetPaneId == null) return false;
+          const targetPane = panes.get(targetPaneId);
+          if (!targetPane) return false;
+          if (dragPane.tabId !== targetPane.tabId) return false;
+          if (!window.splitTree.allLeaves(tab.treeRoot).includes(targetPaneId)) return false;
+          setFocusedPane(targetPaneId);
           return true;
         }
+
+        if (!['left', 'right', 'top', 'bottom'].includes(zone)) return false;
+        if (targetPaneId == null) return false;
 
         const direction = (zone === 'left' || zone === 'right') ? 'vertical' : 'horizontal';
         const placeBefore = (zone === 'left' || zone === 'top');
         const removed = window.splitTree.removeLeaf(tab.treeRoot, dragPaneId);
         if (!removed) return false;
 
-        let nextRoot = null;
-        if (targetPaneId != null) {
-          const targetPane = panes.get(targetPaneId);
-          if (!targetPane) return false;
-          if (dragPane.tabId !== targetPane.tabId) return false;
-          if (dragPaneId === targetPaneId) return false;
-          if (!window.splitTree.allLeaves(removed).includes(targetPaneId)) return false;
-          nextRoot = insertAroundLeaf(removed, targetPaneId, dragPaneId, direction, placeBefore);
-        } else {
-          const dragLeaf = window.splitTree.makeLeaf(dragPaneId);
-          nextRoot = placeBefore
-            ? window.splitTree.makeSplit(direction, 0.5, [dragLeaf, removed])
-            : window.splitTree.makeSplit(direction, 0.5, [removed, dragLeaf]);
-        }
+        const targetPane = panes.get(targetPaneId);
+        if (!targetPane) return false;
+        if (dragPane.tabId !== targetPane.tabId) return false;
+        if (dragPaneId === targetPaneId) return false;
+        if (!window.splitTree.allLeaves(removed).includes(targetPaneId)) return false;
+
+        const nextRoot = insertAroundLeaf(removed, targetPaneId, dragPaneId, direction, placeBefore);
         if (!nextRoot) return false;
 
         tab.treeRoot = nextRoot;
@@ -1785,6 +1863,10 @@
               const tab = currentTab();
               if (!tab || !tab.containerEl) return null;
               return tab.containerEl.getBoundingClientRect();
+            },
+            getActiveContainerEl: () => {
+              const tab = currentTab();
+              return tab ? tab.containerEl : null;
             },
             movePaneByDrop,
             onFocusPane: (paneId) => setFocusedPane(paneId),

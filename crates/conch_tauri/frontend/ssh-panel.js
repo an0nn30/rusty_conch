@@ -47,9 +47,11 @@
                placeholder="Quick connect (user@host:port)"
                spellcheck="false" autocomplete="off" />
       </div>
-      <div class="ssh-active-sessions" id="ssh-active-sessions"></div>
-      <div class="ssh-tunnels-section" id="ssh-tunnels-section"></div>
-      <div class="ssh-server-list" id="ssh-server-list"></div>
+      <div class="ssh-panel-body" id="ssh-panel-body">
+        <div class="ssh-active-sessions" id="ssh-active-sessions"></div>
+        <div class="ssh-tunnels-section" id="ssh-tunnels-section"></div>
+        <div class="ssh-server-list" id="ssh-server-list"></div>
+      </div>
     `;
 
     serverListEl = panelEl.querySelector('#ssh-server-list');

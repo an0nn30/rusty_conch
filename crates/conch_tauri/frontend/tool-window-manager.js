@@ -21,6 +21,13 @@
   };
 
   const strips = { left: null, right: null };
+  const DRAGGABLE_ZONES = ['left-top', 'left-bottom', 'right-top', 'right-bottom'];
+  const ZONE_LABELS = {
+    'left-top': 'Left Top',
+    'left-bottom': 'Left Bottom',
+    'right-top': 'Right Top',
+    'right-bottom': 'Right Bottom',
+  };
 
   // Last user-set split ratios per side (preserved across toggle cycles)
   const lastSplitRatios = { left: 0.5, right: 0.5 };
@@ -28,6 +35,12 @@
   let fitActiveTabFn = null;
   let saveLayoutFn = null;
   let savedZoneAssignments = null; // populated from backend before registration
+  const stripDrag = {
+    active: null,
+    overlayEl: null,
+    labelEl: null,
+    zoneEls: new Map(),
+  };
 
   // ---- Initialisation -------------------------------------------------------
 
@@ -61,6 +74,7 @@
     initSidebarResize('right');
     initZoneDivider('left');
     initZoneDivider('right');
+    ensureStripDragOverlay();
   }
 
   // Provide persisted zone map so register() can honour user overrides.
@@ -82,6 +96,7 @@
       zone,
       renderFn: opts.renderFn,
       el:       null,
+      renderRootEl: null,
       active:   false,
     };
     toolWindows.set(id, tw);
@@ -140,8 +155,12 @@
       tw.el = document.createElement('div');
       tw.el.className = 'tool-window-content';
       tw.el.dataset.toolWindow = id;
+      const renderRootEl = document.createElement('div');
+      renderRootEl.className = 'tool-window-scroll-viewport';
+      tw.el.appendChild(renderRootEl);
+      tw.renderRootEl = renderRootEl;
       zone.contentEl.appendChild(tw.el);
-      tw.renderFn(tw.el);
+      tw.renderFn(renderRootEl);
     }
     tw.el.style.display = '';
 
@@ -315,6 +334,178 @@
     }
   }
 
+  function clamp(val, min, max) {
+    return Math.max(min, Math.min(max, val));
+  }
+
+  function ensureStripDragOverlay() {
+    if (stripDrag.overlayEl) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'twm-dnd-overlay';
+
+    for (const zone of DRAGGABLE_ZONES) {
+      const z = document.createElement('div');
+      z.className = 'twm-dnd-zone';
+      z.dataset.zone = zone;
+      const title = document.createElement('div');
+      title.className = 'twm-dnd-zone-title';
+      title.textContent = ZONE_LABELS[zone] || zone;
+      z.appendChild(title);
+      overlay.appendChild(z);
+      stripDrag.zoneEls.set(zone, z);
+    }
+
+    const label = document.createElement('div');
+    label.className = 'twm-dnd-label';
+    overlay.appendChild(label);
+
+    document.body.appendChild(overlay);
+    stripDrag.overlayEl = overlay;
+    stripDrag.labelEl = label;
+  }
+
+  function getStripDropZoneRects() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const pad = clamp(Math.round(vw * 0.018), 12, 28);
+    const zoneW = clamp(Math.round(vw * 0.16), 120, 240);
+    const zoneH = clamp(Math.round(vh * 0.24), 92, 220);
+    const gap = 10;
+    const centerY = Math.round(vh / 2);
+    const topY = clamp(centerY - zoneH - Math.round(gap / 2), pad, vh - zoneH - pad);
+    const bottomY = clamp(centerY + Math.round(gap / 2), pad, vh - zoneH - pad);
+    const leftX = pad;
+    const rightX = vw - zoneW - pad;
+
+    return {
+      'left-top': { left: leftX, top: topY, width: zoneW, height: zoneH },
+      'left-bottom': { left: leftX, top: bottomY, width: zoneW, height: zoneH },
+      'right-top': { left: rightX, top: topY, width: zoneW, height: zoneH },
+      'right-bottom': { left: rightX, top: bottomY, width: zoneW, height: zoneH },
+    };
+  }
+
+  function setStripDragOverlayVisible(visible) {
+    ensureStripDragOverlay();
+    stripDrag.overlayEl.style.display = visible ? 'block' : 'none';
+  }
+
+  function layoutStripDragOverlay(activeZone) {
+    ensureStripDragOverlay();
+    const rects = getStripDropZoneRects();
+    for (const zone of DRAGGABLE_ZONES) {
+      const zEl = stripDrag.zoneEls.get(zone);
+      const rect = rects[zone];
+      if (!zEl || !rect) continue;
+      zEl.style.left = rect.left + 'px';
+      zEl.style.top = rect.top + 'px';
+      zEl.style.width = rect.width + 'px';
+      zEl.style.height = rect.height + 'px';
+      zEl.classList.toggle('active', zone === activeZone);
+      zEl.classList.toggle('forbidden', stripDrag.active && stripDrag.active.sourceZone === zone);
+    }
+    const label = stripDrag.labelEl;
+    if (!label) return;
+    const labelText = activeZone ? `Move to ${ZONE_LABELS[activeZone]}` : 'Drag to a docking zone';
+    label.textContent = labelText;
+  }
+
+  function hitStripDropZone(x, y, sourceZone) {
+    const rects = getStripDropZoneRects();
+    let chosen = null;
+    let best = Infinity;
+    const capturePad = 18;
+    for (const zone of DRAGGABLE_ZONES) {
+      if (zone === sourceZone) continue;
+      const r = rects[zone];
+      const left = r.left - capturePad;
+      const right = r.left + r.width + capturePad;
+      const top = r.top - capturePad;
+      const bottom = r.top + r.height + capturePad;
+      const inside = x >= left && x <= right && y >= top && y <= bottom;
+      if (!inside) continue;
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      const d = Math.hypot(x - cx, y - cy);
+      if (d < best) {
+        best = d;
+        chosen = zone;
+      }
+    }
+    return chosen;
+  }
+
+  function endStripDrag(commit) {
+    const drag = stripDrag.active;
+    if (!drag) return;
+    window.removeEventListener('pointermove', onStripDragMove, true);
+    window.removeEventListener('pointerup', onStripDragUp, true);
+    window.removeEventListener('keydown', onStripDragKeyDown, true);
+    window.removeEventListener('resize', onStripDragResize);
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    if (drag.buttonEl) drag.buttonEl.classList.remove('twm-strip-dragging');
+    setStripDragOverlayVisible(false);
+    if (commit && drag.dragging && drag.targetZone && drag.targetZone !== drag.sourceZone) {
+      if (drag.buttonEl) drag.buttonEl.dataset.suppressClick = '1';
+      moveTo(drag.windowId, drag.targetZone);
+    }
+    stripDrag.active = null;
+  }
+
+  function onStripDragMove(e) {
+    const drag = stripDrag.active;
+    if (!drag) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    if (!drag.dragging && Math.hypot(dx, dy) >= 4) {
+      drag.dragging = true;
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'grabbing';
+      if (drag.buttonEl) drag.buttonEl.classList.add('twm-strip-dragging');
+      setStripDragOverlayVisible(true);
+    }
+    if (!drag.dragging) return;
+    drag.targetZone = hitStripDropZone(e.clientX, e.clientY, drag.sourceZone);
+    layoutStripDragOverlay(drag.targetZone);
+  }
+
+  function onStripDragUp() {
+    endStripDrag(true);
+  }
+
+  function onStripDragKeyDown(e) {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    endStripDrag(false);
+  }
+
+  function onStripDragResize() {
+    if (!stripDrag.active || !stripDrag.active.dragging) return;
+    layoutStripDragOverlay(stripDrag.active.targetZone);
+  }
+
+  function beginStripDrag(e, windowId, sourceZone, buttonEl) {
+    if (e.button !== 0) return;
+    if (stripDrag.active) return;
+    const tw = toolWindows.get(windowId);
+    if (!tw) return;
+    stripDrag.active = {
+      windowId,
+      sourceZone,
+      buttonEl,
+      startX: e.clientX,
+      startY: e.clientY,
+      dragging: false,
+      targetZone: null,
+    };
+    window.addEventListener('pointermove', onStripDragMove, true);
+    window.addEventListener('pointerup', onStripDragUp, true);
+    window.addEventListener('keydown', onStripDragKeyDown, true);
+    window.addEventListener('resize', onStripDragResize);
+  }
+
   // ---- Side strips (IntelliJ-style outer-edge buttons) ----------------------
 
   function updateStrips() {
@@ -353,7 +544,16 @@
     btn.className = 'strip-btn' + (tw.active ? ' active' : '');
     btn.textContent = tw.title;
     btn.dataset.toolWindow = windowId;
-    btn.addEventListener('click', () => toggle(windowId));
+    btn.addEventListener('click', (e) => {
+      if (btn.dataset.suppressClick === '1') {
+        delete btn.dataset.suppressClick;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      toggle(windowId);
+    });
+    btn.addEventListener('pointerdown', (e) => beginStripDrag(e, windowId, zone && zone.el ? zone.el.dataset.zone : tw.zone, btn));
     btn.addEventListener('contextmenu', (e) => { e.preventDefault(); showContextMenu(e, windowId); });
     return btn;
   }
@@ -588,7 +788,7 @@
   // Expose content container for a window (used by plugin-widgets.js)
   function getContentElement(id) {
     const tw = toolWindows.get(id);
-    return tw ? tw.el : null;
+    return tw ? (tw.renderRootEl || tw.el) : null;
   }
 
   // ---- Public API -----------------------------------------------------------
