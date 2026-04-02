@@ -229,7 +229,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
     let focus_sessions = MenuItem::with_id(
         app,
         MENU_FOCUS_SESSIONS_ID,
-        "Toggle & Focus Sessions",
+        "Toggle & Focus Hosts",
         true,
         Some(&primary_accelerator("/")),
     )?;
@@ -725,7 +725,7 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
         let focus_sessions = MenuItem::with_id(
             app,
             MENU_FOCUS_SESSIONS_ID,
-            "Toggle & Focus Sessions",
+            "Toggle & Focus Hosts",
             true,
             Some(&primary_accelerator("/")),
         )?;

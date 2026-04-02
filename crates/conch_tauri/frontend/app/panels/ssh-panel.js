@@ -39,7 +39,7 @@
 
     panelEl.innerHTML = `
       <div class="ssh-panel-header">
-        <span class="ssh-panel-title">Sessions</span>
+        <span class="ssh-panel-title">Hosts</span>
         <div class="ssh-panel-actions">
           <div style="position:relative">
             <button class="ssh-icon-btn" id="ssh-add-new" title="New..."><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px"><path d="M 4 7 h 8 v 2 H 4 Z M 7 4 h 2 v 8 H 7 Z"/></svg></button>
@@ -567,7 +567,7 @@
         const headerRow = document.createElement('div');
         headerRow.className = 'ssh-tunnels-header';
         headerRow.innerHTML =
-          `<span class="ssh-section-header-inline">SSH Sessions</span>`;
+          `<span class="ssh-section-header-inline">Active Connections</span>`;
         frag.appendChild(headerRow);
       }
 

@@ -89,7 +89,7 @@
         });
 
         global.toolWindowManager.register('ssh-sessions', {
-          title: 'Sessions',
+          title: 'Hosts',
           type: 'built-in',
           defaultZone: 'right-top',
           renderFn: (container) => {

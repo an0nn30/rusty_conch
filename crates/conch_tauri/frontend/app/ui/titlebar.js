@@ -87,7 +87,7 @@
           { id: 'split-horizontal', label: 'Split Pane Horizontally', shortcut: shortcuts.split_horizontal || `${ctrl}+Shift+D` },
           { id: 'close-pane', label: 'Close Pane', shortcut: shortcuts.close_pane || `${ctrl}+Shift+W` },
           { type: 'separator' },
-          { id: 'focus-sessions', label: 'Toggle & Focus Sessions', shortcut: `${ctrl}+/` },
+          { id: 'focus-sessions', label: 'Toggle & Focus Hosts', shortcut: `${ctrl}+/` },
           { id: 'zen-mode', label: 'Zen Mode', shortcut: shortcuts.zen_mode || '' },
           { type: 'separator' },
           { id: 'zoom-in', label: 'Zoom In', shortcut: `${ctrl}+=` },
