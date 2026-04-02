@@ -1,5 +1,7 @@
 # Conch — Claude Instructions
 
+This file is the published working agreement for AI coding agents operating in this repository, including Codex and Claude-style agents.
+
 ## Critical Engineering Standards
 
 ### 1. Unit Tests Are Required
@@ -17,6 +19,7 @@ Code MUST be broken into small, focused modules. When adding new functionality:
 ## Git Workflow (STRICT)
 
 - **Claude must never commit or push directly to `main`.**
+- **Codex and all other AI agents must never commit or push directly to `main`.**
 - The repo owner (`an0nn30`) may push directly to `main` when appropriate.
 - Every feature, fix, or change — no matter how small — must go on its own branch.
 - Branch naming convention:
@@ -24,9 +27,11 @@ Code MUST be broken into small, focused modules. When adding new functionality:
   - `fix/short-description` — bug fixes
   - `chore/short-description` — docs, config, tooling, cleanup
   - `perf/short-description` — performance improvements
+- Pick the branch prefix based on the primary intent of the work. Bug fixes belong on `fix/*` branches, new user-facing behavior belongs on `feat/*`, and refactors or cleanup without behavior changes belong on `chore/*` unless they are clearly performance-focused.
 - Before starting any work, check the current branch. If on `main`, create a new branch first.
 - Push the branch to origin. Never open PRs unless the user explicitly asks.
 - Never use `--force` push.
+- Keep branches narrowly scoped. Do not mix unrelated fixes, features, and refactors into one branch.
 
 ## Commit Rules
 
@@ -34,6 +39,16 @@ Code MUST be broken into small, focused modules. When adding new functionality:
 - Write concise, descriptive commit messages in the imperative mood.
 - PRs should be small and focused — one concern per PR.
 - This is a public, open-source repo. Be thoughtful about what goes into commits.
+- Do not commit generated noise, local scratch files, or agent-specific workspace artifacts unless the user explicitly asks.
+
+## Delivery Standards
+
+- Always add tests for behavior changes when the code is testable without a live GUI or OS-bound environment.
+- Prefer extending existing focused modules over growing large catch-all files.
+- Do not introduce new monoliths in Rust, JavaScript, or docs. If a file is already large, strongly prefer extracting a helper module instead of adding another major feature to it.
+- Follow the existing architecture and naming patterns in the surrounding crate or frontend runtime area before introducing a new abstraction.
+- When changing behavior, update nearby docs, examples, or inline help text if the user-visible contract changed.
+- Favor incremental, reviewable changes over broad rewrites.
 
 ## Architecture
 
@@ -122,6 +137,11 @@ separate native plugins but were consolidated for reliability.
 - Keep `unsafe` blocks minimal and well-commented
 - No unnecessary `clone()` — borrow where possible
 - Factory methods for repeated struct construction (e.g., `PluginState::make_host_api()`)
+- Prefer small structs and focused helper functions over deeply stateful "manager" objects when simpler composition will do
+- Keep modules cohesive: parsing with parsing, persistence with persistence, UI wiring with UI wiring
+- Add or extend `#[cfg(test)]` coverage in the same file when practical, especially for parsing, config, widget-building, and state-transition logic
+- Preserve backward compatibility for persisted config/state unless the user explicitly approves a breaking change
+- Prefer explicit types and straightforward control flow over clever abstractions
 
 ### Frontend (JS)
 - Each JS module is a self-contained IIFE exposing a global (e.g., `window.sshPanel`)
@@ -131,6 +151,9 @@ separate native plugins but were consolidated for reliability.
 - Overlay dialogs use the `ssh-overlay` / `ssh-form` CSS pattern
 - Escape handlers must use capture phase (`addEventListener(..., true)`) to fire before xterm.js
 - Icons: use PNG assets from `frontend/icons/` via `<img>` tags or `iconHtml()` helper
+- Keep runtime modules small and purpose-specific; if a frontend file starts becoming a grab bag, split it
+- Prefer event delegation and shared helpers over duplicating DOM wiring across panels
+- Preserve focus behavior and keyboard navigation when changing interactive UI
 
 ### Config
 - User config: `~/.config/conch/config.toml` (loaded by conch_core)
@@ -148,3 +171,4 @@ separate native plugins but were consolidated for reliability.
 - Plugin SDK: test widget serialization/deserialization
 - Config: test defaults, serde round-trips, backward compat with `serde(default)`
 - Currently 192 tests across the workspace — keep this growing
+- If a change cannot reasonably be covered by an automated test, explain that clearly in the final summary and describe the manual verification performed
