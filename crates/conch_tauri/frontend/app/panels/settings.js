@@ -28,7 +28,7 @@
       { id: 'keyboard', label: 'Keymap', description: 'Core shortcuts, tool window shortcuts, plugin shortcuts', keywords: 'keyboard shortcuts keymap bindings hotkeys commands tool windows plugins' },
     ]},
     { group: 'Terminal', items: [
-      { id: 'terminal', label: 'Terminal', description: 'Font rendering and scrolling', keywords: 'terminal font size offset scrolling display rendering' },
+      { id: 'terminal', label: 'Terminal', description: 'Backend, font rendering, and scrolling', keywords: 'terminal backend tmux local font size offset scrolling display rendering' },
       { id: 'cursor', label: 'Cursor', description: 'Cursor shape, blinking, vi mode override', keywords: 'cursor block beam underline blinking vi mode caret' },
       { id: 'shell', label: 'Shell', description: 'Shell program, arguments, environment variables', keywords: 'shell program launch arguments env environment variables login command' },
     ]},
@@ -56,6 +56,7 @@
     { section: 'terminal', label: 'Terminal Font Size', keywords: 'terminal font size', targetId: 'terminal:font-size' },
     { section: 'terminal', label: 'Font Offset X', keywords: 'font offset horizontal x rendering', targetId: 'terminal:font-offset-x' },
     { section: 'terminal', label: 'Font Offset Y', keywords: 'font offset vertical y rendering', targetId: 'terminal:font-offset-y' },
+    { section: 'terminal', label: 'Terminal Backend', keywords: 'backend local tmux terminal mode multiplexer', targetId: 'terminal:backend' },
     { section: 'terminal', label: 'Scroll Sensitivity', keywords: 'scrolling trackpad mouse wheel sensitivity', targetId: 'terminal:scroll-sensitivity' },
     { section: 'shell', label: 'Shell Program', keywords: 'shell program executable login shell', targetId: 'shell:program' },
     { section: 'shell', label: 'Arguments', keywords: 'shell arguments flags startup command', targetId: 'shell:args' },
@@ -1608,6 +1609,28 @@
     const h = document.createElement('h3');
     h.textContent = 'Terminal';
     c.appendChild(h);
+
+    addSectionLabel(c, 'Backend');
+
+    const backendOptions = [
+      { value: 'local', label: 'Local PTY' },
+      { value: 'tmux', label: 'Tmux' },
+    ];
+    const backendSelect = document.createElement('select');
+    backendSelect.className = 'settings-select';
+    for (const b of backendOptions) {
+      const opt = document.createElement('option');
+      opt.value = b.value;
+      opt.textContent = b.label;
+      if (b.value === pendingSettings.terminal.backend) opt.selected = true;
+      backendSelect.appendChild(opt);
+    }
+    backendSelect.addEventListener('change', () => {
+      pendingSettings.terminal.backend = backendSelect.value;
+    });
+    setRowTarget(addRow(c, 'Terminal Backend', 'Local PTY or tmux session multiplexer', backendSelect), 'terminal:backend');
+
+    addDivider(c);
 
     addSectionLabel(c, 'Typography');
 

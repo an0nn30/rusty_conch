@@ -113,6 +113,11 @@ pub(crate) fn needs_restart(old: &UserConfig, new: &UserConfig) -> bool {
         return true;
     }
 
+    // Terminal backend
+    if old.terminal.backend != new.terminal.backend {
+        return true;
+    }
+
     // Terminal font — hot-reloaded via config-changed event, no restart needed.
 
     // Scroll sensitivity
