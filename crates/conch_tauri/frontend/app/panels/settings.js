@@ -15,28 +15,395 @@
   let cachedFonts = { all: [], monospace: [] };
   let standaloneMode = false;   // true when running in its own window
   let standaloneRoot = null;    // root element in standalone mode
+  let settingsSidebarQuery = '';
+  let keyboardSearchQuery = '';
+  let settingsSearchAutofocusTimer = null;
+  let settingsSidebarResults = [];
+  let settingsSidebarSelectionIndex = -1;
+  let pendingSettingsJump = null;
 
-  const SECTIONS = [
-    { group: 'General', items: [
-      { id: 'appearance', label: 'Appearance' },
-      { id: 'keyboard', label: 'Keyboard Shortcuts' },
+  const SECTION_DEFS = [
+    { group: 'Workspace', items: [
+      { id: 'appearance', label: 'Appearance', description: 'Theme, notifications, window chrome, UI fonts', keywords: 'theme colors interface notifications window menu bar fonts typography appearance' },
+      { id: 'keyboard', label: 'Keymap', description: 'Core shortcuts, tool window shortcuts, plugin shortcuts', keywords: 'keyboard shortcuts keymap bindings hotkeys commands tool windows plugins' },
     ]},
-    { group: 'Editor', items: [
-      { id: 'terminal', label: 'Terminal' },
-      { id: 'shell', label: 'Shell' },
-      { id: 'cursor', label: 'Cursor' },
+    { group: 'Terminal', items: [
+      { id: 'terminal', label: 'Terminal', description: 'Font rendering and scrolling', keywords: 'terminal font size offset scrolling display rendering' },
+      { id: 'cursor', label: 'Cursor', description: 'Cursor shape, blinking, vi mode override', keywords: 'cursor block beam underline blinking vi mode caret' },
+      { id: 'shell', label: 'Shell', description: 'Shell program, arguments, environment variables', keywords: 'shell program launch arguments env environment variables login command' },
     ]},
     { group: 'Extensions', items: [
-      { id: 'plugins', label: 'Plugins' },
+      { id: 'plugins', label: 'Plugins', description: 'Plugin system, plugin types, search paths, installed plugins', keywords: 'plugins extensions lua java search paths installed permissions' },
     ]},
-    { group: 'Advanced', items: [
-      { id: 'advanced', label: 'Advanced' },
+    { group: 'System', items: [
+      { id: 'advanced', label: 'Advanced', description: 'Startup behavior, window defaults, UI density', keywords: 'advanced startup updates default window size ui density font sizes' },
     ]},
   ];
+
+  const SETTINGS_SEARCH_INDEX = [
+    { section: 'appearance', label: 'Theme', keywords: 'color theme appearance scheme', targetId: 'appearance:theme' },
+    { section: 'appearance', label: 'Appearance Mode', keywords: 'dark light system mode', targetId: 'appearance:mode' },
+    { section: 'appearance', label: 'Notification Position', keywords: 'toast notifications top bottom', targetId: 'appearance:notification-position' },
+    { section: 'appearance', label: 'Native Notifications', keywords: 'system notifications os notifications', targetId: 'appearance:native-notifications' },
+    { section: 'appearance', label: 'Window Decorations', keywords: 'titlebar transparent buttonless none full window chrome', targetId: 'appearance:window-decorations' },
+    { section: 'appearance', label: 'Native Menu Bar', keywords: 'menu bar macos native menu', targetId: 'appearance:native-menu-bar' },
+    { section: 'appearance', label: 'UI Font Family', keywords: 'ui font family interface typography', targetId: 'appearance:ui-font-family' },
+    { section: 'appearance', label: 'UI Font Size', keywords: 'ui font size interface typography', targetId: 'appearance:ui-font-size' },
+    { section: 'keyboard', label: 'Keyboard Shortcuts', keywords: 'keyboard shortcuts keymap bindings' },
+    { section: 'keyboard', label: 'Tool Window Shortcuts', keywords: 'tool window keyboard shortcuts sidebars panels' },
+    { section: 'keyboard', label: 'Plugin Shortcuts', keywords: 'plugin keyboard shortcuts' },
+    { section: 'terminal', label: 'Terminal Font Family', keywords: 'terminal font family monospace', targetId: 'terminal:font-family' },
+    { section: 'terminal', label: 'Terminal Font Size', keywords: 'terminal font size', targetId: 'terminal:font-size' },
+    { section: 'terminal', label: 'Font Offset X', keywords: 'font offset horizontal x rendering', targetId: 'terminal:font-offset-x' },
+    { section: 'terminal', label: 'Font Offset Y', keywords: 'font offset vertical y rendering', targetId: 'terminal:font-offset-y' },
+    { section: 'terminal', label: 'Scroll Sensitivity', keywords: 'scrolling trackpad mouse wheel sensitivity', targetId: 'terminal:scroll-sensitivity' },
+    { section: 'shell', label: 'Shell Program', keywords: 'shell program executable login shell', targetId: 'shell:program' },
+    { section: 'shell', label: 'Arguments', keywords: 'shell arguments flags startup command', targetId: 'shell:args' },
+    { section: 'shell', label: 'Environment Variables', keywords: 'env environment variables terminal session', targetId: 'shell:env' },
+    { section: 'cursor', label: 'Cursor Shape', keywords: 'cursor shape block beam underline', targetId: 'cursor:shape' },
+    { section: 'cursor', label: 'Cursor Blinking', keywords: 'cursor blinking blink', targetId: 'cursor:blinking' },
+    { section: 'cursor', label: 'Vi Mode Override', keywords: 'cursor vi mode vim modal', targetId: 'cursor:vi-mode' },
+    { section: 'plugins', label: 'Enable Plugins', keywords: 'plugins enable disable master switch', targetId: 'plugins:enabled' },
+    { section: 'plugins', label: 'Plugin Types', keywords: 'lua java plugins plugin types', targetId: 'plugins:types' },
+    { section: 'plugins', label: 'Extra Search Paths', keywords: 'plugin paths search paths folders directories', targetId: 'plugins:search-paths' },
+    { section: 'plugins', label: 'Installed Plugins', keywords: 'installed plugins rescan enable disable permissions', targetId: 'plugins:installed' },
+    { section: 'advanced', label: 'Check for Updates', keywords: 'updates startup update checks', targetId: 'advanced:check-for-updates' },
+    { section: 'advanced', label: 'Initial Window Size', keywords: 'window size columns lines defaults', targetId: 'advanced:window-size' },
+    { section: 'advanced', label: 'UI Chrome Font Sizes', keywords: 'ui chrome font sizes density text size list normal small', targetId: 'advanced:ui-chrome-font-sizes' },
+  ];
+
+  function clearSettingsAutofocusTimer() {
+    if (settingsSearchAutofocusTimer) {
+      clearTimeout(settingsSearchAutofocusTimer);
+      settingsSearchAutofocusTimer = null;
+    }
+  }
 
   function init(opts) {
     invoke = opts.invoke;
     listenFn = opts.listen;
+  }
+
+  function normalizeSearchText(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  function isPrintableKeyEvent(event) {
+    return !!(
+      event &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      typeof event.key === 'string' &&
+      event.key.length === 1
+    );
+  }
+
+  function isTextLikeElement(el) {
+    if (!el) return false;
+    const tag = String(el.tagName || '').toLowerCase();
+    return (
+      tag === 'input' ||
+      tag === 'textarea' ||
+      tag === 'select' ||
+      el.isContentEditable
+    );
+  }
+
+  function escapeRegExp(value) {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function appendHighlightedText(container, text, query) {
+    const raw = String(text || '');
+    const q = normalizeSearchText(query);
+    if (!q) {
+      container.textContent = raw;
+      return;
+    }
+    const re = new RegExp(`(${escapeRegExp(q)})`, 'ig');
+    let lastIndex = 0;
+    for (const match of raw.matchAll(re)) {
+      const idx = match.index == null ? -1 : match.index;
+      if (idx < 0) continue;
+      if (idx > lastIndex) {
+        container.appendChild(document.createTextNode(raw.slice(lastIndex, idx)));
+      }
+      const mark = document.createElement('mark');
+      mark.className = 'settings-search-highlight';
+      mark.textContent = raw.slice(idx, idx + match[0].length);
+      container.appendChild(mark);
+      lastIndex = idx + match[0].length;
+    }
+    if (lastIndex < raw.length) {
+      container.appendChild(document.createTextNode(raw.slice(lastIndex)));
+    }
+  }
+
+  function getSectionById(id) {
+    for (const group of SECTION_DEFS) {
+      for (const item of group.items) {
+        if (item.id === id) return item;
+      }
+    }
+    return null;
+  }
+
+  function buildSettingsSearchIndex() {
+    const entries = SETTINGS_SEARCH_INDEX.map((entry) => ({ ...entry }));
+
+    const toolWindowItems = window.toolWindowManager && typeof window.toolWindowManager.listWindows === 'function'
+      ? window.toolWindowManager.listWindows()
+      : [];
+    for (const item of toolWindowItems) {
+      const title = item.title || item.id;
+      const zoneText = String(item.zone || '').replace('-', ' ');
+      entries.push({
+        section: 'keyboard',
+        label: title,
+        keywords: `keymap tool windows ${title} ${item.id} ${item.type || ''} ${zoneText}`,
+        path: 'Keymap > Tool Windows',
+        kind: 'tool-window',
+        targetKey: item.id,
+      });
+    }
+
+    return entries;
+  }
+
+  function getSidebarSearchResults(query) {
+    const q = normalizeSearchText(query);
+    if (!q) return [];
+
+    const results = [];
+    const seen = new Set();
+    for (const entry of buildSettingsSearchIndex()) {
+      const haystack = `${entry.label} ${entry.keywords || ''}`;
+      if (!normalizeSearchText(haystack).includes(q)) continue;
+      const section = getSectionById(entry.section);
+      const sig = `${entry.section}:${entry.label}:${entry.path || ''}`;
+      if (seen.has(sig)) continue;
+      seen.add(sig);
+      results.push({
+        section: entry.section,
+        label: entry.label,
+        sectionLabel: section ? section.label : entry.section,
+        path: entry.path || (section ? section.label : entry.section),
+        kind: entry.kind || 'setting',
+        targetKey: entry.targetKey || null,
+        targetId: entry.targetId || (entry.kind === 'tool-window' ? `keyboard:tool-window:${entry.targetKey || ''}` : null),
+        score: normalizeSearchText(entry.label).includes(q) ? 0 : 1,
+      });
+    }
+    results.sort((a, b) => a.score - b.score || String(a.label).localeCompare(String(b.label)));
+    return results;
+  }
+
+  function focusSettingsSearchInput(selectAll) {
+    clearSettingsAutofocusTimer();
+    settingsSearchAutofocusTimer = setTimeout(() => {
+      const input = document.querySelector('#settings-sidebar .settings-sidebar-search');
+      if (!input) return;
+      input.focus();
+      if (selectAll) input.select();
+    }, 0);
+  }
+
+  function moveSidebarSearchSelection(delta) {
+    if (settingsSidebarResults.length === 0) return;
+    if (settingsSidebarSelectionIndex < 0) {
+      settingsSidebarSelectionIndex = delta > 0 ? 0 : settingsSidebarResults.length - 1;
+    } else {
+      settingsSidebarSelectionIndex = Math.max(0, Math.min(settingsSidebarResults.length - 1, settingsSidebarSelectionIndex + delta));
+    }
+    const sidebar = document.getElementById('settings-sidebar');
+    if (!sidebar) return;
+    renderSidebarInto(sidebar);
+    const selectedEl = sidebar.querySelector('.settings-sidebar-item.selected');
+    if (selectedEl) selectedEl.scrollIntoView({ block: 'nearest' });
+    const input = sidebar.querySelector('.settings-sidebar-search');
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+
+  function registerPendingSettingsJump(match) {
+    pendingSettingsJump = match ? {
+      section: match.section,
+      label: match.label || '',
+      targetId: match.targetId || null,
+      query: settingsSidebarQuery || '',
+    } : null;
+  }
+
+  function onSidebarSearchResultSelected(match) {
+    if (match.section === 'keyboard' && match.kind === 'tool-window') {
+      keyboardSearchQuery = match.label;
+    } else if (match.section === 'keyboard') {
+      keyboardSearchQuery = match.label;
+    }
+    registerPendingSettingsJump(match);
+    selectSection(match.section);
+  }
+
+  function renderSidebarInto(sidebar) {
+    sidebar.innerHTML = '';
+    settingsSidebarResults = [];
+
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'settings-sidebar-search-wrap';
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.className = 'settings-sidebar-search';
+    searchInput.placeholder = 'Search settings';
+    searchInput.value = settingsSidebarQuery;
+    searchInput.addEventListener('input', () => {
+      settingsSidebarQuery = searchInput.value;
+      settingsSidebarSelectionIndex = -1;
+      const active = document.activeElement === searchInput;
+      renderSidebarInto(sidebar);
+      if (active) {
+        const nextInput = sidebar.querySelector('.settings-sidebar-search');
+        if (nextInput) {
+          nextInput.focus();
+          nextInput.setSelectionRange(nextInput.value.length, nextInput.value.length);
+        }
+      }
+    });
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        e.stopPropagation();
+        moveSidebarSearchSelection(1);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        e.stopPropagation();
+        moveSidebarSearchSelection(-1);
+        return;
+      }
+      if (e.key === 'Enter') {
+        if (settingsSidebarResults.length === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const idx = settingsSidebarSelectionIndex >= 0 ? settingsSidebarSelectionIndex : 0;
+        const match = settingsSidebarResults[idx];
+        if (match) onSidebarSearchResultSelected(match);
+      }
+    });
+    searchWrap.appendChild(searchInput);
+    sidebar.appendChild(searchWrap);
+
+    const q = normalizeSearchText(settingsSidebarQuery);
+    if (q) {
+      const sectionMatches = [];
+      for (const group of SECTION_DEFS) {
+        for (const item of group.items) {
+          const haystack = `${item.label} ${item.description || ''} ${item.keywords || ''}`;
+          if (!normalizeSearchText(haystack).includes(q)) continue;
+          sectionMatches.push(item);
+        }
+      }
+      const settingMatches = getSidebarSearchResults(q);
+      settingsSidebarResults = [...settingMatches];
+      for (const item of sectionMatches) {
+        settingsSidebarResults.push({
+          section: item.id,
+          label: item.label,
+          path: item.description || item.label,
+          kind: 'section',
+          targetId: null,
+        });
+      }
+      if (settingsSidebarSelectionIndex >= settingsSidebarResults.length) {
+        settingsSidebarSelectionIndex = settingsSidebarResults.length - 1;
+      }
+
+      if (sectionMatches.length > 0) {
+        const header = document.createElement('div');
+        header.className = 'settings-sidebar-group';
+        header.textContent = 'Sections';
+        sidebar.appendChild(header);
+        for (let idx = 0; idx < sectionMatches.length; idx++) {
+          const item = sectionMatches[idx];
+          const row = document.createElement('div');
+          const resultIndex = settingMatches.length + idx;
+          row.className = 'settings-sidebar-item settings-sidebar-item-search' + (item.id === currentSection ? ' active' : '') + (settingsSidebarSelectionIndex === resultIndex ? ' selected' : '');
+          row.dataset.section = item.id;
+          const title = document.createElement('div');
+          title.className = 'settings-sidebar-item-title';
+          appendHighlightedText(title, item.label, q);
+          row.appendChild(title);
+          if (item.description) {
+            const desc = document.createElement('div');
+            desc.className = 'settings-sidebar-item-desc';
+            appendHighlightedText(desc, item.description, q);
+            row.appendChild(desc);
+          }
+          row.addEventListener('click', () => onSidebarSearchResultSelected(settingsSidebarResults[resultIndex]));
+          sidebar.appendChild(row);
+        }
+      }
+
+      if (settingMatches.length > 0) {
+        const header = document.createElement('div');
+        header.className = 'settings-sidebar-group';
+        header.textContent = 'Settings';
+        sidebar.appendChild(header);
+        for (let idx = 0; idx < settingMatches.length; idx++) {
+          const match = settingMatches[idx];
+          const row = document.createElement('div');
+          row.className = 'settings-sidebar-item settings-sidebar-item-search' + (settingsSidebarSelectionIndex === idx ? ' selected' : '');
+          row.dataset.section = match.section;
+          const title = document.createElement('div');
+          title.className = 'settings-sidebar-item-title';
+          appendHighlightedText(title, match.label, q);
+          row.appendChild(title);
+          const desc = document.createElement('div');
+          desc.className = 'settings-sidebar-item-desc';
+          appendHighlightedText(desc, match.path || match.sectionLabel, q);
+          row.appendChild(desc);
+          row.addEventListener('click', () => onSidebarSearchResultSelected(match));
+          sidebar.appendChild(row);
+        }
+      }
+
+      if (sectionMatches.length === 0 && settingMatches.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'settings-sidebar-empty';
+        empty.textContent = 'No settings match your search.';
+        sidebar.appendChild(empty);
+      }
+      return;
+    }
+
+    settingsSidebarResults = [];
+    settingsSidebarSelectionIndex = -1;
+    for (const group of SECTION_DEFS) {
+      const groupEl = document.createElement('div');
+      groupEl.className = 'settings-sidebar-group';
+      groupEl.textContent = group.group;
+      sidebar.appendChild(groupEl);
+      for (const item of group.items) {
+        const itemEl = document.createElement('div');
+        itemEl.className = 'settings-sidebar-item' + (item.id === currentSection ? ' active' : '');
+        itemEl.dataset.section = item.id;
+        const title = document.createElement('div');
+        title.className = 'settings-sidebar-item-title';
+        title.textContent = item.label;
+        itemEl.appendChild(title);
+        if (item.description) {
+          const desc = document.createElement('div');
+          desc.className = 'settings-sidebar-item-desc';
+          desc.textContent = item.description;
+          itemEl.appendChild(desc);
+        }
+        itemEl.addEventListener('click', () => selectSection(item.id));
+        sidebar.appendChild(itemEl);
+      }
+    }
   }
 
   async function open() {
@@ -56,6 +423,8 @@
       cachedPlugins = plugins;
       cachedPluginMenuItems = Array.isArray(pluginMenuItems) ? pluginMenuItems : [];
       cachedFonts = fonts;
+      settingsSidebarQuery = '';
+      keyboardSearchQuery = '';
       currentSection = 'appearance';
       renderDialog();
     } catch (e) {
@@ -82,6 +451,8 @@
       cachedPlugins = plugins;
       cachedPluginMenuItems = Array.isArray(pluginMenuItems) ? pluginMenuItems : [];
       cachedFonts = fonts;
+      settingsSidebarQuery = '';
+      keyboardSearchQuery = '';
       currentSection = 'appearance';
       renderStandalone();
     } catch (e) {
@@ -108,20 +479,7 @@
     const sidebar = document.createElement('div');
     sidebar.className = 'settings-sidebar';
     sidebar.id = 'settings-sidebar';
-    for (const group of SECTIONS) {
-      const groupEl = document.createElement('div');
-      groupEl.className = 'settings-sidebar-group';
-      groupEl.textContent = group.group;
-      sidebar.appendChild(groupEl);
-      for (const item of group.items) {
-        const itemEl = document.createElement('div');
-        itemEl.className = 'settings-sidebar-item' + (item.id === currentSection ? ' active' : '');
-        itemEl.textContent = item.label;
-        itemEl.dataset.section = item.id;
-        itemEl.addEventListener('click', () => selectSection(item.id));
-        sidebar.appendChild(itemEl);
-      }
-    }
+    renderSidebarInto(sidebar);
     body.appendChild(sidebar);
 
     const content = document.createElement('div');
@@ -154,11 +512,34 @@
       }
     });
 
+    root.addEventListener('keydown', (e) => {
+      if (recordingEl) return;
+      if (!isPrintableKeyEvent(e)) return;
+      const active = document.activeElement;
+      if (isTextLikeElement(active)) return;
+      const input = root.querySelector('.settings-sidebar-search');
+      if (!input) return;
+      e.preventDefault();
+      e.stopPropagation();
+      input.focus();
+      input.value = (input.value || '') + e.key;
+      settingsSidebarQuery = input.value;
+      const sidebarEl = document.getElementById('settings-sidebar');
+      if (sidebarEl) renderSidebarInto(sidebarEl);
+      const nextInput = root.querySelector('.settings-sidebar-search');
+      if (nextInput) {
+        nextInput.focus();
+        nextInput.setSelectionRange(nextInput.value.length, nextInput.value.length);
+      }
+    }, true);
+
     renderCurrentSection();
+    focusSettingsSearchInput(true);
   }
 
   function close() {
     stopRecording();
+    clearSettingsAutofocusTimer();
     if (standaloneMode) {
       // In standalone window mode, close the window itself.
       const tauri = window.__TAURI__;
@@ -199,20 +580,7 @@
     const sidebar = document.createElement('div');
     sidebar.className = 'settings-sidebar';
     sidebar.id = 'settings-sidebar';
-    for (const group of SECTIONS) {
-      const groupEl = document.createElement('div');
-      groupEl.className = 'settings-sidebar-group';
-      groupEl.textContent = group.group;
-      sidebar.appendChild(groupEl);
-      for (const item of group.items) {
-        const itemEl = document.createElement('div');
-        itemEl.className = 'settings-sidebar-item' + (item.id === currentSection ? ' active' : '');
-        itemEl.textContent = item.label;
-        itemEl.dataset.section = item.id;
-        itemEl.addEventListener('click', () => selectSection(item.id));
-        sidebar.appendChild(itemEl);
-      }
-    }
+    renderSidebarInto(sidebar);
     body.appendChild(sidebar);
 
     // Content area
@@ -243,6 +611,26 @@
     // Click outside to close
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
 
+    dialog.addEventListener('keydown', (e) => {
+      if (recordingEl) return;
+      if (!isPrintableKeyEvent(e)) return;
+      const active = document.activeElement;
+      if (active && active.closest && active.closest('#settings-overlay') && isTextLikeElement(active)) return;
+      const input = dialog.querySelector('.settings-sidebar-search');
+      if (!input) return;
+      e.preventDefault();
+      e.stopPropagation();
+      input.focus();
+      input.value = (input.value || '') + e.key;
+      settingsSidebarQuery = input.value;
+      renderSidebarInto(document.getElementById('settings-sidebar'));
+      const nextInput = document.querySelector('#settings-sidebar .settings-sidebar-search');
+      if (nextInput) {
+        nextInput.focus();
+        nextInput.setSelectionRange(nextInput.value.length, nextInput.value.length);
+      }
+    }, true);
+
     document.body.appendChild(overlay);
 
     // Escape handler (capture phase, before xterm.js)
@@ -259,17 +647,13 @@
 
     // Render initial section
     renderCurrentSection();
+    focusSettingsSearchInput(true);
   }
 
   function selectSection(id) {
     currentSection = id;
-    // Update sidebar active state
     const sidebar = document.getElementById('settings-sidebar');
-    if (sidebar) {
-      for (const item of sidebar.querySelectorAll('.settings-sidebar-item')) {
-        item.classList.toggle('active', item.dataset.section === id);
-      }
-    }
+    if (sidebar) renderSidebarInto(sidebar);
     renderCurrentSection();
   }
 
@@ -286,6 +670,35 @@
       case 'cursor': renderCursor(content); break;
       case 'plugins': renderPlugins(content); break;
       case 'advanced': renderAdvanced(content); break;
+    }
+    if (pendingSettingsJump && pendingSettingsJump.section === currentSection) {
+      requestAnimationFrame(() => {
+        const root = document.getElementById('settings-content');
+        if (!root) return;
+        let row = null;
+        if (pendingSettingsJump.targetId) {
+          row = root.querySelector(`[data-setting-id="${pendingSettingsJump.targetId}"]`);
+        }
+        if (!row && pendingSettingsJump.label) {
+          const normalized = normalizeSearchText(pendingSettingsJump.label);
+          row = root.querySelector(`.settings-row[data-search-label="${normalized}"]`);
+        }
+        if (!row && pendingSettingsJump.query) {
+          const q = normalizeSearchText(pendingSettingsJump.query);
+          row = Array.from(root.querySelectorAll('.settings-row')).find((el) => {
+            const label = el.dataset.searchLabel || '';
+            const desc = el.dataset.searchDesc || '';
+            return label.includes(q) || desc.includes(q);
+          }) || null;
+        }
+        if (row) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          row.classList.remove('settings-row-jump-highlight');
+          void row.offsetWidth;
+          row.classList.add('settings-row-jump-highlight');
+        }
+        pendingSettingsJump = null;
+      });
     }
   }
 
@@ -307,6 +720,8 @@
   function addRow(container, labelText, descText, controlEl) {
     const row = document.createElement('div');
     row.className = 'settings-row';
+    if (labelText) row.dataset.searchLabel = normalizeSearchText(labelText);
+    if (descText) row.dataset.searchDesc = normalizeSearchText(descText);
     const left = document.createElement('div');
     const lbl = document.createElement('div');
     lbl.className = 'settings-row-label';
@@ -321,6 +736,34 @@
     row.appendChild(left);
     row.appendChild(controlEl);
     container.appendChild(row);
+    return row;
+  }
+
+  function setRowTarget(row, settingId) {
+    if (row && settingId) row.dataset.settingId = settingId;
+    return row;
+  }
+
+  function applyRowSearchHighlight(row, labelText, descText, query) {
+    if (!row || !query) return;
+    const labelEl = row.querySelector('.settings-row-label');
+    if (labelEl) appendHighlightedText(labelEl, labelText, query);
+    const descEl = row.querySelector('.settings-row-desc');
+    if (descEl && descText) appendHighlightedText(descEl, descText, query);
+  }
+
+  function addSearchInput(container, placeholder, value, onInput) {
+    const wrap = document.createElement('div');
+    wrap.className = 'settings-search-wrap';
+    const input = document.createElement('input');
+    input.type = 'search';
+    input.className = 'settings-input settings-search-input';
+    input.placeholder = placeholder;
+    input.value = value || '';
+    input.addEventListener('input', () => onInput(input.value));
+    wrap.appendChild(input);
+    container.appendChild(wrap);
+    return input;
   }
 
   function escHtml(value) {
@@ -536,8 +979,7 @@
     h.textContent = 'Appearance';
     c.appendChild(h);
 
-    // Sub-group: Color Theme
-    addSectionLabel(c, 'Color Theme');
+    addSectionLabel(c, 'Theme & Color');
 
     // Theme dropdown
     const themeSelect = document.createElement('select');
@@ -549,7 +991,7 @@
       if (t === pendingSettings.colors.theme) opt.selected = true;
       themeSelect.appendChild(opt);
     }
-    addRow(c, 'Theme', 'Color theme for the terminal and UI', themeSelect);
+    setRowTarget(addRow(c, 'Theme', 'Color theme for the terminal and UI', themeSelect), 'appearance:theme');
 
     // Theme preview box
     const previewBox = buildThemePreview();
@@ -570,7 +1012,6 @@
         .catch(() => {});
     });
 
-    // Appearance Mode toggle group
     const modes = ['Dark', 'Light', 'System'];
     const toggleGroup = document.createElement('div');
     toggleGroup.className = 'settings-toggle-group';
@@ -587,11 +1028,10 @@
       });
       toggleGroup.appendChild(btn);
     }
-    addRow(c, 'Appearance Mode', null, toggleGroup);
+    setRowTarget(addRow(c, 'Appearance Mode', null, toggleGroup), 'appearance:mode');
 
     addDivider(c);
 
-    // Sub-group: Notifications
     addSectionLabel(c, 'Notifications');
 
     // Notification position toggle
@@ -611,19 +1051,18 @@
       });
       posGroup.appendChild(btn);
     }
-    addRow(c, 'Notification Position', 'Where toast notifications appear on screen', posGroup);
+    setRowTarget(addRow(c, 'Notification Position', 'Where toast notifications appear on screen', posGroup), 'appearance:notification-position');
 
     // Native notifications toggle
     const nativeSwitch = makeSwitch(
       pendingSettings.conch.ui.native_notifications !== false,
       (val) => { pendingSettings.conch.ui.native_notifications = val; }
     );
-    addRow(c, 'Native notifications', 'Use system notifications when the app is not focused', nativeSwitch);
+    setRowTarget(addRow(c, 'Native Notifications', 'Use system notifications when the app is not focused', nativeSwitch), 'appearance:native-notifications');
 
     addDivider(c);
 
-    // Sub-group: Window
-    addSectionLabel(c, 'Window');
+    addSectionLabel(c, 'Window Chrome');
 
     // Window Decorations dropdown
     const decoOptions = ['Full', 'Transparent', 'Buttonless', 'None'];
@@ -639,7 +1078,7 @@
     decoSelect.addEventListener('change', () => {
       pendingSettings.window.decorations = decoSelect.value;
     });
-    addRow(c, 'Window Decorations', 'Window title bar style', decoSelect);
+    setRowTarget(addRow(c, 'Window Decorations', 'Window title bar style', decoSelect), 'appearance:window-decorations');
 
     // Native Menu Bar (macOS only)
     if (navigator.platform.includes('Mac')) {
@@ -655,13 +1094,12 @@
       slider.className = 'slider';
       sw.appendChild(cb);
       sw.appendChild(slider);
-      addRow(c, 'Native Menu Bar', 'Use the system menu bar instead of in-app menu', sw);
+      setRowTarget(addRow(c, 'Native Menu Bar', 'Use the system menu bar instead of in-app menu', sw), 'appearance:native-menu-bar');
     }
 
     addDivider(c);
 
-    // Sub-group: UI Font
-    addSectionLabel(c, 'UI Font');
+    addSectionLabel(c, 'Interface Typography');
 
     // Font Family
     const fontSelect = document.createElement('select');
@@ -681,7 +1119,7 @@
     fontSelect.addEventListener('change', () => {
       pendingSettings.conch.ui.font_family = fontSelect.value;
     });
-    addRow(c, 'Font Family', null, fontSelect);
+    setRowTarget(addRow(c, 'UI Font Family', null, fontSelect), 'appearance:ui-font-family');
 
     // Font Size
     const sizeInput = document.createElement('input');
@@ -696,7 +1134,7 @@
       const v = parseFloat(sizeInput.value);
       if (!isNaN(v) && v > 0) pendingSettings.conch.ui.font_size = v;
     });
-    addRow(c, 'Font Size', null, sizeInput);
+    setRowTarget(addRow(c, 'UI Font Size', null, sizeInput), 'appearance:ui-font-size');
   }
 
   // --- Keyboard Shortcuts section ---
@@ -902,17 +1340,38 @@
     h.textContent = 'Keyboard Shortcuts';
     c.appendChild(h);
 
+    addSearchInput(c, 'Search shortcuts', keyboardSearchQuery, (value) => {
+      keyboardSearchQuery = value;
+      renderCurrentSection();
+    });
+
+    const query = normalizeSearchText(keyboardSearchQuery);
+    const matchesShortcut = (label, desc, extra) => {
+      if (!query) return true;
+      return normalizeSearchText(`${label} ${desc || ''} ${extra || ''}`).includes(query);
+    };
+    let totalRendered = 0;
+
     const knownKeys = new Set();
     for (let gi = 0; gi < KEYBOARD_CORE_GROUPS.length; gi++) {
       const group = KEYBOARD_CORE_GROUPS[gi];
-      addSectionLabel(c, group.label);
+      const rows = [];
 
       for (const key of group.keys) {
         knownKeys.add(key);
         const label = KEYBOARD_CORE_LABELS[key] || toTitleCaseWords(key);
-        addRow(c, label, null, makeShortcutKeyBox({ kind: 'core', key }));
+        if (!matchesShortcut(label, group.label, key)) continue;
+        rows.push({ label, key });
       }
 
+      if (rows.length === 0) continue;
+      addSectionLabel(c, group.label);
+      for (const row of rows) {
+        const rowEl = addRow(c, row.label, null, makeShortcutKeyBox({ kind: 'core', key: row.key }));
+        setRowTarget(rowEl, `keyboard:core:${row.key}`);
+        applyRowSearchHighlight(rowEl, row.label, null, query);
+        totalRendered++;
+      }
       addDivider(c);
     }
 
@@ -921,11 +1380,22 @@
       .filter((k) => k !== 'plugin_shortcuts' && k !== 'tool_window_shortcuts' && typeof keyboard[k] === 'string' && !knownKeys.has(k))
       .sort();
     if (extraKeys.length > 0) {
-      addSectionLabel(c, 'Other');
+      const rows = [];
       for (const key of extraKeys) {
-        addRow(c, toTitleCaseWords(key), null, makeShortcutKeyBox({ kind: 'core', key }));
+        const label = toTitleCaseWords(key);
+        if (!matchesShortcut(label, 'Other', key)) continue;
+        rows.push({ label, key });
       }
-      addDivider(c);
+      if (rows.length > 0) {
+        addSectionLabel(c, 'Other');
+        for (const row of rows) {
+          const rowEl = addRow(c, row.label, null, makeShortcutKeyBox({ kind: 'core', key: row.key }));
+          setRowTarget(rowEl, `keyboard:core:${row.key}`);
+          applyRowSearchHighlight(rowEl, row.label, null, query);
+          totalRendered++;
+        }
+        addDivider(c);
+      }
     }
 
     const toolWindowItems = window.toolWindowManager && typeof window.toolWindowManager.listWindows === 'function'
@@ -936,20 +1406,25 @@
         })
       : [];
     if (toolWindowItems.length > 0) {
-      addSectionLabel(c, 'Tool Windows');
+      const rows = [];
       for (const item of toolWindowItems) {
         const side = String(item.zone || '').replace('-', ' \u2022 ');
         const desc = item.type === 'built-in'
           ? `Built-in \u2022 ${side}`
           : `Plugin tool window \u2022 ${side}`;
-        addRow(
-          c,
-          item.title || item.id,
-          desc,
-          makeShortcutKeyBox({ kind: 'tool-window', key: item.id })
-        );
+        if (!matchesShortcut(item.title || item.id, desc, item.id)) continue;
+        rows.push({ label: item.title || item.id, desc, id: item.id });
       }
-      addDivider(c);
+      if (rows.length > 0) {
+        addSectionLabel(c, 'Tool Windows');
+        for (const row of rows) {
+          const rowEl = addRow(c, row.label, row.desc, makeShortcutKeyBox({ kind: 'tool-window', key: row.id }));
+          setRowTarget(rowEl, `keyboard:tool-window:${row.id}`);
+          applyRowSearchHighlight(rowEl, row.label, row.desc, query);
+          totalRendered++;
+        }
+        addDivider(c);
+      }
     }
 
     const byPluginAction = new Map();
@@ -965,17 +1440,33 @@
       return String(a.label || '').localeCompare(String(b.label || ''));
     });
     if (pluginItems.length > 0) {
-      addSectionLabel(c, 'Plugin Shortcuts');
+      const rows = [];
       for (const item of pluginItems) {
         const pluginKey = `${item.plugin}:${item.action}`;
         const desc = item.menu ? `${item.plugin} \u2022 ${item.menu}` : item.plugin;
-        addRow(
-          c,
-          item.label || toTitleCaseWords(item.action),
+        if (!matchesShortcut(item.label || toTitleCaseWords(item.action), desc, pluginKey)) continue;
+        rows.push({
+          label: item.label || toTitleCaseWords(item.action),
           desc,
-          makeShortcutKeyBox({ kind: 'plugin', key: pluginKey, defaultValue: item.keybind || '' })
-        );
+          key: pluginKey,
+          defaultValue: item.keybind || '',
+        });
       }
+      if (rows.length > 0) {
+        addSectionLabel(c, 'Plugin Shortcuts');
+        for (const row of rows) {
+          const rowEl = addRow(c, row.label, row.desc, makeShortcutKeyBox({ kind: 'plugin', key: row.key, defaultValue: row.defaultValue }));
+          setRowTarget(rowEl, `keyboard:plugin:${row.key}`);
+          applyRowSearchHighlight(rowEl, row.label, row.desc, query);
+          totalRendered++;
+        }
+      }
+    }
+    if (query && totalRendered === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'settings-search-empty';
+      empty.textContent = 'No shortcuts match your search.';
+      c.appendChild(empty);
     }
   }
   // --- Shared control helpers ---
@@ -1031,8 +1522,7 @@
     h.textContent = 'Terminal';
     c.appendChild(h);
 
-    // Sub-group: Font
-    addSectionLabel(c, 'Font');
+    addSectionLabel(c, 'Typography');
 
     const fontFamilySelect = document.createElement('select');
     fontFamilySelect.className = 'settings-select';
@@ -1051,32 +1541,31 @@
     fontFamilySelect.addEventListener('change', () => {
       pendingSettings.terminal.font.normal.family = fontFamilySelect.value;
     });
-    addRow(c, 'Font Family', null, fontFamilySelect);
+    setRowTarget(addRow(c, 'Terminal Font Family', null, fontFamilySelect), 'terminal:font-family');
 
     const fontSizeInput = makeInput('number', pendingSettings.terminal.font.size);
     fontSizeInput.addEventListener('input', () => {
       const v = parseFloat(fontSizeInput.value);
       if (!isNaN(v)) pendingSettings.terminal.font.size = v;
     });
-    addRow(c, 'Font Size', null, fontSizeInput);
+    setRowTarget(addRow(c, 'Terminal Font Size', null, fontSizeInput), 'terminal:font-size');
 
     const offsetXInput = makeInput('number', pendingSettings.terminal.font.offset.x, { step: '0.5' });
     offsetXInput.addEventListener('input', () => {
       const v = parseFloat(offsetXInput.value);
       if (!isNaN(v)) pendingSettings.terminal.font.offset.x = v;
     });
-    addRow(c, 'Font Offset X', null, offsetXInput);
+    setRowTarget(addRow(c, 'Font Offset X', null, offsetXInput), 'terminal:font-offset-x');
 
     const offsetYInput = makeInput('number', pendingSettings.terminal.font.offset.y, { step: '0.5' });
     offsetYInput.addEventListener('input', () => {
       const v = parseFloat(offsetYInput.value);
       if (!isNaN(v)) pendingSettings.terminal.font.offset.y = v;
     });
-    addRow(c, 'Font Offset Y', null, offsetYInput);
+    setRowTarget(addRow(c, 'Font Offset Y', null, offsetYInput), 'terminal:font-offset-y');
 
     addDivider(c);
 
-    // Sub-group: Scrolling
     addSectionLabel(c, 'Scrolling');
 
     const scrollInput = makeInput('number', pendingSettings.terminal.scroll_sensitivity, {
@@ -1086,18 +1575,17 @@
       const v = parseFloat(scrollInput.value);
       if (!isNaN(v)) pendingSettings.terminal.scroll_sensitivity = v;
     });
-    addRow(c, 'Scroll Sensitivity', '0.0 to 1.0 (tuned for macOS trackpads)', scrollInput);
+    setRowTarget(addRow(c, 'Scroll Sensitivity', '0.0 to 1.0 (tuned for macOS trackpads)', scrollInput), 'terminal:scroll-sensitivity');
   }
 
   // --- Shell section ---
 
   function renderShell(c) {
     const h = document.createElement('h3');
-    h.textContent = 'Shell';
+    h.textContent = 'Shell & Environment';
     c.appendChild(h);
 
-    // Sub-group: Program
-    addSectionLabel(c, 'Program');
+    addSectionLabel(c, 'Launch');
 
     const shellInput = makeInput('text', pendingSettings.terminal.shell.program, {
       placeholder: 'Uses $SHELL login shell',
@@ -1105,7 +1593,7 @@
     shellInput.addEventListener('input', () => {
       pendingSettings.terminal.shell.program = shellInput.value;
     });
-    addRow(c, 'Shell Program', null, shellInput);
+    setRowTarget(addRow(c, 'Shell Program', null, shellInput), 'shell:program');
 
     const argsInput = makeInput('text', (pendingSettings.terminal.shell.args || []).join(', '));
     argsInput.addEventListener('input', () => {
@@ -1114,14 +1602,14 @@
         .map(s => s.trim())
         .filter(s => s.length > 0);
     });
-    addRow(c, 'Arguments', 'Comma-separated (e.g. -l, -c, echo ok)', argsInput);
+    setRowTarget(addRow(c, 'Arguments', 'Comma-separated (e.g. -l, -c, echo ok)', argsInput), 'shell:args');
 
     addDivider(c);
 
-    // Sub-group: Environment Variables
     addSectionLabel(c, 'Environment Variables');
 
     const envContainer = document.createElement('div');
+    envContainer.dataset.settingId = 'shell:env';
     envContainer.className = 'settings-env-container';
     c.appendChild(envContainer);
 
@@ -1208,8 +1696,7 @@
     h.textContent = 'Cursor';
     c.appendChild(h);
 
-    // Sub-group: Style
-    addSectionLabel(c, 'Style');
+    addSectionLabel(c, 'Primary Cursor');
 
     const shapeToggle = makeToggleGroup(
       [
@@ -1220,20 +1707,20 @@
       pendingSettings.terminal.cursor.style.shape,
       (val) => { pendingSettings.terminal.cursor.style.shape = val; }
     );
-    addRow(c, 'Shape', null, shapeToggle);
+    setRowTarget(addRow(c, 'Cursor Shape', null, shapeToggle), 'cursor:shape');
 
     const blinkSwitch = makeSwitch(
       pendingSettings.terminal.cursor.style.blinking,
       (val) => { pendingSettings.terminal.cursor.style.blinking = val; }
     );
-    addRow(c, 'Blinking', null, blinkSwitch);
+    setRowTarget(addRow(c, 'Cursor Blinking', null, blinkSwitch), 'cursor:blinking');
 
     addDivider(c);
 
-    // Sub-group: Vi Mode Override
     addSectionLabel(c, 'Vi Mode Override');
 
     const viNote = document.createElement('div');
+    viNote.dataset.settingId = 'cursor:vi-mode';
     viNote.className = 'settings-row-desc';
     viNote.style.marginBottom = '8px';
     viNote.textContent = 'Optional cursor style when vi mode is active in your shell.';
@@ -1268,7 +1755,7 @@
         }
       }
     );
-    addRow(c, 'Shape', null, viShapeToggle);
+    setRowTarget(addRow(c, 'Vi Mode Override', null, viShapeToggle), 'cursor:vi-mode');
 
     // Vi mode blinking toggle
     const viBlinkSwitch = makeSwitch(
@@ -1291,19 +1778,20 @@
     h.textContent = 'Plugins';
     c.appendChild(h);
 
-    // Sub-group: Plugin System
     addSectionLabel(c, 'Plugin System');
 
     const enablePluginsSwitch = makeSwitch(
       pendingSettings.conch.plugins.enabled,
       (val) => { pendingSettings.conch.plugins.enabled = val; }
     );
-    addRow(c, 'Enable Plugins', 'Master switch \u2014 disable to run as pure terminal', enablePluginsSwitch);
+    setRowTarget(addRow(c, 'Enable Plugins', 'Master switch \u2014 disable to run as pure terminal', enablePluginsSwitch), 'plugins:enabled');
 
     addDivider(c);
 
-    // Sub-group: Plugin Types
     addSectionLabel(c, 'Plugin Types');
+    const pluginTypesAnchor = document.createElement('div');
+    pluginTypesAnchor.dataset.settingId = 'plugins:types';
+    c.appendChild(pluginTypesAnchor);
 
     const luaSwitch = makeSwitch(
       pendingSettings.conch.plugins.lua,
@@ -1319,9 +1807,9 @@
 
     addDivider(c);
 
-    // Sub-group: Search Paths
     addSectionLabel(c, 'Extra Search Paths');
     const searchPathsHint = document.createElement('div');
+    searchPathsHint.dataset.settingId = 'plugins:search-paths';
     searchPathsHint.className = 'settings-row-desc';
     searchPathsHint.style.marginBottom = '8px';
     searchPathsHint.textContent = 'Built-in defaults always include ~/.config/conch/plugins. Add extra directories here.';
@@ -1375,6 +1863,7 @@
 
     // Sub-group: Installed Plugins
     const installedHeader = document.createElement('div');
+    installedHeader.dataset.settingId = 'plugins:installed';
     installedHeader.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding-right:10px;';
     const installedLabel = document.createElement('div');
     installedLabel.className = 'settings-section-label';
@@ -1566,19 +2055,20 @@
     h.textContent = 'Advanced';
     c.appendChild(h);
 
-    // Updates
-    addSectionLabel(c, 'Updates');
+    addSectionLabel(c, 'Startup & Updates');
 
     const updateSwitch = makeSwitch(
       pendingSettings.conch.check_for_updates !== false,
       (val) => { pendingSettings.conch.check_for_updates = val; }
     );
-    addRow(c, 'Check for updates on startup', 'Automatically check for new versions when the app starts (macOS and Windows)', updateSwitch);
+    setRowTarget(addRow(c, 'Check for Updates', 'Automatically check for new versions when the app starts (macOS and Windows)', updateSwitch), 'advanced:check-for-updates');
 
     addDivider(c);
 
-    // Sub-group: Initial Window Size
-    addSectionLabel(c, 'Initial Window Size');
+    addSectionLabel(c, 'Window Defaults');
+    const windowDefaultsAnchor = document.createElement('div');
+    windowDefaultsAnchor.dataset.settingId = 'advanced:window-size';
+    c.appendChild(windowDefaultsAnchor);
 
     const colsInput = makeInput('number', pendingSettings.window.dimensions.columns);
     colsInput.addEventListener('input', () => {
@@ -1596,8 +2086,10 @@
 
     addDivider(c);
 
-    // Sub-group: UI Chrome Font Sizes
-    addSectionLabel(c, 'UI Chrome Font Sizes');
+    addSectionLabel(c, 'Interface Density');
+    const densityAnchor = document.createElement('div');
+    densityAnchor.dataset.settingId = 'advanced:ui-chrome-font-sizes';
+    c.appendChild(densityAnchor);
 
     const fontNote = document.createElement('div');
     fontNote.className = 'settings-row-desc';
