@@ -146,6 +146,10 @@
     refreshAll();
   }
 
+  function hasPanelDom() {
+    return !!(panelEl && serverListEl && sessionListEl && tunnelsSectionEl);
+  }
+
   // ---------------------------------------------------------------------------
   // Panel visibility
   // ---------------------------------------------------------------------------
@@ -177,6 +181,7 @@
   function focusQuickConnect() {
     panelWasHiddenBeforeQuickConnect = isHidden();
     if (isHidden()) showPanel();
+    if (!quickConnectEl) return;
     quickConnectEl.focus();
     quickConnectEl.select();
   }
@@ -293,6 +298,7 @@
       console.error('Failed to load servers:', e);
       serverData = { folders: [], ungrouped: [], ssh_config: [] };
     }
+    if (!hasPanelDom()) return;
     renderServerList();
     await refreshSessions();
     await refreshTunnels();
@@ -526,6 +532,7 @@
   // ---------------------------------------------------------------------------
 
   function renderServerList() {
+    if (!serverListEl) return;
     const frag = document.createDocumentFragment();
 
     if (searchQuery) {
@@ -646,6 +653,7 @@
   }
 
   function renderSessions(sessions) {
+    if (!sessionListEl) return;
     sessionListEl.innerHTML = '';
     if (!sessions || sessions.length === 0) return;
 
@@ -679,6 +687,7 @@
   }
 
   function renderTunnels(tunnels) {
+    if (!tunnelsSectionEl) return;
     tunnelsSectionEl.innerHTML = '';
     if (tunnels.length === 0 && !tunnelsSectionEl.dataset.showEmpty) return;
 

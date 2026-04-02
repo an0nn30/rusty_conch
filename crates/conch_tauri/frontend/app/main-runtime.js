@@ -49,28 +49,26 @@
       const currentWindowLabel = await invoke('current_window_label');
 
       const FONT_FALLBACKS = ', "Symbols Nerd Font Mono", "Symbols Nerd Font", "Menlo", "DejaVu Sans Mono", "Consolas", "Liberation Mono", monospace';
-      const termConfig = startupRuntime && startupRuntime.loadTerminalConfig
-        ? await startupRuntime.loadTerminalConfig(invoke, FONT_FALLBACKS)
-        : {
-            fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code"' + FONT_FALLBACKS,
-            fontSize: 14,
-            cursorStyle: 'block',
-            cursorBlink: true,
-            scrollSensitivity: 1,
-          };
-      let termFontFamily = termConfig.fontFamily;
-      let termFontSize = termConfig.fontSize;
-      let termCursorStyle = termConfig.cursorStyle;
-      let termCursorBlink = termConfig.cursorBlink;
-      let termScrollSensitivity = termConfig.scrollSensitivity;
-
-      theme = startupRuntime && startupRuntime.loadTheme
-        ? await startupRuntime.loadTheme(invoke, fallbackTheme)
-        : fallbackTheme;
-
-      if (startupRuntime && startupRuntime.applyAppConfig) {
-        await startupRuntime.applyAppConfig(invoke);
-      }
+      let termFontFamily = '"JetBrains Mono", "Fira Code", "Cascadia Code"' + FONT_FALLBACKS;
+      let termFontSize = 14;
+      let termCursorStyle = 'block';
+      let termCursorBlink = true;
+      let termScrollSensitivity = 1;
+      const startupTermConfigPromise = startupRuntime && startupRuntime.loadTerminalConfig
+        ? startupRuntime.loadTerminalConfig(invoke, FONT_FALLBACKS)
+        : Promise.resolve({
+            fontFamily: termFontFamily,
+            fontSize: termFontSize,
+            cursorStyle: termCursorStyle,
+            cursorBlink: termCursorBlink,
+            scrollSensitivity: termScrollSensitivity,
+          });
+      const startupThemePromise = startupRuntime && startupRuntime.loadTheme
+        ? startupRuntime.loadTheme(invoke, fallbackTheme)
+        : Promise.resolve(fallbackTheme);
+      const startupAppConfigPromise = startupRuntime && startupRuntime.applyAppConfig
+        ? startupRuntime.applyAppConfig(invoke)
+        : Promise.resolve({ borderlessMode: false });
 
       // Track webview zoom level for menu-driven zoom in/out.
       let currentZoom = 1.0;
@@ -234,39 +232,6 @@
       const rebuildTreeDOM = (tab) => bridgeRuntime && bridgeRuntime.rebuildTreeDOM ? bridgeRuntime.rebuildTreeDOM(tab) : undefined;
 
       let debouncedSaveLayout = () => {};
-      if (window.conchOrchestrationRuntime && window.conchOrchestrationRuntime.create) {
-        const orchestrationRuntime = window.conchOrchestrationRuntime.create({
-          invoke,
-          listenOnCurrentWindow,
-          terminalHostEl,
-          currentWindow,
-          tabs,
-          panes,
-          getActiveTabId: () => activeTabId,
-          allocPaneId: () => nextPaneId++,
-          currentPane: () => currentPane(),
-          currentTab: () => currentTab(),
-          setFocusedPane: (paneId) => setFocusedPane(paneId),
-          closePane: (paneId) => closePane(paneId),
-          createSshTab: (opts) => createSshTab(opts),
-          splitPane: (direction) => splitPane(direction),
-          getPaneManager: () => paneManager,
-          isDebugEnabled: () => shortcutDebugEnabled,
-          debugLog: (...args) => console.log(...args),
-          debouncedFitAndResize: () => {
-            if (layoutRuntime && layoutRuntime.debouncedFitAndResize) return layoutRuntime.debouncedFitAndResize();
-            return debouncedFitAndResize();
-          },
-          rebuildTreeDOM: (tab) => rebuildTreeDOM(tab),
-        });
-        const orchestrationResult = await orchestrationRuntime.init();
-        if (orchestrationResult) {
-          if (typeof orchestrationResult.debouncedSaveLayout === 'function') {
-            debouncedSaveLayout = orchestrationResult.debouncedSaveLayout;
-          }
-          paneDnd = orchestrationResult.paneDnd || null;
-        }
-      }
 
       const isTextInputTarget = (el) => bridgeRuntime && bridgeRuntime.isTextInputTarget ? bridgeRuntime.isTextInputTarget(el) : inputRuntime.isTextInputTarget(el);
       const writeTextToCurrentPane = (text) => bridgeRuntime && bridgeRuntime.writeTextToCurrentPane ? bridgeRuntime.writeTextToCurrentPane(text) : false;
@@ -345,19 +310,90 @@
         }
       }
 
-      // Preload the bundled Nerd Font so the canvas renderer can use it for
-      // glyph fallback.  CSS @font-face is lazy — without this the browser
-      // never downloads the font because no DOM text references it.
-      try {
-        await document.fonts.load(termFontSize + 'px "Symbols Nerd Font Mono"');
-      } catch (_) { /* font may already be loaded or missing — not fatal */ }
-
-      try {
-        await createTab();
-      } catch (e) {
+      const firstTabPromise = createTab().catch((e) => {
         showStatus('Failed to initialize first tab: ' + String(e));
+      });
+      try {
+        await invoke('app_ready');
+      } catch (e) {
+        showStatus('Failed to show window: ' + String(e));
       }
 
-      // All UI ready — show the window.
-      await invoke('app_ready');
+      await firstTabPromise;
+
+      startupTermConfigPromise.then((termConfig) => {
+        if (!termConfig) return;
+        termFontFamily = termConfig.fontFamily;
+        termFontSize = termConfig.fontSize;
+        termCursorStyle = termConfig.cursorStyle;
+        termCursorBlink = termConfig.cursorBlink;
+        termScrollSensitivity = termConfig.scrollSensitivity;
+        for (const pane of panes.values()) {
+          if (pane.kind !== 'terminal' || !pane.term) continue;
+          pane.term.options.fontFamily = termFontFamily;
+          pane.term.options.fontSize = termFontSize;
+          pane.term.options.cursorStyle = termCursorStyle;
+          pane.term.options.cursorBlink = termCursorBlink;
+          if (pane.fitAddon) pane.fitAddon.fit();
+        }
+      }).catch(() => {});
+
+      startupThemePromise.then((resolvedTheme) => {
+        if (!resolvedTheme) return;
+        theme = resolvedTheme;
+        for (const pane of panes.values()) {
+          if (pane.kind === 'terminal' && pane.term) {
+            pane.term.options.theme = resolvedTheme;
+          }
+        }
+      }).catch(() => {});
+
+      startupAppConfigPromise.catch(() => {});
+
+      // Finish non-critical UI work after the terminal is visible.
+      setTimeout(async () => {
+        if (window.conchOrchestrationRuntime && window.conchOrchestrationRuntime.create) {
+          const orchestrationRuntime = window.conchOrchestrationRuntime.create({
+            invoke,
+            listenOnCurrentWindow,
+            terminalHostEl,
+            currentWindow,
+            tabs,
+            panes,
+            getActiveTabId: () => activeTabId,
+            allocPaneId: () => nextPaneId++,
+            currentPane: () => currentPane(),
+            currentTab: () => currentTab(),
+            setFocusedPane: (paneId) => setFocusedPane(paneId),
+            closePane: (paneId) => closePane(paneId),
+            createSshTab: (opts) => createSshTab(opts),
+            splitPane: (direction) => splitPane(direction),
+            getPaneManager: () => paneManager,
+            isDebugEnabled: () => shortcutDebugEnabled,
+            debugLog: (...args) => console.log(...args),
+            debouncedFitAndResize: () => {
+              if (layoutRuntime && layoutRuntime.debouncedFitAndResize) return layoutRuntime.debouncedFitAndResize();
+              return debouncedFitAndResize();
+            },
+            rebuildTreeDOM: (tab) => rebuildTreeDOM(tab),
+          });
+          try {
+            const orchestrationResult = await orchestrationRuntime.init();
+            if (orchestrationResult) {
+              if (typeof orchestrationResult.debouncedSaveLayout === 'function') {
+                debouncedSaveLayout = orchestrationResult.debouncedSaveLayout;
+              }
+              paneDnd = orchestrationResult.paneDnd || null;
+            }
+          } catch (error) {
+            console.warn('Deferred orchestration init failed:', error);
+          }
+        }
+
+        // Preload the bundled Nerd Font in the background so later glyph
+        // fallback is ready without delaying first paint.
+        try {
+          await document.fonts.load(termFontSize + 'px "Symbols Nerd Font Mono"');
+        } catch (_) { /* not fatal */ }
+      }, 0);
     });

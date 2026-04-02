@@ -85,6 +85,14 @@
     }
   }
 
+  function hasPanelDom() {
+    return !!panelEl;
+  }
+
+  function getPaneRoot(selector) {
+    return panelEl ? panelEl.querySelector(selector) : null;
+  }
+
   // ---------------------------------------------------------------------------
   // Panel visibility & resize (mirrors ssh-panel pattern)
   // ---------------------------------------------------------------------------
@@ -168,13 +176,14 @@
   // ---------------------------------------------------------------------------
 
   async function onTabChanged(tab) {
+    if (!hasPanelDom()) return;
     if (!tab || tab.type !== 'ssh' || !tab.spawned) {
       activeRemotePaneId = null;
       remotePane.entries = [];
       remotePane.currentPath = '';
       remotePane.error = null;
       remotePane.loading = false;
-      renderPane(remotePane, panelEl.querySelector('#fp-remote'));
+      renderPane(remotePane, getPaneRoot('#fp-remote'));
       return;
     }
     // Accept either a pane object (with .paneId) or a tab object (with .id).
@@ -191,7 +200,7 @@
       await loadEntries(remotePane);
     } catch (e) {
       remotePane.error = String(e);
-      renderPane(remotePane, panelEl.querySelector('#fp-remote'));
+      renderPane(remotePane, getPaneRoot('#fp-remote'));
     }
   }
 
@@ -200,9 +209,10 @@
   // ---------------------------------------------------------------------------
 
   async function loadEntries(pane) {
+    if (!hasPanelDom()) return;
     pane.error = null;
     pane.loading = true;
-    const el = panelEl.querySelector(`#fp-${pane.prefix}`);
+    const el = getPaneRoot(`#fp-${pane.prefix}`);
     renderPane(pane, el);
 
     try {
