@@ -76,8 +76,8 @@
         if (!tab) return;
         return requireTabManager('startTabRename')(tab.id);
       },
-      createTab() {
-        return requireTabManager('createTab')();
+      createTab(options) {
+        return requireTabManager('createTab')(options);
       },
       createSshTab(opts) {
         return requireTabManager('createSshTab')(opts);

@@ -4,6 +4,7 @@
     const getCurrentPane = deps.getCurrentPane;
     const isTextInputTarget = deps.isTextInputTarget;
     const createTab = deps.createTab;
+    const createPlainShellTab = deps.createPlainShellTab;
     const showStatus = deps.showStatus;
     const openCommandPalette = deps.openCommandPalette;
     const closeCommandPalette = deps.closeCommandPalette;
@@ -56,6 +57,10 @@
       }
       if (action === 'new-tab') {
         createTab().catch((error) => showStatus('Failed to create tab: ' + String(error)));
+        return;
+      }
+      if (action === 'new-plain-shell-tab') {
+        createPlainShellTab().catch((error) => showStatus('Failed to create plain shell tab: ' + String(error)));
         return;
       }
       if (action === 'new-window') {

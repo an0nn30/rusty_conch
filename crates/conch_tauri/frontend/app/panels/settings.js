@@ -1255,6 +1255,7 @@
 
   const KEYBOARD_CORE_LABELS = {
     new_tab: 'New Tab',
+    new_plain_shell_tab: 'New Plain Shell Tab',
     close_tab: 'Close Tab',
     rename_tab: 'Rename Tab',
     new_window: 'New Window',
@@ -1276,7 +1277,7 @@
   const KEYBOARD_CORE_GROUPS = [
     {
       label: 'Tab & Window',
-      keys: ['new_tab', 'close_tab', 'rename_tab', 'new_window', 'quit'],
+      keys: ['new_tab', 'new_plain_shell_tab', 'close_tab', 'rename_tab', 'new_window', 'quit'],
     },
     {
       label: 'Tools',

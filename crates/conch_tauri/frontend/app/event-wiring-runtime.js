@@ -101,6 +101,7 @@
             getCurrentPane: () => getCurrentPane(),
             isTextInputTarget: (el) => isTextInputTarget(el),
             createTab: () => createTab(),
+            createPlainShellTab: () => createTab({ plainShell: true }),
             showStatus: (message) => showStatus(message),
             pasteIntoCurrentPane: () => pasteIntoCurrentPane(),
             openCommandPalette: () => openCommandPalette(),

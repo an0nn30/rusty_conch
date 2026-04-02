@@ -49,33 +49,19 @@ fn resolved_shell(shell: &conch_core::config::TerminalShell) -> (Option<&str>, &
     }
 }
 
-fn debug_bytes_hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-// ---------------------------------------------------------------------------
-// Tauri commands
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub(crate) fn spawn_shell(
-    window: tauri::WebviewWindow,
+fn spawn_shell_for_pane(
+    window_label: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, TauriState>,
     pane_id: u32,
     cols: u16,
     rows: u16,
+    shell: Option<String>,
+    shell_args: Vec<String>,
 ) -> Result<(), String> {
-    let window_label = window.label().to_string();
     let key = session_key(&window_label, pane_id);
     let cfg = state.config.read();
-    let (shell, shell_args) = resolved_shell(&cfg.terminal.shell);
-
-    let backend = PtyBackend::new(cols, rows, shell, shell_args, &cfg.terminal.env)
+    let backend = PtyBackend::new(cols, rows, shell.as_deref(), &shell_args, &cfg.terminal.env)
         .map_err(|e| format!("Failed to spawn PTY: {e}"))?;
     drop(cfg);
 
@@ -102,6 +88,58 @@ pub(crate) fn spawn_shell(
         .map_err(|e| format!("Failed to spawn PTY reader thread: {e}"))?;
 
     Ok(())
+}
+
+fn debug_bytes_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub(crate) fn spawn_shell(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, TauriState>,
+    pane_id: u32,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let window_label = window.label().to_string();
+    let cfg = state.config.read();
+    let (shell, shell_args) = resolved_shell(&cfg.terminal.shell);
+    let shell_owned = shell.map(|value| value.to_string());
+    let shell_args_owned = shell_args.to_vec();
+    drop(cfg);
+    spawn_shell_for_pane(
+        window_label,
+        app,
+        state,
+        pane_id,
+        cols,
+        rows,
+        shell_owned,
+        shell_args_owned,
+    )
+}
+
+#[tauri::command]
+pub(crate) fn spawn_default_shell(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, TauriState>,
+    pane_id: u32,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let window_label = window.label().to_string();
+    spawn_shell_for_pane(window_label, app, state, pane_id, cols, rows, None, Vec::new())
 }
 
 #[tauri::command]

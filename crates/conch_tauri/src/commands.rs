@@ -127,6 +127,7 @@ pub(crate) fn get_terminal_config(state: tauri::State<'_, TauriState>) -> Termin
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub(crate) struct KeyboardShortcuts {
+    new_plain_shell_tab: String,
     toggle_right_panel: String,
     toggle_left_panel: String,
     toggle_bottom_panel: String,
@@ -142,6 +143,7 @@ pub(crate) fn get_keyboard_shortcuts(state: tauri::State<'_, TauriState>) -> Key
     let cfg = state.config.read();
     let kb = &cfg.conch.keyboard;
     KeyboardShortcuts {
+        new_plain_shell_tab: kb.new_plain_shell_tab.clone(),
         toggle_right_panel: kb.toggle_right_panel.clone(),
         toggle_left_panel: kb.toggle_left_panel.clone(),
         toggle_bottom_panel: kb.toggle_bottom_panel.clone(),

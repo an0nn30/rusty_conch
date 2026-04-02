@@ -83,6 +83,7 @@ impl PluginsConfig {
 #[serde(default)]
 pub struct KeyboardConfig {
     pub new_tab: String,
+    pub new_plain_shell_tab: String,
     pub close_tab: String,
     pub quit: String,
     pub new_window: String,
@@ -108,10 +109,11 @@ impl Default for KeyboardConfig {
     fn default() -> Self {
         Self {
             new_tab: "cmd+t".into(),
+            new_plain_shell_tab: "cmd+shift+t".into(),
             close_tab: "cmd+w".into(),
             quit: "cmd+q".into(),
             new_window: "cmd+shift+n".into(),
-            manage_tunnels: "cmd+shift+t".into(),
+            manage_tunnels: "cmd+shift+m".into(),
             zen_mode: "cmd+shift+z".into(),
             toggle_left_panel: "cmd+shift+e".into(),
             toggle_right_panel: "cmd+shift+r".into(),
@@ -261,7 +263,13 @@ mod tests {
     #[test]
     fn keyboard_config_includes_manage_tunnels_default() {
         let cfg = KeyboardConfig::default();
-        assert_eq!(cfg.manage_tunnels, "cmd+shift+t");
+        assert_eq!(cfg.manage_tunnels, "cmd+shift+m");
+    }
+
+    #[test]
+    fn keyboard_config_includes_new_plain_shell_tab_default() {
+        let cfg = KeyboardConfig::default();
+        assert_eq!(cfg.new_plain_shell_tab, "cmd+shift+t");
     }
 
     #[test]

@@ -6,6 +6,7 @@
 export const COMMANDS = {
   // PTY
   SPAWN_SHELL: 'spawn_shell',
+  SPAWN_DEFAULT_SHELL: 'spawn_default_shell',
   WRITE_TO_PTY: 'write_to_pty',
   RESIZE_PTY: 'resize_pty',
   CLOSE_PTY: 'close_pty',

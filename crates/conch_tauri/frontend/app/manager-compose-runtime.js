@@ -79,6 +79,7 @@
             });
           },
           spawnShell: (paneId, cols, rows) => invoke('spawn_shell', { paneId, cols, rows }),
+          spawnDefaultShell: (paneId, cols, rows) => invoke('spawn_default_shell', { paneId, cols, rows }),
           allocatePaneId: () => allocPaneId(),
           splitLeaf: (treeRoot, sourcePaneId, newPaneId, direction) => (
             global.splitTree.splitLeaf(treeRoot, sourcePaneId, newPaneId, direction)
@@ -172,6 +173,7 @@
             });
           },
           spawnShell: (paneId, cols, rows) => invoke('spawn_shell', { paneId, cols, rows }),
+          spawnDefaultShell: (paneId, cols, rows) => invoke('spawn_default_shell', { paneId, cols, rows }),
           onSshData: (_pane, paneId, data) => {
             if (shortcutDebugEnabled) {
               console.log(

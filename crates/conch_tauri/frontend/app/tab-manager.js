@@ -30,6 +30,7 @@
     const normalizeTabTitle = deps.normalizeTabTitle;
     const onTerminalData = deps.onTerminalData;
     const spawnShell = deps.spawnShell;
+    const spawnDefaultShell = deps.spawnDefaultShell;
     const onSshData = deps.onSshData;
     const connectSsh = deps.connectSsh;
     const ensureVaultUnlocked = deps.ensureVaultUnlocked;
@@ -228,7 +229,7 @@
       }
     }
 
-    async function createTab() {
+    async function createTab(options = {}) {
       const tabs = getTabs();
       const panes = getPanes();
       const tabId = allocateTabId();
@@ -314,7 +315,11 @@
       const rows = dims ? dims.rows : 24;
 
       try {
-        await spawnShell(paneId, cols, rows);
+        if (options && options.plainShell) {
+          await spawnDefaultShell(paneId, cols, rows);
+        } else {
+          await spawnShell(paneId, cols, rows);
+        }
         pane.spawned = true;
         fitAndResizePane(pane);
       } catch (error) {

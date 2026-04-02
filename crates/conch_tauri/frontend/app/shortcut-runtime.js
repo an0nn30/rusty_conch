@@ -26,6 +26,7 @@
 
     const coreShortcutActionByKey = {
       new_tab: 'new-tab',
+      new_plain_shell_tab: 'new-plain-shell-tab',
       close_tab: 'close-tab',
       rename_tab: 'rename-tab',
       new_window: 'new-window',

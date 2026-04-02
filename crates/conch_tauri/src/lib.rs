@@ -267,6 +267,9 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             menu::MENU_NEW_TAB_ID => {
                 menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_NEW_TAB)
             }
+            menu::MENU_NEW_PLAIN_SHELL_TAB_ID => {
+                menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_NEW_PLAIN_SHELL_TAB)
+            }
             menu::MENU_CLOSE_TAB_ID => {
                 menu::emit_menu_action_to_focused_window(app, menu::MENU_ACTION_CLOSE_TAB)
             }
@@ -456,6 +459,7 @@ pub fn run(config: UserConfig) -> anyhow::Result<()> {
             commands::set_zoom_level,
             commands::get_zoom_level,
             pty::spawn_shell,
+            pty::spawn_default_shell,
             pty::write_to_pty,
             pty::resize_pty,
             pty::close_pty,

@@ -14,6 +14,7 @@ use crate::plugins;
 // ---------------------------------------------------------------------------
 
 pub(crate) const MENU_NEW_TAB_ID: &str = "file.new_tab";
+pub(crate) const MENU_NEW_PLAIN_SHELL_TAB_ID: &str = "file.new_plain_shell_tab";
 pub(crate) const MENU_CLOSE_TAB_ID: &str = "file.close_tab";
 pub(crate) const MENU_NEW_WINDOW_ID: &str = "file.new_window";
 pub(crate) const MENU_TOGGLE_LEFT_PANEL_ID: &str = "view.toggle_left_panel";
@@ -45,6 +46,7 @@ pub(crate) const MENU_RENAME_TAB_ID: &str = "file.rename_tab";
 
 pub(crate) const MENU_ACTION_EVENT: &str = "menu-action";
 pub(crate) const MENU_ACTION_NEW_TAB: &str = "new-tab";
+pub(crate) const MENU_ACTION_NEW_PLAIN_SHELL_TAB: &str = "new-plain-shell-tab";
 pub(crate) const MENU_ACTION_CLOSE_TAB: &str = "close-tab";
 pub(crate) const MENU_ACTION_TOGGLE_LEFT_PANEL: &str = "toggle-left-panel";
 pub(crate) const MENU_ACTION_TOGGLE_RIGHT_PANEL: &str = "toggle-right-panel";
@@ -121,12 +123,20 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
     keyboard: &conch_core::config::KeyboardConfig,
 ) -> tauri::Result<Menu<R>> {
     let new_tab_accel = primary_accelerator("T");
+    let new_plain_shell_tab_accel = config_key_to_accelerator(&keyboard.new_plain_shell_tab);
     let new_tab = MenuItem::with_id(
         app,
         MENU_NEW_TAB_ID,
         "New Tab",
         true,
         Some(&new_tab_accel),
+    )?;
+    let new_plain_shell_tab = MenuItem::with_id(
+        app,
+        MENU_NEW_PLAIN_SHELL_TAB_ID,
+        "New Plain Shell Tab",
+        true,
+        Some(&new_plain_shell_tab_accel),
     )?;
     let close_tab = MenuItem::with_id(
         app,
@@ -176,6 +186,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
         true,
         &[
             &new_tab,
+            &new_plain_shell_tab,
             &new_window,
             &separator,
             &ssh_manager_menu,
@@ -613,6 +624,14 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
             true,
             Some(&primary_accelerator("T")),
         )?;
+        let new_plain_shell_tab_accel = config_key_to_accelerator(&keyboard.new_plain_shell_tab);
+        let new_plain_shell_tab = MenuItem::with_id(
+            app,
+            MENU_NEW_PLAIN_SHELL_TAB_ID,
+            "New Plain Shell Tab",
+            true,
+            Some(&new_plain_shell_tab_accel),
+        )?;
         let close_tab = MenuItem::with_id(
             app,
             MENU_CLOSE_TAB_ID,
@@ -655,6 +674,7 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
             true,
             &[
                 &new_tab,
+                &new_plain_shell_tab,
                 &new_window,
                 &separator,
                 &ssh_manager_menu,
