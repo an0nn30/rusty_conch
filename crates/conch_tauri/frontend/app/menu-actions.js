@@ -67,18 +67,23 @@
         return;
       }
       if (action === 'toggle-left-panel' && global.toolWindowManager) {
-        global.toolWindowManager.toggle('file-explorer');
+        global.toolWindowManager.togglePanel('left');
         debouncedSaveLayout();
         return;
       }
       if (action === 'toggle-right-panel' && global.toolWindowManager) {
-        global.toolWindowManager.toggle('ssh-sessions');
+        global.toolWindowManager.togglePanel('right');
         debouncedSaveLayout();
         return;
       }
       if (action === 'focus-sessions' && global.sshPanel) {
-        if (global.toolWindowManager && !global.toolWindowManager.isVisible('ssh-sessions')) {
-          global.toolWindowManager.activate('ssh-sessions');
+        if (global.toolWindowManager) {
+          if (!global.toolWindowManager.isPanelVisible('right')) {
+            global.toolWindowManager.setPanelVisibility('right', true);
+          }
+          if (!global.toolWindowManager.isVisible('ssh-sessions')) {
+            global.toolWindowManager.activate('ssh-sessions');
+          }
         }
         global.sshPanel.focusQuickConnect();
         return;
@@ -122,16 +127,31 @@
         return;
       }
       if (action === 'zen-mode') {
-        const filesHidden = global.filesPanel && global.filesPanel.isHidden();
-        const sshHidden = global.sshPanel && global.sshPanel.isHidden();
+        const filesHidden = global.toolWindowManager
+          ? !global.toolWindowManager.isPanelVisible('left')
+          : (global.filesPanel && global.filesPanel.isHidden());
+        const sshHidden = global.toolWindowManager
+          ? !global.toolWindowManager.isPanelVisible('right')
+          : (global.sshPanel && global.sshPanel.isHidden());
         const allHidden = filesHidden && sshHidden;
         if (allHidden) {
-          if (global.filesPanel) global.filesPanel.togglePanel();
-          if (global.sshPanel) global.sshPanel.togglePanel();
+          if (global.toolWindowManager) {
+            global.toolWindowManager.setPanelVisibility('left', true);
+            global.toolWindowManager.setPanelVisibility('right', true);
+          } else {
+            if (global.filesPanel) global.filesPanel.togglePanel();
+            if (global.sshPanel) global.sshPanel.togglePanel();
+          }
         } else {
-          if (global.filesPanel && !global.filesPanel.isHidden()) global.filesPanel.togglePanel();
-          if (global.sshPanel && !global.sshPanel.isHidden()) global.sshPanel.togglePanel();
+          if (global.toolWindowManager) {
+            if (global.toolWindowManager.isPanelVisible('left')) global.toolWindowManager.setPanelVisibility('left', false);
+            if (global.toolWindowManager.isPanelVisible('right')) global.toolWindowManager.setPanelVisibility('right', false);
+          } else {
+            if (global.filesPanel && !global.filesPanel.isHidden()) global.filesPanel.togglePanel();
+            if (global.sshPanel && !global.sshPanel.isHidden()) global.sshPanel.togglePanel();
+          }
         }
+        debouncedSaveLayout();
         return;
       }
       if (action === 'zoom-in') {

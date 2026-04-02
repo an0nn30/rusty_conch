@@ -19,6 +19,10 @@
     left:  { wrapEl: null, panelEl: null, resizeEl: null, dividerEl: null },
     right: { wrapEl: null, panelEl: null, resizeEl: null, dividerEl: null },
   };
+  const panelState = {
+    left: { visible: true },
+    right: { visible: true },
+  };
 
   const strips = { left: null, right: null };
   const DRAGGABLE_ZONES = ['left-top', 'left-bottom', 'right-top', 'right-bottom'];
@@ -39,6 +43,7 @@
     active: null,
     overlayEl: null,
     labelEl: null,
+    previewEl: null,
     zoneEls: new Map(),
   };
 
@@ -149,6 +154,10 @@
 
     zone.activeId = id;
     tw.active = true;
+    const side = sideForZone(tw.zone);
+    if (side === 'left' || side === 'right') {
+      panelState[side].visible = true;
+    }
 
     // Lazily create content container
     if (!tw.el) {
@@ -165,7 +174,7 @@
     tw.el.style.display = '';
 
     updateZone(tw.zone);
-    updateSidebar(sideForZone(tw.zone));
+    updateSidebar(side);
     updateStrips();
     if (fitActiveTabFn) fitActiveTabFn();
     triggerSave();
@@ -191,6 +200,11 @@
   function toggle(id) {
     const tw = toolWindows.get(id);
     if (!tw) return;
+    const side = sideForZone(tw.zone);
+    if (tw.active && (side === 'left' || side === 'right') && !isPanelVisible(side)) {
+      setPanelVisibility(side, true);
+      return;
+    }
     if (tw.active) deactivate(id); else activate(id);
   }
 
@@ -232,6 +246,10 @@
     newZone.activeId = id;
     tw.active = true;
     if (tw.el) tw.el.style.display = '';
+    const targetSide = sideForZone(targetZone);
+    if (targetSide === 'left' || targetSide === 'right') {
+      panelState[targetSide].visible = true;
+    }
 
     updateZone(oldZoneName);
     updateZone(targetZone);
@@ -299,8 +317,9 @@
     const botZone = zones[side + '-bottom'];
     const topActive = topZone.activeId !== null;
     const botActive = botZone.activeId !== null;
+    const panelVisible = panelState[side] ? panelState[side].visible : true;
 
-    if (!topActive && !botActive) {
+    if (!panelVisible || (!topActive && !botActive)) {
       sb.wrapEl.classList.add('hidden');
     } else {
       sb.wrapEl.classList.remove('hidden');
@@ -359,18 +378,23 @@
     label.className = 'twm-dnd-label';
     overlay.appendChild(label);
 
+    const preview = document.createElement('div');
+    preview.className = 'twm-drag-preview';
+    overlay.appendChild(preview);
+
     document.body.appendChild(overlay);
     stripDrag.overlayEl = overlay;
     stripDrag.labelEl = label;
+    stripDrag.previewEl = preview;
   }
 
   function getStripDropZoneRects() {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const pad = clamp(Math.round(vw * 0.018), 12, 28);
-    const zoneW = clamp(Math.round(vw * 0.16), 120, 240);
-    const zoneH = clamp(Math.round(vh * 0.24), 92, 220);
-    const gap = 10;
+    const zoneW = clamp(Math.round(vw * 0.21), 180, 320);
+    const zoneH = clamp(Math.round(vh * 0.3), 128, 280);
+    const gap = 14;
     const centerY = Math.round(vh / 2);
     const topY = clamp(centerY - zoneH - Math.round(gap / 2), pad, vh - zoneH - pad);
     const bottomY = clamp(centerY + Math.round(gap / 2), pad, vh - zoneH - pad);
@@ -390,6 +414,70 @@
     stripDrag.overlayEl.style.display = visible ? 'block' : 'none';
   }
 
+  function layoutStripDragPreview(x, y) {
+    const preview = stripDrag.previewEl;
+    const drag = stripDrag.active;
+    if (!preview || !drag) return;
+    if (preview.style.display !== 'block') preview.style.display = 'block';
+    const width = Math.max(110, drag.previewWidth || 110);
+    const height = 28;
+    preview.style.left = Math.round(x + 16) + 'px';
+    preview.style.top = Math.round(y - height / 2) + 'px';
+    preview.style.width = width + 'px';
+    preview.style.height = height + 'px';
+  }
+
+  function hideStripDragPreview() {
+    const preview = stripDrag.previewEl;
+    if (!preview) return;
+    preview.classList.remove('drop-animating');
+    preview.style.display = 'none';
+    preview.style.opacity = '';
+    preview.style.left = '';
+    preview.style.top = '';
+    preview.style.width = '';
+    preview.style.height = '';
+    preview.textContent = '';
+  }
+
+  function getDropAnimationRect(targetZone) {
+    const zone = zones[targetZone];
+    if (zone && zone.el) {
+      const rect = zone.el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        const insetX = Math.max(10, Math.round(rect.width * 0.05));
+        const insetY = Math.max(8, Math.round(rect.height * 0.06));
+        return {
+          left: rect.left + insetX,
+          top: rect.top + insetY,
+          width: Math.max(72, rect.width - insetX * 2),
+          height: Math.max(48, rect.height - insetY * 2),
+        };
+      }
+    }
+    return getStripDropZoneRects()[targetZone] || null;
+  }
+
+  function animateStripDrop(targetZone, done) {
+    const preview = stripDrag.previewEl;
+    const targetRect = getDropAnimationRect(targetZone);
+    if (!preview || !targetRect || preview.style.display !== 'block') {
+      hideStripDragPreview();
+      done();
+      return;
+    }
+    preview.classList.add('drop-animating');
+    preview.style.left = Math.round(targetRect.left) + 'px';
+    preview.style.top = Math.round(targetRect.top) + 'px';
+    preview.style.width = Math.round(targetRect.width) + 'px';
+    preview.style.height = Math.round(targetRect.height) + 'px';
+    preview.style.opacity = '0.22';
+    window.setTimeout(() => {
+      hideStripDragPreview();
+      done();
+    }, 190);
+  }
+
   function layoutStripDragOverlay(activeZone) {
     ensureStripDragOverlay();
     const rects = getStripDropZoneRects();
@@ -406,7 +494,7 @@
     }
     const label = stripDrag.labelEl;
     if (!label) return;
-    const labelText = activeZone ? `Move to ${ZONE_LABELS[activeZone]}` : 'Drag to a docking zone';
+    const labelText = activeZone ? `Drop into ${ZONE_LABELS[activeZone]}` : 'Drag to dock this tool window';
     label.textContent = labelText;
   }
 
@@ -445,10 +533,15 @@
     document.body.style.userSelect = '';
     document.body.style.cursor = '';
     if (drag.buttonEl) drag.buttonEl.classList.remove('twm-strip-dragging');
-    setStripDragOverlayVisible(false);
     if (commit && drag.dragging && drag.targetZone && drag.targetZone !== drag.sourceZone) {
       if (drag.buttonEl) drag.buttonEl.dataset.suppressClick = '1';
-      moveTo(drag.windowId, drag.targetZone);
+      animateStripDrop(drag.targetZone, () => {
+        moveTo(drag.windowId, drag.targetZone);
+        setStripDragOverlayVisible(false);
+      });
+    } else {
+      hideStripDragPreview();
+      setStripDragOverlayVisible(false);
     }
     stripDrag.active = null;
   }
@@ -466,6 +559,7 @@
       setStripDragOverlayVisible(true);
     }
     if (!drag.dragging) return;
+    layoutStripDragPreview(e.clientX, e.clientY);
     drag.targetZone = hitStripDropZone(e.clientX, e.clientY, drag.sourceZone);
     layoutStripDragOverlay(drag.targetZone);
   }
@@ -491,6 +585,7 @@
     if (stripDrag.active) return;
     const tw = toolWindows.get(windowId);
     if (!tw) return;
+    const previewRect = buttonEl ? buttonEl.getBoundingClientRect() : null;
     stripDrag.active = {
       windowId,
       sourceZone,
@@ -499,7 +594,20 @@
       startY: e.clientY,
       dragging: false,
       targetZone: null,
+      previewWidth: previewRect ? previewRect.width : 92,
+      previewHeight: 28,
     };
+    if (stripDrag.previewEl) {
+      stripDrag.previewEl.textContent = tw.title;
+      stripDrag.previewEl.style.display = 'block';
+      stripDrag.previewEl.style.opacity = '1';
+      if (previewRect) {
+        stripDrag.previewEl.style.left = Math.round(previewRect.left) + 'px';
+        stripDrag.previewEl.style.top = Math.round(previewRect.top) + 'px';
+        stripDrag.previewEl.style.width = Math.round(previewRect.width) + 'px';
+        stripDrag.previewEl.style.height = Math.round(previewRect.height) + 'px';
+      }
+    }
     window.addEventListener('pointermove', onStripDragMove, true);
     window.addEventListener('pointerup', onStripDragUp, true);
     window.addEventListener('keydown', onStripDragKeyDown, true);
@@ -517,6 +625,10 @@
 
       const topZone = zones[side + '-top'];
       const botZone = zones[side + '-bottom'];
+      const totalWindows = topZone.windows.length + botZone.windows.length;
+
+      stripEl.classList.toggle('hidden', totalWindows === 0);
+      if (totalWindows === 0) continue;
 
       // Top section — windows assigned to the top zone
       const topSection = document.createElement('div');
@@ -721,6 +833,23 @@
     return 'bottom';
   }
 
+  function isPanelVisible(side) {
+    return !!(panelState[side] && panelState[side].visible);
+  }
+
+  function setPanelVisibility(side, visible, opts) {
+    if (!panelState[side]) return;
+    panelState[side].visible = !!visible;
+    updateSidebar(side);
+    updateStrips();
+    if (!opts || opts.save !== false) triggerSave();
+  }
+
+  function togglePanel(side) {
+    if (!panelState[side]) return;
+    setPanelVisibility(side, !panelState[side].visible);
+  }
+
   let _saveTimer = null;
   function triggerSave() {
     if (_saveTimer) clearTimeout(_saveTimer);
@@ -791,6 +920,16 @@
     return tw ? (tw.renderRootEl || tw.el) : null;
   }
 
+  function listWindows() {
+    return Array.from(toolWindows.values()).map((tw) => ({
+      id: tw.id,
+      title: tw.title,
+      type: tw.type,
+      zone: tw.zone,
+      active: tw.active,
+    }));
+  }
+
   // ---- Public API -----------------------------------------------------------
 
   exports.toolWindowManager = {
@@ -803,6 +942,9 @@
     toggle,
     moveTo,
     isVisible,
+    isPanelVisible,
+    setPanelVisibility,
+    togglePanel,
     getZoneForWindow,
     getWindowsInZone,
     getZoneAssignments,
@@ -811,5 +953,6 @@
     getSidebarWidths,
     setSidebarWidth,
     getContentElement,
+    listWindows,
   };
 })(window);

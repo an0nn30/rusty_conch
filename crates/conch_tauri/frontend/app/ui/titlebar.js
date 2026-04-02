@@ -76,8 +76,8 @@
       },
       {
         label: 'View', items: [
-          { id: 'toggle-left-panel', label: 'Toggle File Explorer', shortcut: shortcuts.toggle_left_panel || '' },
-          { id: 'toggle-right-panel', label: 'Toggle Sessions Panel', shortcut: shortcuts.toggle_right_panel || '' },
+          { id: 'toggle-left-panel', label: 'Toggle Left Panel', shortcut: shortcuts.toggle_left_panel || '' },
+          { id: 'toggle-right-panel', label: 'Toggle Right Panel', shortcut: shortcuts.toggle_right_panel || '' },
           { id: 'toggle-bottom-panel', label: 'Toggle Bottom Panel', shortcut: shortcuts.toggle_bottom_panel || '' },
           { type: 'separator' },
           { id: 'split-vertical', label: 'Split Pane Vertically', shortcut: shortcuts.split_vertical || `${ctrl}+D` },

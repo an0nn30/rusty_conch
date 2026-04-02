@@ -741,8 +741,8 @@
     new_window: 'New Window',
     quit: 'Quit',
     zen_mode: 'Zen Mode',
-    toggle_left_panel: 'Toggle File Explorer',
-    toggle_right_panel: 'Toggle Sessions Panel',
+    toggle_left_panel: 'Toggle Left Panel',
+    toggle_right_panel: 'Toggle Right Panel',
     toggle_bottom_panel: 'Toggle Bottom Panel',
     split_vertical: 'Split Pane Vertically',
     split_horizontal: 'Split Pane Horizontally',
@@ -792,8 +792,23 @@
     return pendingSettings.conch.keyboard.plugin_shortcuts;
   }
 
+  function ensureToolWindowShortcutMap() {
+    if (!pendingSettings?.conch?.keyboard) return {};
+    if (
+      !pendingSettings.conch.keyboard.tool_window_shortcuts ||
+      typeof pendingSettings.conch.keyboard.tool_window_shortcuts !== 'object'
+    ) {
+      pendingSettings.conch.keyboard.tool_window_shortcuts = {};
+    }
+    return pendingSettings.conch.keyboard.tool_window_shortcuts;
+  }
+
   function getShortcutValue(ref) {
     if (!pendingSettings?.conch?.keyboard || !ref) return '';
+    if (ref.kind === 'tool-window') {
+      const map = ensureToolWindowShortcutMap();
+      return map[ref.key] || '';
+    }
     if (ref.kind === 'plugin') {
       const map = ensurePluginShortcutMap();
       if (Object.prototype.hasOwnProperty.call(map, ref.key)) return map[ref.key] || '';
@@ -804,6 +819,11 @@
 
   function setShortcutValue(ref, value) {
     if (!pendingSettings?.conch?.keyboard || !ref) return;
+    if (ref.kind === 'tool-window') {
+      const map = ensureToolWindowShortcutMap();
+      map[ref.key] = value;
+      return;
+    }
     if (ref.kind === 'plugin') {
       const map = ensurePluginShortcutMap();
       map[ref.key] = value;
@@ -898,12 +918,36 @@
 
     const keyboard = pendingSettings?.conch?.keyboard || {};
     const extraKeys = Object.keys(keyboard)
-      .filter((k) => k !== 'plugin_shortcuts' && typeof keyboard[k] === 'string' && !knownKeys.has(k))
+      .filter((k) => k !== 'plugin_shortcuts' && k !== 'tool_window_shortcuts' && typeof keyboard[k] === 'string' && !knownKeys.has(k))
       .sort();
     if (extraKeys.length > 0) {
       addSectionLabel(c, 'Other');
       for (const key of extraKeys) {
         addRow(c, toTitleCaseWords(key), null, makeShortcutKeyBox({ kind: 'core', key }));
+      }
+      addDivider(c);
+    }
+
+    const toolWindowItems = window.toolWindowManager && typeof window.toolWindowManager.listWindows === 'function'
+      ? window.toolWindowManager.listWindows().slice().sort((a, b) => {
+          const typeCmp = String(a.type || '').localeCompare(String(b.type || ''));
+          if (typeCmp !== 0) return typeCmp;
+          return String(a.title || '').localeCompare(String(b.title || ''));
+        })
+      : [];
+    if (toolWindowItems.length > 0) {
+      addSectionLabel(c, 'Tool Windows');
+      for (const item of toolWindowItems) {
+        const side = String(item.zone || '').replace('-', ' \u2022 ');
+        const desc = item.type === 'built-in'
+          ? `Built-in \u2022 ${side}`
+          : `Plugin tool window \u2022 ${side}`;
+        addRow(
+          c,
+          item.title || item.id,
+          desc,
+          makeShortcutKeyBox({ kind: 'tool-window', key: item.id })
+        );
       }
       addDivider(c);
     }

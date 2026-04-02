@@ -184,7 +184,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
     let toggle_left = MenuItem::with_id(
         app,
         MENU_TOGGLE_LEFT_PANEL_ID,
-        "Toggle File Explorer",
+        "Toggle Left Panel",
         true,
         Some(&toggle_left_accel),
     )?;
@@ -192,7 +192,7 @@ pub(crate) fn build_app_menu<R: tauri::Runtime>(
     let toggle_right = MenuItem::with_id(
         app,
         MENU_TOGGLE_RIGHT_PANEL_ID,
-        "Toggle Sessions Panel",
+        "Toggle Right Panel",
         true,
         Some(&toggle_right_accel),
     )?;
@@ -645,7 +645,7 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
         let toggle_left = MenuItem::with_id(
             app,
             MENU_TOGGLE_LEFT_PANEL_ID,
-            "Toggle File Explorer",
+            "Toggle Left Panel",
             true,
             Some(&toggle_left_accel),
         )?;
@@ -653,7 +653,7 @@ pub(crate) fn build_app_menu_with_plugins<R: tauri::Runtime>(
         let toggle_right = MenuItem::with_id(
             app,
             MENU_TOGGLE_RIGHT_PANEL_ID,
-            "Toggle Sessions Panel",
+            "Toggle Right Panel",
             true,
             Some(&toggle_right_accel),
         )?;

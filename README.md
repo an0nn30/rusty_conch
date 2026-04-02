@@ -184,8 +184,8 @@ The binary is at `target/release/conch`.
 | `Cmd+W` | Close tab |
 | `Cmd+1`--`9` | Switch to tab N |
 | `Cmd+Shift+N` | New window |
-| `Cmd+Shift+E` | Toggle file explorer (left panel) |
-| `Cmd+Shift+R` | Toggle sessions panel (right panel) |
+| `Cmd+Shift+E` | Toggle left panel |
+| `Cmd+Shift+R` | Toggle right panel |
 | `Cmd+Shift+J` | Toggle bottom panel |
 | `Cmd+Shift+Z` | Zen mode (hide all panels) |
 | `Cmd+/` | Toggle & focus quick connect |

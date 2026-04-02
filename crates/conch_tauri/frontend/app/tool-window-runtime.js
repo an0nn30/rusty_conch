@@ -10,6 +10,12 @@
     async function init() {
       const bottomPanelEl = document.getElementById('bottom-panel');
       const bottomResizeEl = document.getElementById('bottom-panel-resize');
+      let initialLayoutData = null;
+      const refreshShortcutFallbacks = () => {
+        if (typeof global.__conchRefreshKeyboardShortcutFallbacks === 'function') {
+          global.__conchRefreshKeyboardShortcutFallbacks().catch(() => {});
+        }
+      };
 
       let windowResaveSaveTimer = null;
       function debouncedSaveLayout() {
@@ -21,9 +27,9 @@
           invoke('save_window_layout', {
             layout: {
               ssh_panel_width: widths.right,
-              ssh_panel_visible: twm.isVisible('ssh-sessions'),
+              ssh_panel_visible: twm.isPanelVisible('right'),
               files_panel_width: widths.left,
-              files_panel_visible: twm.isVisible('file-explorer'),
+              files_panel_visible: twm.isPanelVisible('left'),
               bottom_panel_visible: !bottomPanelEl.classList.contains('hidden'),
               bottom_panel_height: bottomPanelEl.offsetHeight,
               tool_window_zones: twm.getZoneAssignments(),
@@ -40,21 +46,21 @@
         });
 
         try {
-          const layoutData = await invoke('get_saved_layout');
-          if (layoutData.files_panel_width > 100) {
-            global.toolWindowManager.setSidebarWidth('left', layoutData.files_panel_width);
+          initialLayoutData = await invoke('get_saved_layout');
+          if (initialLayoutData.files_panel_width > 100) {
+            global.toolWindowManager.setSidebarWidth('left', initialLayoutData.files_panel_width);
           }
-          if (layoutData.ssh_panel_width > 100) {
-            global.toolWindowManager.setSidebarWidth('right', layoutData.ssh_panel_width);
+          if (initialLayoutData.ssh_panel_width > 100) {
+            global.toolWindowManager.setSidebarWidth('right', initialLayoutData.ssh_panel_width);
           }
-          if (layoutData.tool_window_zones && Object.keys(layoutData.tool_window_zones).length > 0) {
-            global.toolWindowManager.setPersistedZones(layoutData.tool_window_zones);
+          if (initialLayoutData.tool_window_zones && Object.keys(initialLayoutData.tool_window_zones).length > 0) {
+            global.toolWindowManager.setPersistedZones(initialLayoutData.tool_window_zones);
           }
-          if (layoutData.left_split_ratio > 0 && layoutData.left_split_ratio < 1) {
-            global.toolWindowManager.setSplitRatio('left', layoutData.left_split_ratio);
+          if (initialLayoutData.left_split_ratio > 0 && initialLayoutData.left_split_ratio < 1) {
+            global.toolWindowManager.setSplitRatio('left', initialLayoutData.left_split_ratio);
           }
-          if (layoutData.right_split_ratio > 0 && layoutData.right_split_ratio < 1) {
-            global.toolWindowManager.setSplitRatio('right', layoutData.right_split_ratio);
+          if (initialLayoutData.right_split_ratio > 0 && initialLayoutData.right_split_ratio < 1) {
+            global.toolWindowManager.setSplitRatio('right', initialLayoutData.right_split_ratio);
           }
         } catch (_) {}
 
@@ -105,6 +111,11 @@
             }
           },
         });
+        if (initialLayoutData) {
+          global.toolWindowManager.setPanelVisibility('left', initialLayoutData.files_panel_visible !== false, { save: false });
+          global.toolWindowManager.setPanelVisibility('right', initialLayoutData.ssh_panel_visible !== false, { save: false });
+        }
+        refreshShortcutFallbacks();
       }
 
       global.addEventListener('resize', debouncedSaveLayout);
@@ -211,6 +222,7 @@
                 }
               },
             });
+            refreshShortcutFallbacks();
           }
         });
 
@@ -221,6 +233,7 @@
           const { plugin, handles } = event.payload;
           if (global.toolWindowManager) {
             global.toolWindowManager.unregister('plugin:' + plugin);
+            refreshShortcutFallbacks();
           }
           for (const handle of handles) {
             const container = document.querySelector(`[data-plugin-handle="${handle}"]`);

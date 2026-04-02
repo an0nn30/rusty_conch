@@ -21,6 +21,7 @@
 
     let pluginCtrlAltShortcutFallbacks = [];
     let pluginAllShortcutFallbacks = [];
+    let toolWindowShortcutFallbacks = [];
     let functionKeyShortcutFallbacks = [];
 
     const coreShortcutActionByKey = {
@@ -98,9 +99,13 @@
         const overrides = settings && settings.conch && settings.conch.keyboard
           ? (settings.conch.keyboard.plugin_shortcuts || {})
           : {};
+        const toolWindowOverrides = settings && settings.conch && settings.conch.keyboard
+          ? (settings.conch.keyboard.tool_window_shortcuts || {})
+          : {};
         const keyboard = settings && settings.conch ? (settings.conch.keyboard || {}) : {};
         const pluginCtrlAltNext = [];
         const pluginAllNext = [];
+        const toolWindowNext = [];
         const functionKeyNext = [];
 
         for (const [settingsKey, action] of Object.entries(coreShortcutActionByKey)) {
@@ -133,12 +138,28 @@
           pluginAllNext.push({ combo, plugin: item.plugin, action: item.action });
         }
 
+        const twm = window.toolWindowManager;
+        const toolWindows = twm && typeof twm.listWindows === 'function'
+          ? twm.listWindows()
+          : [];
+        for (const item of toolWindows) {
+          if (!item || !item.id) continue;
+          const combo = normalizeShortcutString(toolWindowOverrides[item.id]);
+          if (!combo) continue;
+          if (isFunctionKeyCombo(combo)) {
+            functionKeyNext.push({ combo, kind: 'tool-window', windowId: item.id });
+          }
+          toolWindowNext.push({ combo, windowId: item.id });
+        }
+
         pluginCtrlAltShortcutFallbacks = pluginCtrlAltNext;
         pluginAllShortcutFallbacks = pluginAllNext;
+        toolWindowShortcutFallbacks = toolWindowNext;
         functionKeyShortcutFallbacks = functionKeyNext;
       } catch (_) {
         pluginCtrlAltShortcutFallbacks = [];
         pluginAllShortcutFallbacks = [];
+        toolWindowShortcutFallbacks = [];
         functionKeyShortcutFallbacks = [];
       }
     }
@@ -163,6 +184,10 @@
           event.stopPropagation();
           if (fKeyHit.kind === 'core') {
             handleMenuAction(fKeyHit.action);
+          } else if (fKeyHit.kind === 'tool-window') {
+            if (window.toolWindowManager) {
+              window.toolWindowManager.toggle(fKeyHit.windowId);
+            }
           } else {
             invoke('trigger_plugin_menu_action', {
               pluginName: fKeyHit.plugin,
@@ -172,6 +197,15 @@
           return;
         }
         if (!isMacPlatform || !event.ctrlKey || !event.altKey || event.metaKey) {
+          const toolWindowHit = toolWindowShortcutFallbacks.find((s) => s.combo === combo);
+          if (toolWindowHit) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (window.toolWindowManager) {
+              window.toolWindowManager.toggle(toolWindowHit.windowId);
+            }
+            return;
+          }
           const allHit = pluginAllShortcutFallbacks.find((s) => s.combo === combo);
           if (allHit) {
             event.preventDefault();
@@ -243,6 +277,7 @@
     async function init() {
       initListeners();
       await refreshKeyboardShortcutFallbacks();
+      global.__conchRefreshKeyboardShortcutFallbacks = refreshKeyboardShortcutFallbacks;
       return {
         refreshKeyboardShortcutFallbacks,
       };
