@@ -11,6 +11,78 @@
   let autoCreateInFlight = false;
   let autoAttachInFlight = false;
   let initialAutoAttachAttempted = false;
+  let sessionContextMenuEl = null;
+  let sessionContextMenuCleanup = null;
+  let attachInFlight = null;
+
+  function closeSessionContextMenu() {
+    if (sessionContextMenuCleanup) {
+      sessionContextMenuCleanup();
+      sessionContextMenuCleanup = null;
+    }
+    if (sessionContextMenuEl && sessionContextMenuEl.parentNode) {
+      sessionContextMenuEl.parentNode.removeChild(sessionContextMenuEl);
+    }
+    sessionContextMenuEl = null;
+  }
+
+  function openSessionContextMenu(sessionName, clientX, clientY) {
+    if (!sessionName) return;
+    closeSessionContextMenu();
+
+    var menu = document.createElement('div');
+    menu.className = 'ssh-context-menu tmux-session-context-menu';
+    menu.innerHTML = [
+      '<div class="ssh-context-menu-item" data-role="rename-session" data-session="' + escapeAttr(sessionName) + '">Rename Session</div>',
+    ].join('');
+    document.body.appendChild(menu);
+
+    var menuRect = menu.getBoundingClientRect();
+    var left = Math.min(clientX, Math.max(0, window.innerWidth - menuRect.width - 8));
+    var top = Math.min(clientY, Math.max(0, window.innerHeight - menuRect.height - 8));
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+
+    function onDocPointerDown(event) {
+      if (!menu.contains(event.target)) closeSessionContextMenu();
+    }
+    function onDocContextMenu(event) {
+      if (!menu.contains(event.target)) closeSessionContextMenu();
+    }
+    function onDocKeyDown(event) {
+      if (event.key === 'Escape') closeSessionContextMenu();
+    }
+    function onWindowBlur() {
+      closeSessionContextMenu();
+    }
+    function onWindowScroll() {
+      closeSessionContextMenu();
+    }
+
+    document.addEventListener('mousedown', onDocPointerDown, true);
+    document.addEventListener('contextmenu', onDocContextMenu, true);
+    document.addEventListener('keydown', onDocKeyDown, true);
+    window.addEventListener('blur', onWindowBlur);
+    window.addEventListener('scroll', onWindowScroll, true);
+
+    sessionContextMenuCleanup = function () {
+      document.removeEventListener('mousedown', onDocPointerDown, true);
+      document.removeEventListener('contextmenu', onDocContextMenu, true);
+      document.removeEventListener('keydown', onDocKeyDown, true);
+      window.removeEventListener('blur', onWindowBlur);
+      window.removeEventListener('scroll', onWindowScroll, true);
+    };
+    sessionContextMenuEl = menu;
+
+    menu.addEventListener('click', function (event) {
+      var item = event.target.closest('[data-role="rename-session"]');
+      if (!item) return;
+      event.preventDefault();
+      var targetSession = item.dataset.session || sessionName;
+      closeSessionContextMenu();
+      renameSession(targetSession);
+    });
+  }
 
   function confirmKillSession(name) {
     return new Promise(function (resolve) {
@@ -113,11 +185,7 @@
     panelEl.innerHTML = [
       '<section class="tmux-browser">',
       '  <header class="tmux-browser-header">',
-      '    <div>',
-      '      <div class="tmux-browser-eyebrow">Workspace Backend</div>',
-      '      <h2 class="tmux-browser-title">Tmux Sessions</h2>',
-      '      <p class="tmux-browser-copy">Attach, create, and manage tmux workspaces.</p>',
-      '    </div>',
+      '    <h2 class="tmux-browser-title">Tmux Sessions</h2>',
       '    <div class="tmux-browser-actions">',
       '      <button class="tmux-action-btn tmux-action-btn-primary" data-action="new">New Session</button>',
       '      <button class="tmux-action-btn" data-action="refresh">Refresh</button>',
@@ -144,16 +212,12 @@
   function renderMeta(filteredCount) {
     var metaEl = panelEl && panelEl.querySelector('[data-role="meta"]');
     if (!metaEl) return;
-    var bits = [];
-    bits.push(filteredCount + (filteredCount === 1 ? ' session' : ' sessions'));
-    if (connectedSessionName) {
-      bits.push('Attached to ' + connectedSessionName);
-    }
-    metaEl.textContent = bits.join(' • ');
+    metaEl.textContent = filteredCount + (filteredCount === 1 ? ' session' : ' sessions');
   }
 
   function renderSessionList() {
     if (!panelEl) return;
+    closeSessionContextMenu();
     var listEl = panelEl.querySelector('[data-role="session-list"]');
     if (!listEl) return;
 
@@ -171,28 +235,28 @@
       return;
     }
 
-    listEl.innerHTML = filtered.map(function (session) {
-      var selected = session.name === selectedSessionName ? ' tmux-session-card-selected' : '';
-      var connected = session.name === connectedSessionName ? ' tmux-session-card-connected' : '';
-      var attached = session.attached ? '<span class="tmux-session-chip">Attached</span>' : '<span class="tmux-session-chip tmux-session-chip-muted">Detached</span>';
-      var connectedChip = session.name === connectedSessionName ? '<span class="tmux-session-chip tmux-session-chip-primary">Current</span>' : '';
-      var windowCount = Number(session.window_count) || 0;
+    function iconKill() {
       return [
-        '<article class="tmux-session-card' + selected + connected + '" data-session="' + escapeAttr(session.name) + '">',
-        '  <div class="tmux-session-main">',
-        '    <div class="tmux-session-topline">',
-        '      <div class="tmux-session-name">' + escapeHtml(session.name) + '</div>',
-        '      <div class="tmux-session-chips">' + attached + connectedChip + '</div>',
-        '    </div>',
-        '    <div class="tmux-session-subline">',
-        '      <span>' + windowCount + (windowCount === 1 ? ' window' : ' windows') + '</span>',
-        '      <span>Session $' + Number(session.id || 0) + '</span>',
-        '    </div>',
-        '  </div>',
-        '  <div class="tmux-session-row-actions">',
-        '    <button class="tmux-inline-btn" data-action="attach" data-session="' + escapeAttr(session.name) + '">Attach</button>',
-        '    <button class="tmux-inline-btn" data-action="rename" data-session="' + escapeAttr(session.name) + '">Rename</button>',
-        '    <button class="tmux-inline-btn tmux-inline-btn-danger" data-action="kill" data-session="' + escapeAttr(session.name) + '">Kill</button>',
+        '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">',
+        '  <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 2h4l-.5-1h-3L10 5zm-3 4h10l-.7 10.5a2 2 0 0 1-2 1.5H9.7a2 2 0 0 1-2-1.5L7 9zm3 2v7h2v-7h-2zm4 0v7h2v-7h-2z"></path>',
+        '</svg>',
+      ].join('');
+    }
+
+    listEl.innerHTML = filtered.map(function (session) {
+      var selected = session.name === selectedSessionName ? ' tmux-session-row-selected' : '';
+      var connected = session.name === connectedSessionName ? ' tmux-session-row-attached' : '';
+      var attached = session.name === connectedSessionName
+        ? '<span class="tmux-session-row-status tmux-session-row-status-attached">Attached</span>'
+        : (session.attached
+          ? '<span class="tmux-session-row-status">In Use</span>'
+          : '<span class="tmux-session-row-status tmux-session-row-status-muted">Detached</span>');
+      return [
+        '<article class="tmux-session-row' + selected + connected + '" data-session="' + escapeAttr(session.name) + '">',
+        '  <div class="tmux-session-row-name">' + escapeHtml(session.name) + '</div>',
+        '  ' + attached,
+        '  <div class="tmux-session-row-tools">',
+        '    <button class="tmux-icon-btn tmux-icon-btn-danger" title="Kill session" aria-label="Kill session" data-action="kill" data-session="' + escapeAttr(session.name) + '">' + iconKill() + '</button>',
         '  </div>',
         '</article>',
       ].join('');
@@ -230,16 +294,27 @@
         return;
       }
 
-      var card = event.target.closest('.tmux-session-card');
-      if (!card) return;
-      selectedSessionName = card.dataset.session;
-      renderSessionList();
+      var row = event.target.closest('.tmux-session-row');
+      if (!row) return;
+      selectedSessionName = row.dataset.session;
+      if (event.detail >= 2) {
+        attachSession(row.dataset.session);
+        return;
+      }
+      var prevSelected = panelEl.querySelectorAll('.tmux-session-row-selected');
+      for (var i = 0; i < prevSelected.length; i++) {
+        prevSelected[i].classList.remove('tmux-session-row-selected');
+      }
+      row.classList.add('tmux-session-row-selected');
     });
 
-    panelEl.addEventListener('dblclick', function (event) {
-      var card = event.target.closest('.tmux-session-card');
-      if (!card) return;
-      attachSession(card.dataset.session);
+    panelEl.addEventListener('contextmenu', function (event) {
+      var row = event.target.closest('.tmux-session-row');
+      if (!row) return;
+      event.preventDefault();
+      selectedSessionName = row.dataset.session;
+      renderSessionList();
+      openSessionContextMenu(row.dataset.session, event.clientX, event.clientY);
     });
 
     if (listen) {
@@ -385,8 +460,33 @@
     });
   }
 
+  function estimateTerminalDims() {
+    // Prefer dimensions from an existing pane's fitAddon (exact).
+    if (typeof window.__conchEstimateTerminalDims === 'function') {
+      var dims = window.__conchEstimateTerminalDims();
+      if (dims && dims.cols > 1 && dims.rows > 1) return dims;
+    }
+    // Fallback: estimate from terminal-host container pixel size.
+    var hostEl = document.getElementById('terminal-host');
+    if (!hostEl) return null;
+    var w = hostEl.clientWidth;
+    var h = hostEl.clientHeight;
+    if (!w || !h) return null;
+    var cols = Math.max(2, Math.floor(w / 8.4));
+    var rows = Math.max(2, Math.floor(h / 17));
+    return { cols: cols, rows: rows };
+  }
+
   function attachSession(name) {
     if (!name) return Promise.resolve();
+    if (connectedSessionName === name) {
+      selectedSessionName = name;
+      renderSessionList();
+      return Promise.resolve();
+    }
+    if (attachInFlight && attachInFlight.name === name) {
+      return attachInFlight.promise;
+    }
     var switchToken = {
       targetSession: name,
       startedAt: Date.now(),
@@ -394,7 +494,13 @@
     };
     window.__conchTmuxSwitchState = switchToken;
     console.info('[tmux] attach requested', switchToken);
-    return invoke('tmux_connect', { sessionName: name }).then(function () {
+    var dims = estimateTerminalDims();
+    var connectArgs = { sessionName: name };
+    if (dims) {
+      connectArgs.initialCols = dims.cols;
+      connectArgs.initialRows = dims.rows;
+    }
+    var attachPromise = invoke('tmux_connect', connectArgs).then(function () {
       connectedSessionName = name;
       selectedSessionName = name;
       initialAutoAttachAttempted = true;
@@ -402,14 +508,18 @@
       if (typeof window.__conchTmuxForceSyncSession === 'function') {
         window.__conchTmuxForceSyncSession(name);
       }
-      if (window.toast) window.toast.success('Attached to ' + name);
     }).catch(function (error) {
       if (window.__conchTmuxSwitchState === switchToken) {
         window.__conchTmuxSwitchState = null;
       }
-      if (window.toast) window.toast.error('Failed to attach tmux session: ' + error);
       throw error;
+    }).finally(function () {
+      if (attachInFlight && attachInFlight.name === name && attachInFlight.promise === attachPromise) {
+        attachInFlight = null;
+      }
     });
+    attachInFlight = { name: name, promise: attachPromise };
+    return attachPromise;
   }
 
   function renameSession(name) {

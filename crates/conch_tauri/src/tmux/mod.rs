@@ -265,13 +265,19 @@ fn parse_window_line(line: &str) -> Option<(u64, String, bool)> {
 }
 
 fn parse_pane_line(line: &str) -> Option<TmuxPaneInfo> {
-    let mut parts = line.splitn(6, '\t');
+    let mut parts = line.splitn(8, '\t');
     let id = parts.next()?.strip_prefix('%')?.parse().ok()?;
     let active = parts.next()? == "1";
     let width = parts.next()?.parse().ok()?;
     let height = parts.next()?.parse().ok()?;
     let left = parts.next()?.parse().ok()?;
     let top = parts.next()?.parse().ok()?;
+    let alternate_on = parts.next().map(|v| v == "1").unwrap_or(false);
+    let current_command = parts
+        .next()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string);
     Some(TmuxPaneInfo {
         id,
         active,
@@ -279,15 +285,20 @@ fn parse_pane_line(line: &str) -> Option<TmuxPaneInfo> {
         height,
         left,
         top,
+        alternate_on,
+        current_command,
         content: String::new(),
     })
 }
 
 fn capture_pane_content(binary: &str, pane_id: u64) -> String {
     let target = format!("%{pane_id}");
+    // Capture only the visible pane area (no scrollback).  Including
+    // scrollback (via -S -200) causes duplicated prompts when the snapshot
+    // is written to a fresh xterm.js terminal during session switches.
     run_tmux(
         binary,
-        &["capture-pane", "-p", "-e", "-S", "-200", "-t", &target],
+        &["capture-pane", "-p", "-e", "-N", "-t", &target],
     )
     .unwrap_or_default()
 }
@@ -301,7 +312,7 @@ fn list_panes_for_window(binary: &str, window_id: u64) -> Result<Vec<TmuxPaneInf
             "-t",
             &target,
             "-F",
-            "#{pane_id}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}",
+            "#{pane_id}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{alternate_on}\t#{pane_current_command}",
         ],
     )?;
     let mut panes = Vec::new();
@@ -411,10 +422,6 @@ fn send_tmux_input(state: &TmuxState, window_label: &str, pane_id: u64, data: &s
     while index < chars.len() {
         let ch = chars[index];
         match ch {
-            ' ' => {
-                flush_literal(&mut literal, &mut commands)?;
-                send_key(&mut commands, "Space")?;
-            }
             '\r' | '\n' => {
                 flush_literal(&mut literal, &mut commands)?;
                 send_key(&mut commands, "Enter")?;
@@ -474,13 +481,19 @@ pub(crate) fn tmux_connect(
     app: AppHandle,
     state: tauri::State<'_, TmuxState>,
     session_name: String,
+    initial_cols: Option<u16>,
+    initial_rows: Option<u16>,
 ) -> Result<(), String> {
     let window_label = window.label().to_string();
     let binary = state.binary.clone();
+    let cols = initial_cols.unwrap_or(80);
+    let rows = initial_rows.unwrap_or(24);
     log::info!(
-        "[tmux] tmux_connect start window_label={} session_name={}",
+        "[tmux] tmux_connect start window_label={} session_name={} initial={}x{}",
         window_label,
-        session_name
+        session_name,
+        cols,
+        rows,
     );
 
     if let Ok(mut conns) = state.connections.lock() {
@@ -505,8 +518,20 @@ pub(crate) fn tmux_connect(
     } else {
         vec!["-u", "-CC", "new-session", "-s", session_name.as_str()]
     };
-    let (reader, writer, handle) =
-        conch_tmux::spawn(&binary, &spawn_args).map_err(|e| format!("Failed to start tmux: {e}"))?;
+    let (reader, mut writer, handle) =
+        conch_tmux::spawn(&binary, &spawn_args, cols, rows)
+            .map_err(|e| format!("Failed to start tmux: {e}"))?;
+
+    // Immediately set the control-mode client size so tmux never streams
+    // pane output at the wrong geometry.  The PTY was already opened at
+    // this size, but an explicit refresh-client covers edge cases where
+    // tmux ignores the PTY dimensions.
+    if cols > 1 && rows > 1 {
+        let command = format!("refresh-client -C {},{}\n", cols, rows);
+        if let Err(e) = writer.send_command(&command) {
+            log::warn!("[tmux] failed to send initial client resize: {}", e);
+        }
+    }
 
     let sessions = Arc::clone(&state.sessions);
     let reader_join =
@@ -810,11 +835,49 @@ mod tests {
 
     #[test]
     fn parse_pane_line_parses_tab_separated_output() {
-        let parsed = parse_pane_line("%11\t0\t120\t42").unwrap();
+        let parsed =
+            parse_pane_line("%11\t0\t120\t42\t0\t0\t0\tbash").unwrap();
         assert_eq!(parsed.id, 11);
         assert!(!parsed.active);
         assert_eq!(parsed.width, 120);
         assert_eq!(parsed.height, 42);
+        assert_eq!(parsed.left, 0);
+        assert_eq!(parsed.top, 0);
+        assert!(!parsed.alternate_on);
+        assert_eq!(
+            parsed.current_command.as_deref(),
+            Some("bash")
+        );
+    }
+
+    #[test]
+    fn parse_pane_line_with_offset_and_alternate_screen() {
+        let parsed =
+            parse_pane_line("%5\t1\t80\t24\t81\t0\t1\thtop").unwrap();
+        assert_eq!(parsed.id, 5);
+        assert!(parsed.active);
+        assert_eq!(parsed.width, 80);
+        assert_eq!(parsed.height, 24);
+        assert_eq!(parsed.left, 81);
+        assert_eq!(parsed.top, 0);
+        assert!(parsed.alternate_on);
+        assert_eq!(
+            parsed.current_command.as_deref(),
+            Some("htop")
+        );
+    }
+
+    #[test]
+    fn parse_pane_line_minimal_fields() {
+        // Only the 6 required fields (no alternate_on or current_command).
+        let parsed =
+            parse_pane_line("%3\t0\t200\t50\t0\t25").unwrap();
+        assert_eq!(parsed.id, 3);
+        assert_eq!(parsed.width, 200);
+        assert_eq!(parsed.height, 50);
+        assert_eq!(parsed.top, 25);
+        assert!(!parsed.alternate_on);
+        assert!(parsed.current_command.is_none());
     }
 
     #[test]

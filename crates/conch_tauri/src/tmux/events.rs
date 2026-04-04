@@ -31,6 +31,8 @@ pub(crate) struct TmuxPaneInfo {
     pub height: u16,
     pub left: u16,
     pub top: u16,
+    pub alternate_on: bool,
+    pub current_command: Option<String>,
     pub content: String,
 }
 

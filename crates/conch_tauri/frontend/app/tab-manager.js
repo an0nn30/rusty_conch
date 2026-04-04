@@ -266,7 +266,7 @@
       if (pane._tmuxSnapshotTimer) {
         clearTimeout(pane._tmuxSnapshotTimer);
       }
-      // Delay snapshot hydration slightly so that live tmux output can win when available.
+      // Delay snapshot hydration slightly so that authoritative live tmux output wins.
       pane._tmuxSnapshotTimer = setTimeout(function () {
         pane._tmuxSnapshotTimer = null;
         if (pane._tmuxLiveActive || !pane.term) return;
@@ -280,7 +280,7 @@
       }, 180);
     }
 
-    function syncExistingTmuxTab(tab, paneSpecs) {
+    function syncExistingTmuxTab(tab, paneSpecs, isSwitching) {
       const panes = getPanes();
       const paneByTmuxId = new Map();
       const paneIds = allPanesInTab(tab.id);
@@ -301,7 +301,11 @@
         const pane = paneByTmuxId.get(tmuxPaneId);
         if (!pane) continue;
         pane.tmuxPaneId = tmuxPaneId;
-        writeTmuxPaneSnapshot(pane, spec.content);
+        if (isSwitching) {
+          writeTmuxPaneSnapshotImmediate(pane, spec.content);
+        } else if (!spec.active) {
+          writeTmuxPaneSnapshot(pane, spec.content);
+        }
         if (global.tmuxIdMap) {
           global.tmuxIdMap.addPane(tmuxPaneId, pane.paneId);
         }
@@ -455,6 +459,18 @@
       }
     }
 
+    function writeTmuxPaneSnapshotImmediate(pane, content) {
+      if (!pane || !pane.term) return;
+      var snapshot = typeof content === 'string' ? content : '';
+      pane.term.reset();
+      if (snapshot) {
+        pane.term.write(snapshot);
+      }
+      pane._lastTmuxSnapshot = snapshot;
+      pane._tmuxSnapshotAppliedAt = Date.now();
+      pane._tmuxLiveActive = false;
+    }
+
     async function createTmuxTab(options = {}) {
       console.info('[tmux] createTmuxTab start', options);
       const tabs = getTabs();
@@ -462,6 +478,12 @@
       const tmuxWindowId = Number(options.windowId);
       const paneSpecs = Array.isArray(options.panes) ? options.panes : [];
       const existingTabId = global.tmuxIdMap ? global.tmuxIdMap.getTabForWindow(tmuxWindowId) : null;
+      // During a session switch, write snapshots for ALL panes (including
+      // active) immediately rather than relying on delayed writeTmuxPaneSnapshot.
+      // This prevents blank flashes and ensures clean initial content before
+      // live output starts flowing.
+      const switchState = global.__conchTmuxSwitchState || null;
+      const isSwitching = !!(switchState && !switchState.syncedAt);
 
       if (existingTabId != null) {
         const existingTab = tabs.get(existingTabId);
@@ -490,7 +512,7 @@
               existingTabId: existingTabId,
               tmuxWindowId: tmuxWindowId,
             });
-            syncExistingTmuxTab(existingTab, paneSpecs);
+            syncExistingTmuxTab(existingTab, paneSpecs, isSwitching);
             return existingTab;
           }
           console.info('[tmux] createTmuxTab updating existing tab in-place', {
@@ -544,7 +566,11 @@
                 resizeObserver: null,
                 debounceTimer: null,
               };
-              writeTmuxPaneSnapshot(pane, spec.content);
+              if (isSwitching) {
+                writeTmuxPaneSnapshotImmediate(pane, spec.content);
+              } else if (!spec.active) {
+                writeTmuxPaneSnapshot(pane, spec.content);
+              }
               panes.set(paneId, pane);
               pane.resizeObserver = createPaneResizeObserver(pane, fitAndResizePane);
               paneEl.addEventListener('mousedown', () => setFocusedPane(paneId));
@@ -557,7 +583,11 @@
               }
             } else {
               pane.tmuxPaneId = tmuxPaneId;
-              writeTmuxPaneSnapshot(pane, spec.content);
+              if (isSwitching) {
+                writeTmuxPaneSnapshotImmediate(pane, spec.content);
+              } else if (!spec.active) {
+                writeTmuxPaneSnapshot(pane, spec.content);
+              }
               if (global.tmuxIdMap) {
                 global.tmuxIdMap.addPane(tmuxPaneId, pane.paneId);
               }
@@ -638,7 +668,11 @@
           resizeObserver: null,
           debounceTimer: null,
         };
-        writeTmuxPaneSnapshot(pane, spec.content);
+        if (isSwitching) {
+          writeTmuxPaneSnapshotImmediate(pane, spec.content);
+        } else if (!spec.active) {
+          writeTmuxPaneSnapshot(pane, spec.content);
+        }
         panes.set(paneId, pane);
         console.info('[tmux] createTmuxTab pane created', {
           frontendPaneId: paneId,

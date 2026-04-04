@@ -193,6 +193,19 @@
         var currentTmuxSession = null;
         var tmuxSyncTimer = null;
 
+        // Expose a precise dimension estimator that uses live fitAddon data.
+        global.__conchEstimateTerminalDims = function () {
+          for (var pane of panes.values()) {
+            if (pane && pane.fitAddon && pane.spawned) {
+              var proposed = pane.fitAddon.proposeDimensions();
+              if (proposed && proposed.cols > 0 && proposed.rows > 0) {
+                return { cols: proposed.cols, rows: proposed.rows };
+              }
+            }
+          }
+          return null;
+        };
+
         function syncTmuxSession(sessionName) {
           if (!sessionName || !createTmuxTab) return Promise.resolve();
           currentTmuxSession = sessionName;
@@ -232,6 +245,14 @@
               switchState.syncedAt = Date.now();
               switchState.suppressDisconnectsUntil = Date.now() + 1500;
               window.__conchTmuxSwitchState = switchState;
+              // Schedule a deferred resync so that pane snapshots pick up
+              // content rendered at the correct geometry (TUI programs need
+              // time to process SIGWINCH and redraw after the resize).
+              setTimeout(function () {
+                if (currentTmuxSession === sessionName) {
+                  syncTmuxSession(sessionName);
+                }
+              }, 300);
             }
           }).catch(function (error) {
             console.error('[tmux] failed to sync session:', error);
@@ -244,6 +265,13 @@
           tmuxSyncTimer = setTimeout(function () {
             syncTmuxSession(currentTmuxSession);
           }, 60);
+        }
+
+        function resetTmuxLiveFlags() {
+          Array.from(panes.values()).forEach(function (pane) {
+            if (!pane || pane.type !== 'tmux') return;
+            pane._tmuxLiveActive = false;
+          });
         }
 
         function forceSyncSession(sessionName, attempt) {
@@ -280,6 +308,9 @@
             session: payload.session || null,
             switchState: switchState,
           });
+          // New connection/session attach should permit snapshot hydration.
+          // We avoid timer-based flips to prevent cursor jitter.
+          resetTmuxLiveFlags();
           if (switchState) {
             switchState.connectedAt = Date.now();
             switchState.connectedSession = payload.session || null;
@@ -299,6 +330,18 @@
         listenOnCurrentWindow('tmux-output', function (event) {
           var payload = event.payload || {};
           if (!global.tmuxIdMap) return;
+
+          // During a session switch, suppress output until the initial sync
+          // completes.  This prevents garbled TUI output (wrong terminal size)
+          // from corrupting the xterm.js state before the correct geometry is
+          // established.  Safety timeout: allow output after 5 s regardless.
+          var switchState = global.__conchTmuxSwitchState || null;
+          if (switchState && !switchState.syncedAt) {
+            if (Date.now() - switchState.startedAt < 5000) {
+              return;
+            }
+          }
+
           var frontendPaneId = global.tmuxIdMap.getPaneForTmux(payload.pane_id);
           if (frontendPaneId != null) {
             var pane = panes.get(frontendPaneId);
@@ -313,14 +356,6 @@
                   frontendPaneId: frontendPaneId,
                   tmuxPaneId: payload.pane_id,
                 });
-                var snapshotAgeMs = pane._tmuxSnapshotAppliedAt
-                  ? (Date.now() - Number(pane._tmuxSnapshotAppliedAt))
-                  : Number.POSITIVE_INFINITY;
-                var looksLikeScreenPaint = dataText.indexOf('\n') >= 0 || dataText.indexOf('\x1b') >= 0;
-                if (snapshotAgeMs < 1500 && looksLikeScreenPaint) {
-                  // Replace freshly hydrated snapshot content with authoritative live stream.
-                  pane.term.reset();
-                }
               }
               pane._tmuxLiveActive = true;
               pane.term.write(payload.data);

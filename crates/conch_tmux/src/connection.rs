@@ -59,12 +59,22 @@ impl Drop for ConnectionHandle {
 }
 
 /// Spawn a tmux control mode process and split into reader, writer, and handle.
-pub fn spawn(binary: &str, args: &[&str]) -> io::Result<(ConnectionReader, ConnectionWriter, ConnectionHandle)> {
+///
+/// `cols` and `rows` set the initial PTY size, which tmux uses as the
+/// control-mode client dimensions.  Passing the actual terminal container
+/// size prevents tmux from streaming pane output at the wrong geometry
+/// during session switches (which garbles TUI programs like htop).
+pub fn spawn(
+    binary: &str,
+    args: &[&str],
+    cols: u16,
+    rows: u16,
+) -> io::Result<(ConnectionReader, ConnectionWriter, ConnectionHandle)> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
-            rows: 24,
-            cols: 80,
+            rows: if rows > 0 { rows } else { 24 },
+            cols: if cols > 0 { cols } else { 80 },
             pixel_width: 0,
             pixel_height: 0,
         })
