@@ -100,6 +100,10 @@
           { id: 'open-command-palette', label: 'Plugin Commands\u2026', shortcut: `${ctrl}+Shift+P` },
           { type: 'separator' },
           { id: 'manage-tunnels', label: 'Manage SSH Tunnels\u2026', shortcut: shortcuts.manage_tunnels || `${ctrl}+Shift+M` },
+          { type: 'separator' },
+          { id: 'vault-open', label: 'Credential Vault\u2026', shortcut: `${ctrl}+Shift+V` },
+          { id: 'keygen-open', label: 'Generate SSH Key\u2026' },
+          { id: 'vault-lock', label: 'Lock Vault' },
         ]
       },
       {
@@ -416,12 +420,11 @@
     const parts = str.toLowerCase().split('+').map(s => s.trim());
     const combo = { cmd: false, ctrl: false, shift: false, alt: false, key: '' };
     for (const p of parts) {
-      if (p === 'cmd') combo.cmd = true;
-      else if (p === 'ctrl') combo.ctrl = true;
-      else if (p === 'cmdorctrl') {
+      if (p === 'cmd' || p === 'cmdorctrl') {
         if (isMacPlatform) combo.cmd = true;
         else combo.ctrl = true;
       }
+      else if (p === 'ctrl') combo.ctrl = true;
       else if (p === 'shift') combo.shift = true;
       else if (p === 'alt') combo.alt = true;
       else combo.key = p;
@@ -470,6 +473,9 @@
           collect(item.submenu);
           continue;
         }
+        // Plugin shortcuts are handled by shortcut-runtime fallback logic.
+        // Excluding them here avoids double-dispatch in custom-titlebar mode.
+        if (typeof item.id === 'string' && item.id.startsWith('plugin.')) continue;
         if (!item.shortcut || item.noAccel) continue;
         const combo = parseShortcut(item.shortcut);
         if (combo && item.id) {

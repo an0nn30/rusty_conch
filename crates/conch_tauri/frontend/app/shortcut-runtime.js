@@ -76,8 +76,15 @@
       const mods = new Set();
       let key = '';
       for (const token of tokens) {
-        if (token === 'cmd' || token === 'ctrl' || token === 'alt' || token === 'shift') mods.add(token);
-        else key = token;
+        if (token === 'cmd' || token === 'cmdorctrl') {
+          // "cmd" in config means the platform's primary modifier:
+          // Meta on macOS, Ctrl on Windows/Linux.
+          mods.add(isMacPlatform ? 'cmd' : 'ctrl');
+        } else if (token === 'ctrl' || token === 'alt' || token === 'shift') {
+          mods.add(token);
+        } else {
+          key = token;
+        }
       }
       if (!key) return '';
       const ordered = [];
@@ -183,7 +190,8 @@
 
       document.addEventListener('keydown', (event) => {
         const combo = normalizeShortcutEventForPluginFallback(event);
-        if (isMacPlatform && combo && combo.includes('cmd')) {
+        const primaryMod = isMacPlatform ? 'cmd' : 'ctrl';
+        if (combo && combo.includes(primaryMod)) {
           const coreHit = coreShortcutFallbacks.find((s) => s.combo === combo);
           if (coreHit) {
             event.preventDefault();
@@ -254,6 +262,9 @@
         if (isTextInputTarget(event.target)) return;
         event.preventDefault();
         event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+          event.stopImmediatePropagation();
+        }
         if (isCommandPaletteOpen()) closeCommandPalette();
         else openCommandPalette();
       }, true);
