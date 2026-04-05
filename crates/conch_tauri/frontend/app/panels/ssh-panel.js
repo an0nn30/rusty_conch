@@ -406,22 +406,47 @@
         return;
       }
 
-      // Check if any selected tunnels depend on servers not in the export.
+      const selectedServerIds = new Set(serverIds);
+
+      // Check if selected items depend on servers not in the export.
       const selectedTunnels = tunnels.filter(t => tunnelIds.includes(t.id));
-      const missingServers = [];
+      const missingDependencies = [];
       for (const t of selectedTunnels) {
         const server = findServerForTunnel(t);
-        if (server && !serverIds.includes(server.id)) {
-          missingServers.push({ tunnel: t, server });
+        if (server && !selectedServerIds.has(server.id)) {
+          missingDependencies.push({
+            reason: 'tunnel',
+            sourceId: t.id,
+            sourceLabel: t.label,
+            server,
+          });
         }
       }
 
-      if (missingServers.length > 0) {
-        const shouldInclude = await showDependencyPrompt(missingServers);
+      const selectedServers = allServers.filter((s) => selectedServerIds.has(s.id));
+      for (const s of selectedServers) {
+        if (!s.proxy_jump) continue;
+        const depServer = findServerForProxyJump(s.proxy_jump, allServers);
+        if (depServer && !selectedServerIds.has(depServer.id)) {
+          missingDependencies.push({
+            reason: 'proxy_jump',
+            sourceId: s.id,
+            sourceLabel: s.label,
+            server: depServer,
+          });
+        }
+      }
+
+      const dedupedDependencies = dedupeDependencyServers(missingDependencies);
+      if (dedupedDependencies.length > 0) {
+        const shouldInclude = await showDependencyPrompt(dedupedDependencies);
         if (shouldInclude === null) return; // cancelled
         if (shouldInclude) {
-          for (const ms of missingServers) {
-            if (!serverIds.includes(ms.server.id)) serverIds.push(ms.server.id);
+          for (const dep of dedupedDependencies) {
+            if (!selectedServerIds.has(dep.server.id)) {
+              selectedServerIds.add(dep.server.id);
+              serverIds.push(dep.server.id);
+            }
           }
         }
       }
@@ -440,7 +465,7 @@
   }
 
 
-  function showDependencyPrompt(missingServers) {
+  function showDependencyPrompt(missingDependencies) {
     return new Promise((resolve) => {
       const existing = document.querySelector('.ssh-overlay.dep-prompt');
       if (existing) existing.remove();
@@ -449,23 +474,27 @@
       overlay.className = 'ssh-overlay dep-prompt';
 
       let listHtml = '';
-      for (const ms of missingServers) {
+      for (const dep of missingDependencies) {
+        const dependencyLabel = `${dep.server.label} (${dep.server.user}@${dep.server.host}:${dep.server.port})`;
+        const reasonText = dep.reason === 'proxy_jump'
+          ? `${dep.sourceLabel} uses ProxyJump`
+          : dep.sourceLabel;
         listHtml += `<div class="ssh-export-item" style="padding:2px 0;">
-          <span>${esc(ms.tunnel.label)}</span>
-          <span class="ssh-export-dim">\u2192 ${esc(ms.server.label)} (${esc(ms.server.user)}@${esc(ms.server.host)}:${ms.server.port})</span>
+          <span>${esc(reasonText)}</span>
+          <span class="ssh-export-dim">\u2192 ${esc(dependencyLabel)}</span>
         </div>`;
       }
 
       overlay.innerHTML = `
         <div class="ssh-form" style="min-width:400px;">
-          <div class="ssh-form-title">Include Server Connections?</div>
+          <div class="ssh-form-title">Include Dependency Servers?</div>
           <div class="ssh-form-body">
             <div style="margin-bottom:8px;font-size:12px;color:var(--fg);">
-              The following tunnels depend on server connections that aren't in your export:
+              The following selections depend on server connections that are not in your export:
             </div>
             ${listHtml}
             <div style="margin-top:10px;font-size:11px;color:var(--dim-fg);">
-              Without these servers, the tunnels may not work on the importing machine.
+              Without these servers, imported connections may fail on another machine.
             </div>
           </div>
           <div class="ssh-form-buttons">
@@ -531,6 +560,106 @@
   function getFilteredServers(query) {
     if (!query) return [];
     return getAllServers().filter((s) => serverMatchesQuery(s, query));
+  }
+
+  function buildProxyJumpOptions(excludedServerId) {
+    const options = [];
+    const seenSpecs = new Set();
+
+    const addFromList = (servers, source) => {
+      for (const s of servers || []) {
+        if (s.id === excludedServerId) continue;
+        const spec = makeProxyJumpSpec(s);
+        if (!spec) continue;
+        const normalizedSpec = normalizeProxyJump(spec);
+        if (!normalizedSpec || seenSpecs.has(normalizedSpec)) continue;
+        seenSpecs.add(normalizedSpec);
+        options.push({
+          source,
+          spec,
+          label: s.label || spec,
+          details: `${s.user || 'user'}@${s.host}:${s.port || 22}`,
+        });
+      }
+    };
+
+    for (const folder of serverData.folders) addFromList(folder.entries, 'saved');
+    addFromList(serverData.ungrouped, 'saved');
+    addFromList(serverData.ssh_config, 'ssh_config');
+
+    return options;
+  }
+
+  function renderProxyJumpOptions(options) {
+    const groups = [
+      { source: 'saved', title: 'Saved Sessions' },
+      { source: 'ssh_config', title: '~/.ssh/config' },
+    ];
+    return groups
+      .map((group) => {
+        const groupOptions = options.filter((opt) => opt.source === group.source);
+        if (!groupOptions.length) return '';
+        const optionHtml = groupOptions
+          .map((opt) => `<option value="${attr(opt.spec)}">${esc(opt.label)} (${esc(opt.details)})</option>`)
+          .join('');
+        return `<optgroup label="${esc(group.title)}">${optionHtml}</optgroup>`;
+      })
+      .join('');
+  }
+
+  function parseProxyJump(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+    const match = raw.match(/^(?:(.+?)@)?(\[[^\]]+\]|[^:]+?)(?::(\d+))?$/);
+    if (!match) return null;
+    const user = (match[1] || '').trim();
+    const host = (match[2] || '').trim().toLowerCase();
+    if (!host) return null;
+    const port = match[3] ? parseInt(match[3], 10) : 22;
+    return { user: user.toLowerCase(), host, port: Number.isFinite(port) ? port : 22 };
+  }
+
+  function normalizeProxyJump(value) {
+    const parsed = parseProxyJump(value);
+    if (!parsed) return null;
+    return `${parsed.user}@${parsed.host}:${parsed.port}`;
+  }
+
+  function makeProxyJumpSpec(server) {
+    if (!server || !server.host) return '';
+    const host = String(server.host).trim();
+    if (!host) return '';
+    const user = String(server.user || '').trim();
+    const port = Number.isFinite(Number(server.port)) ? Number(server.port) : 22;
+    const base = user ? `${user}@${host}` : host;
+    return port === 22 ? base : `${base}:${port}`;
+  }
+
+  function findServerForProxyJump(proxyJumpValue, servers) {
+    const parsed = parseProxyJump(proxyJumpValue);
+    if (!parsed) return null;
+
+    const normalized = normalizeProxyJump(proxyJumpValue);
+    if (parsed.user) {
+      return servers.find((s) => normalizeProxyJump(makeProxyJumpSpec(s)) === normalized) || null;
+    }
+
+    return servers.find((s) => {
+      const spec = parseProxyJump(makeProxyJumpSpec(s));
+      return spec && spec.host === parsed.host && spec.port === parsed.port;
+    }) || null;
+  }
+
+  function dedupeDependencyServers(missingDependencies) {
+    const seen = new Set();
+    const deduped = [];
+    for (const dep of missingDependencies) {
+      const key = `${dep.reason}:${dep.sourceId}:${dep.server.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(dep);
+    }
+    return deduped;
   }
 
   // ---------------------------------------------------------------------------
@@ -847,6 +976,8 @@
       }
     }
 
+    const proxyJumpOptions = buildProxyJumpOptions(existing ? existing.id : null);
+
     // Determine proxy state
     let proxyType = 'none';
     let proxyValue = '';
@@ -854,6 +985,10 @@
       if (existing.proxy_jump) { proxyType = 'jump'; proxyValue = existing.proxy_jump; }
       else if (existing.proxy_command) { proxyType = 'command'; proxyValue = existing.proxy_command; }
     }
+    const normalizedExistingProxyJump = proxyType === 'jump' ? normalizeProxyJump(proxyValue) : null;
+    const selectedProxyJumpOption = normalizedExistingProxyJump
+      ? proxyJumpOptions.find((opt) => normalizeProxyJump(opt.spec) === normalizedExistingProxyJump)
+      : null;
 
     const existingVaultId = existing ? (existing.vault_account_id || '') : '';
 
@@ -905,7 +1040,13 @@
                 <option value="command" ${proxyType === 'command' ? 'selected' : ''}>ProxyCommand</option>
               </select>
             </label>
-            <label class="ssh-form-label">Proxy Value
+            <label class="ssh-form-label" id="cf-proxy-jump-row" style="display:${proxyType === 'jump' ? '' : 'none'}">Proxy Jump Session
+              <select id="cf-proxy-jump-select">
+                <option value="__custom__" ${selectedProxyJumpOption ? '' : 'selected'}>Custom value...</option>
+                ${renderProxyJumpOptions(proxyJumpOptions)}
+              </select>
+            </label>
+            <label class="ssh-form-label" id="cf-proxy-value-row" style="display:${proxyType === 'none' ? 'none' : ''}">Proxy Value
               <input type="text" id="cf-proxy-value" value="${attr(proxyValue)}"
                      placeholder="user@jumphost or ssh -W %h:%p host" spellcheck="false" />
             </label>
@@ -941,6 +1082,54 @@
       }
       updateCredentialFieldsVisibility(overlay);
     });
+
+    const proxyTypeSelect = overlay.querySelector('#cf-proxy-type');
+    const proxyValueInput = overlay.querySelector('#cf-proxy-value');
+    const proxyValueRow = overlay.querySelector('#cf-proxy-value-row');
+    const proxyJumpRow = overlay.querySelector('#cf-proxy-jump-row');
+    const proxyJumpSelect = overlay.querySelector('#cf-proxy-jump-select');
+
+    function syncProxyJumpSelectFromValue() {
+      if (!proxyJumpSelect || proxyTypeSelect.value !== 'jump') return;
+      const normalized = normalizeProxyJump(proxyValueInput.value);
+      if (!normalized) {
+        proxyJumpSelect.value = '__custom__';
+        return;
+      }
+      const match = proxyJumpOptions.find((opt) => normalizeProxyJump(opt.spec) === normalized);
+      proxyJumpSelect.value = match ? match.spec : '__custom__';
+    }
+
+    function syncProxyUi() {
+      const currentProxyType = proxyTypeSelect.value;
+      proxyJumpRow.style.display = currentProxyType === 'jump' ? '' : 'none';
+      proxyValueRow.style.display = currentProxyType === 'none' ? 'none' : '';
+      if (currentProxyType === 'jump') {
+        proxyValueInput.placeholder = 'user@jump-host or jump-host:2222';
+        syncProxyJumpSelectFromValue();
+      } else if (currentProxyType === 'command') {
+        proxyValueInput.placeholder = 'ssh -W %h:%p jump-host';
+      }
+    }
+
+    if (proxyJumpSelect) {
+      proxyJumpSelect.addEventListener('change', () => {
+        if (proxyJumpSelect.value === '__custom__') {
+          proxyValueInput.focus();
+          return;
+        }
+        proxyValueInput.value = proxyJumpSelect.value;
+      });
+    }
+    proxyTypeSelect.addEventListener('change', syncProxyUi);
+    proxyValueInput.addEventListener('input', () => {
+      if (proxyTypeSelect.value === 'jump') syncProxyJumpSelectFromValue();
+    });
+
+    if (selectedProxyJumpOption && proxyJumpSelect) {
+      proxyJumpSelect.value = selectedProxyJumpOption.spec;
+    }
+    syncProxyUi();
 
     // Focus the host field
     const hostInput = overlay.querySelector('#cf-host');

@@ -5,7 +5,7 @@
 <h1 align="center">Conch</h1>
 
 <p align="center">
-  A fast, cross-platform terminal emulator with built-in SSH, SFTP, and an extensible plugin system.<br/>
+  A terminal-native workstation that unifies terminal, SSH, files, tunnels, credentials, and plugins in one app.<br/>
   Built with Rust + Tauri + xterm.js. Runs on macOS, Windows, and Linux.
 </p>
 
@@ -25,13 +25,13 @@
 
 ## Why Conch?
 
-Most terminal emulators do one thing well. SSH clients do another. File transfer tools are a third app entirely. Conch puts them all in one window — terminal, SSH sessions, SFTP file browser — and a plugin system that lets you build your own tools on top.
+Most terminal emulators do one thing well. SSH clients do another. File transfer tools are often separate. Conch combines these into a single workstation for terminal-oriented workflows: terminal, SSH sessions, file movement, tunnels, credentials, and extensible tooling.
 
-Think MobaXterm, but open source, cross-platform, and extensible.
+Positioning: Conch sits between terminal emulators (iTerm2, WezTerm, Warp) and remote-ops clients (MobaXterm, Termius) as an open-source, cross-platform control plane for terminal-first engineering work.
 
 ## Features
 
-**Terminal** — Full terminal emulation powered by [xterm.js](https://xtermjs.org/). 256-color, truecolor, mouse reporting, tabs, multi-window. Configurable font, cursor style, and scroll sensitivity.
+**Terminal Core** — Full terminal emulation powered by [xterm.js](https://xtermjs.org/). 256-color, truecolor, mouse reporting, tabs, panes, and multi-window. Configurable font, cursor style, and scroll sensitivity.
 
 **SSH Sessions** (built-in) — Save connections with proxy jump/command support, organized in folders. Password and key authentication. Quick-connect search from the sidebar. Parses `~/.ssh/config` automatically. Host key verification with `~/.ssh/known_hosts`.
 

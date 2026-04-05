@@ -96,6 +96,16 @@
       runtime.textContent = 'Platform: ' + esc(platform);
       content.appendChild(runtime);
 
+      const blurb = document.createElement('div');
+      blurb.style.cssText = 'color:var(--fg);font-size:12px;line-height:1.6;margin-bottom:12px';
+      blurb.textContent = 'A terminal-native workstation for SSH-heavy engineering workflows.';
+      content.appendChild(blurb);
+
+      const position = document.createElement('div');
+      position.style.cssText = 'color:var(--text-secondary);font-size:11px;line-height:1.6;margin-bottom:12px';
+      position.textContent = 'Conch unifies terminal, remote sessions, files, tunnels, credentials, and plugins in one cross-platform app.';
+      content.appendChild(position);
+
       const license = document.createElement('div');
       license.style.cssText = 'color:var(--text-secondary);font-size:11px;line-height:1.6';
       license.innerHTML = 'Licensed under <a href="#" style="color:var(--blue)" onclick="event.preventDefault();if(window.__TAURI__&&window.__TAURI__.shell)window.__TAURI__.shell.open(\'https://www.apache.org/licenses/LICENSE-2.0\')">Apache License 2.0</a><br>'
