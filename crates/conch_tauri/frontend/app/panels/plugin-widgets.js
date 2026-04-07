@@ -741,14 +741,17 @@
   // Event dispatch
   // ---------------------------------------------------------------------------
 
-  function sendEvent(pluginName, widgetEvent, viewId) {
+  function sendEvent(pluginName, widgetEvent, viewId, options) {
     if (!invoke || !pluginName) return;
+    const skipRefresh = !!(options && options.skipRefresh === true);
     const payload = { kind: 'widget', ...widgetEvent };
     if (viewId) payload.view_id = viewId;
     const eventJson = JSON.stringify(payload);
     invoke('plugin_widget_event', { pluginName, eventJson })
       .then(() => {
-        refreshPluginView(pluginName, viewId);
+        if (!skipRefresh) {
+          refreshPluginView(pluginName, viewId);
+        }
       })
       .catch((e) => {
         console.error('plugin_widget_event error:', e);
@@ -799,6 +802,7 @@
     '--magenta', '--input-bg', '--hover-bg', '--text-secondary', '--text-muted',
     '--ui-font-small', '--ui-font-list', '--ui-font-normal',
   ];
+  const _pendingToggleSync = new Set();
 
   function renderHtmlWidget(w, pluginName, viewId) {
     const host = document.createElement('div');
@@ -824,13 +828,85 @@
     container.innerHTML = w.content;
     shadow.appendChild(container);
 
+    const syncTmxAccordionHeights = () => {
+      shadow.querySelectorAll('.tmx-tabs-wrap').forEach((wrap) => {
+        const shell = wrap.querySelector('.tmx-tabs-shell');
+        const openHeight = Math.ceil((shell && shell.scrollHeight) || 0);
+        wrap.style.setProperty('--tmx-open-height', `${openHeight}px`);
+        if (wrap.classList.contains('is-open')) {
+          wrap.style.maxHeight = `${openHeight}px`;
+          wrap.style.opacity = '1';
+        } else {
+          wrap.style.maxHeight = '0px';
+          wrap.style.opacity = '0';
+        }
+      });
+    };
+    requestAnimationFrame(syncTmxAccordionHeights);
+
     // Wire up data-action click events.
     shadow.addEventListener('click', (e) => {
       const actionEl = e.target.closest('[data-action]');
       if (actionEl) {
         const action = actionEl.getAttribute('data-action');
+        if (action && action.startsWith('toggle_session:')) {
+          const sessionEl = actionEl.closest('.tmx-session');
+          const tabsWrap = sessionEl && sessionEl.querySelector('.tmx-tabs-wrap');
+          const chevron = sessionEl && sessionEl.querySelector('.tmx-chevron');
+          if (tabsWrap) {
+            const currentlyOpen = tabsWrap.classList.contains('is-open');
+            const shell = tabsWrap.querySelector('.tmx-tabs-shell');
+            const openHeight = Math.ceil((shell && shell.scrollHeight) || 0);
+            tabsWrap.style.setProperty('--tmx-open-height', `${openHeight}px`);
+            if (currentlyOpen) {
+              tabsWrap.classList.remove('is-open');
+              tabsWrap.style.maxHeight = '0px';
+              tabsWrap.style.opacity = '0';
+              if (chevron) chevron.innerHTML = '&#9656;';
+            } else {
+              tabsWrap.classList.add('is-open');
+              tabsWrap.style.maxHeight = `${openHeight}px`;
+              tabsWrap.style.opacity = '1';
+              if (chevron) chevron.innerHTML = '&#9662;';
+            }
+          }
+
+          const toggleKey = `${pluginName}::${viewId || ''}::${action}`;
+          if (_pendingToggleSync.has(toggleKey)) return;
+          _pendingToggleSync.add(toggleKey);
+          setTimeout(() => {
+            sendEvent(pluginName, { type: 'button_click', id: action }, viewId);
+            _pendingToggleSync.delete(toggleKey);
+          }, 180);
+          return;
+        }
+        const skipRefresh = action && action.startsWith('open_tab:');
+        sendEvent(pluginName, { type: 'button_click', id: action }, viewId, { skipRefresh });
+      }
+    });
+
+    // Wire up data-dbl-action double-click events.
+    shadow.addEventListener('dblclick', (e) => {
+      const actionEl = e.target.closest('[data-dbl-action]');
+      if (actionEl) {
+        const action = actionEl.getAttribute('data-dbl-action');
         sendEvent(pluginName, { type: 'button_click', id: action }, viewId);
       }
+    });
+
+    // Wire up right-click actions for plugin HTML UIs.
+    shadow.addEventListener('contextmenu', (e) => {
+      const actionEl = e.target.closest('[data-context-action]');
+      if (!actionEl) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const action = actionEl.getAttribute('data-context-action');
+      sendEvent(pluginName, {
+        type: 'button_click',
+        id: action,
+        x: Math.round(e.clientX || 0),
+        y: Math.round(e.clientY || 0),
+      }, viewId);
     });
 
     return host;
@@ -855,9 +931,8 @@
     overlay.className = 'ssh-overlay';
     overlay.setAttribute('data-plugin-dialog', pluginName);
     overlay.style.zIndex = '4000';
-    setDialogOverlayAttributes(overlay, title || 'Plugin form');
-
     const title = desc.title || 'Form';
+    setDialogOverlayAttributes(overlay, title || 'Plugin form');
     const fields = desc.fields || [];
     const buttons = desc.buttons || [{ id: 'cancel', label: 'Cancel' }, { id: 'ok', label: 'OK' }];
 

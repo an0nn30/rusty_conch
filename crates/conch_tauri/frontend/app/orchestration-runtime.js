@@ -53,6 +53,26 @@
         : null;
 
       if (global.conchToolWindowRuntime && global.conchToolWindowRuntime.create) {
+        const resolveTabById = (rawTabId) => {
+          if (rawTabId == null) return null;
+          if (tabs.has(rawTabId)) return tabs.get(rawTabId) || null;
+
+          const text = String(rawTabId).trim();
+          if (!text) return null;
+          if (tabs.has(text)) return tabs.get(text) || null;
+
+          const asNumber = Number(text);
+          if (Number.isFinite(asNumber) && tabs.has(asNumber)) {
+            return tabs.get(asNumber) || null;
+          }
+
+          const asInt = parseInt(text, 10);
+          if (Number.isFinite(asInt) && tabs.has(asInt)) {
+            return tabs.get(asInt) || null;
+          }
+          return null;
+        };
+
         const toolWindowRuntime = global.conchToolWindowRuntime.create({
           invoke,
           listen,
@@ -60,7 +80,7 @@
           layoutService,
           debouncedFitAndResize: () => debouncedFitAndResize(),
           getCurrentTab: () => currentTab(),
-          getTabById: (tabId) => tabs.get(Number(tabId)) || null,
+          getTabById: (tabId) => resolveTabById(tabId),
           getCurrentPane: () => currentPane(),
           createTab: (options) => createTab(options),
           createSshTab: (opts) => createSshTab(opts),

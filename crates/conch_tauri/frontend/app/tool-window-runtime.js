@@ -284,9 +284,25 @@
             applyTabTitle(tab, title);
           },
           focusTabById: (tabId) => {
-            const tab = deps.getTabById ? deps.getTabById(tabId) : null;
-            if (!tab || tab.id == null || typeof activateTab !== 'function') return;
-            activateTab(tab.id);
+            const tryActivate = () => {
+              const tab = deps.getTabById ? deps.getTabById(tabId) : null;
+              if (tab && tab.id != null && typeof activateTab === 'function') {
+                activateTab(tab.id);
+                return true;
+              }
+              const asNumber = Number(String(tabId || '').trim());
+              if (Number.isFinite(asNumber) && typeof activateTab === 'function') {
+                activateTab(asNumber);
+                return true;
+              }
+              return false;
+            };
+
+            if (tryActivate()) return;
+            // Some plugin flows race with tab-map updates; retry once next tick.
+            setTimeout(() => {
+              tryActivate();
+            }, 0);
           },
           writeToActivePty: (data) => {
             const pane = getCurrentPane();
