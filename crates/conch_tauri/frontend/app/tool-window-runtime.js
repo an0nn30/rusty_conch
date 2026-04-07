@@ -13,6 +13,19 @@
     const createSshTab = deps.createSshTab;
     const activateTab = deps.activateTab;
     const registeredPluginToolWindows = new Set();
+    let resizeDragDepth = 0;
+
+    function beginResizeDrag() {
+      resizeDragDepth += 1;
+      document.body.classList.add('panel-resize-dragging');
+    }
+
+    function endResizeDrag() {
+      resizeDragDepth = Math.max(0, resizeDragDepth - 1);
+      if (resizeDragDepth === 0) {
+        document.body.classList.remove('panel-resize-dragging');
+      }
+    }
 
     async function init() {
       const bottomPanelEl = document.getElementById('bottom-panel');
@@ -187,6 +200,7 @@
           startY = event.clientY;
           startHeight = bottomPanelEl.offsetHeight;
           bottomResizeEl.classList.add('dragging');
+          beginResizeDrag();
           document.body.style.cursor = 'row-resize';
           document.body.style.userSelect = 'none';
         });
@@ -202,6 +216,16 @@
           bottomResizeEl.releasePointerCapture(event.pointerId);
           dragging = false;
           bottomResizeEl.classList.remove('dragging');
+          endResizeDrag();
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+          saveLayoutNow();
+        });
+        bottomResizeEl.addEventListener('pointercancel', () => {
+          if (!dragging) return;
+          dragging = false;
+          bottomResizeEl.classList.remove('dragging');
+          endResizeDrag();
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
           saveLayoutNow();

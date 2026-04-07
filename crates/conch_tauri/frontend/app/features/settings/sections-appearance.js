@@ -115,17 +115,17 @@
     );
 
     const animationsSwitch = makeSwitch(
-      pendingSettings.conch.ui.disable_animations === true,
-      (val) => { pendingSettings.conch.ui.disable_animations = val; }
+      pendingSettings.conch.ui.disable_animations !== true,
+      (val) => { pendingSettings.conch.ui.disable_animations = !val; }
     );
     setRowTarget(
       addRow(
         container,
-        'Disable Animations',
-        'Turn off UI motion and toast animations for a snappier experience on lower-end machines.',
+        'Animations',
+        'Enable UI motion and toast animations.',
         animationsSwitch
       ),
-      'appearance:disable-animations'
+      'appearance:animations'
     );
 
     addDivider(container);

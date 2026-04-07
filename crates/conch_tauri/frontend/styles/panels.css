@@ -180,6 +180,9 @@
         opacity 140ms ease,
         border-top-color 140ms ease;
     }
+    body.panel-resize-dragging #bottom-panel {
+      transition: none !important;
+    }
     #bottom-panel.hidden {
       height: 0 !important;
       min-height: 0;
@@ -190,6 +193,9 @@
     #bottom-panel-resize {
       height: 4px; cursor: row-resize; background: transparent; flex-shrink: 0;
       transition: background 150ms;
+    }
+    body.panel-resize-dragging #bottom-panel-resize {
+      transition: none !important;
     }
     #bottom-panel-resize:hover, #bottom-panel-resize.dragging { background: var(--dim-fg); }
     #bottom-panel-header {

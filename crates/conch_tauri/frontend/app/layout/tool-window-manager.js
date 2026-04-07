@@ -48,6 +48,19 @@
     previewEl: null,
     zoneEls: new Map(),
   };
+  let resizeDragDepth = 0;
+
+  function beginResizeDrag() {
+    resizeDragDepth += 1;
+    document.body.classList.add('panel-resize-dragging');
+  }
+
+  function endResizeDrag() {
+    resizeDragDepth = Math.max(0, resizeDragDepth - 1);
+    if (resizeDragDepth === 0) {
+      document.body.classList.remove('panel-resize-dragging');
+    }
+  }
 
   // ---- Initialisation -------------------------------------------------------
 
@@ -822,6 +835,7 @@
       startX = e.clientX;
       startWidth = sb.panelEl.offsetWidth;
       sb.resizeEl.classList.add('dragging');
+      beginResizeDrag();
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
     });
@@ -839,6 +853,17 @@
       sb.resizeEl.releasePointerCapture(e.pointerId);
       dragging = false;
       sb.resizeEl.classList.remove('dragging');
+      endResizeDrag();
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      triggerSave();
+    });
+
+    sb.resizeEl.addEventListener('pointercancel', () => {
+      if (!dragging) return;
+      dragging = false;
+      sb.resizeEl.classList.remove('dragging');
+      endResizeDrag();
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       triggerSave();
@@ -866,6 +891,7 @@
       startTopFlex = total > 0 ? topH / total : 0.5;
       startBotFlex = 1 - startTopFlex;
       dividerEl.classList.add('dragging');
+      beginResizeDrag();
       document.body.style.cursor = 'row-resize';
       document.body.style.userSelect = 'none';
     });
@@ -888,6 +914,17 @@
       dividerEl.releasePointerCapture(e.pointerId);
       dragging = false;
       dividerEl.classList.remove('dragging');
+      endResizeDrag();
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      triggerSave();
+    });
+
+    dividerEl.addEventListener('pointercancel', () => {
+      if (!dragging) return;
+      dragging = false;
+      dividerEl.classList.remove('dragging');
+      endResizeDrag();
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       triggerSave();

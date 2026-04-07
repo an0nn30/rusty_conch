@@ -25,7 +25,7 @@
     { section: 'appearance', label: 'Appearance Mode', keywords: 'dark light system mode', targetId: 'appearance:mode' },
     { section: 'appearance', label: 'Notification Position', keywords: 'toast notifications top bottom', targetId: 'appearance:notification-position' },
     { section: 'appearance', label: 'Native Notifications', keywords: 'system notifications os notifications', targetId: 'appearance:native-notifications' },
-    { section: 'appearance', label: 'Disable Animations', keywords: 'reduce motion disable animations transitions effects performance', targetId: 'appearance:disable-animations' },
+    { section: 'appearance', label: 'Animations', keywords: 'animations motion transitions effects performance enable disable reduce motion', targetId: 'appearance:animations' },
     { section: 'appearance', label: 'Window Decorations', keywords: 'titlebar transparent buttonless none full window chrome', targetId: 'appearance:window-decorations' },
     { section: 'appearance', label: 'Native Menu Bar', keywords: 'menu bar macos native menu', targetId: 'appearance:native-menu-bar' },
     { section: 'appearance', label: 'UI Font Family', keywords: 'ui font family interface typography', targetId: 'appearance:ui-font-family' },
