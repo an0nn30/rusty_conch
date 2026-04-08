@@ -5,12 +5,13 @@
 //! emulation on the frontend side.
 
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::ffi::CStr;
 use std::io::Write;
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 pub(crate) struct PtyBackend {
     master: Box<dyn MasterPty + Send>,
@@ -32,9 +33,10 @@ impl Drop for PtyBackend {
         // when the master FD is closed, and this path only runs during window or
         // app cleanup.
         //
-        // Sending SIGHUP explicitly to the child process group ensures the shell
-        // and any child processes (e.g. `tmux attach`) still receive a proper
-        // hangup signal.
+        // On Unix, sending SIGHUP explicitly to the child process group ensures
+        // the shell and any child processes (e.g. `tmux attach`) still receive a
+        // proper hangup signal.
+        #[cfg(unix)]
         if let Some(pid) = self.process_id {
             unsafe {
                 libc::kill(-(pid as libc::pid_t), libc::SIGHUP);
@@ -49,6 +51,11 @@ impl Drop for PtyBackend {
 
 impl PtyBackend {
     /// Spawn a new PTY with the given dimensions and shell/env overrides.
+    ///
+    /// Returns the backend and the child process handle.  The caller should
+    /// use the child handle to detect process exit (via `child.wait()`),
+    /// which is essential on Windows where ConPTY does not reliably deliver
+    /// EOF to the reader when the shell exits.
     pub fn new(
         cols: u16,
         rows: u16,
@@ -56,7 +63,7 @@ impl PtyBackend {
         shell_args: &[String],
         extra_env: &HashMap<String, String>,
         clear_tmux_env: bool,
-    ) -> Result<Self> {
+    ) -> Result<(Self, Box<dyn Child + Send>)> {
         let pty_system = native_pty_system();
 
         let size = PtySize {
@@ -103,11 +110,14 @@ impl PtyBackend {
             .take_writer()
             .context("Failed to get PTY writer")?;
 
-        Ok(Self {
-            master: pair.master,
-            writer: Mutex::new(writer),
-            process_id,
-        })
+        Ok((
+            Self {
+                master: pair.master,
+                writer: Mutex::new(writer),
+                process_id,
+            },
+            child,
+        ))
     }
 
     /// Write raw bytes to the PTY (user keyboard input).

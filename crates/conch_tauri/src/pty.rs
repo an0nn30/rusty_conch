@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 use tauri::Emitter;
@@ -62,7 +63,7 @@ fn spawn_shell_for_pane(
 ) -> Result<(), String> {
     let key = session_key(&window_label, pane_id);
     let cfg = state.config.read();
-    let backend = PtyBackend::new(
+    let (backend, child) = PtyBackend::new(
         cols,
         rows,
         shell.as_deref(),
@@ -87,13 +88,40 @@ fn spawn_shell_for_pane(
         ptys.insert(key.clone(), backend);
     }
 
+    // Shared flag so only the first thread (reader or watcher) emits pty-exit.
+    let exited = Arc::new(AtomicBool::new(false));
+
     let ptys = Arc::clone(&state.ptys);
+    let reader_exited = Arc::clone(&exited);
+    let reader_key = key.clone();
+    let reader_label = window_label.clone();
+    let reader_app = app.clone();
     std::thread::Builder::new()
         .name(format!("pty-reader-{window_label}-{pane_id}"))
         .spawn(move || {
-            pty_reader_loop(&app, &ptys, key, window_label, pane_id, reader);
+            pty_reader_loop(
+                &reader_app,
+                &ptys,
+                &reader_exited,
+                reader_key,
+                reader_label,
+                pane_id,
+                reader,
+            );
         })
         .map_err(|e| format!("Failed to spawn PTY reader thread: {e}"))?;
+
+    // Spawn a watcher thread that waits for the child process to exit.
+    // On Windows/ConPTY the reader may never get EOF, so this provides a
+    // reliable fallback that detects process exit and closes the pane.
+    let watcher_ptys = Arc::clone(&state.ptys);
+    let watcher_exited = Arc::clone(&exited);
+    std::thread::Builder::new()
+        .name(format!("pty-watcher-{window_label}-{pane_id}"))
+        .spawn(move || {
+            pty_process_watcher(child, &app, &watcher_ptys, &watcher_exited, key, window_label, pane_id);
+        })
+        .map_err(|e| format!("Failed to spawn PTY watcher thread: {e}"))?;
 
     Ok(())
 }
@@ -221,10 +249,34 @@ pub(crate) fn get_local_pane_cwd(
 // PTY reader loop
 // ---------------------------------------------------------------------------
 
+/// Emit the `pty-exit` event if this is the first thread to detect exit.
+fn emit_pty_exit_once(
+    handle: &tauri::AppHandle,
+    pty_state: &Arc<Mutex<HashMap<String, PtyBackend>>>,
+    exited: &AtomicBool,
+    pty_key: &str,
+    window_label: &str,
+    pane_id: u32,
+) {
+    if exited.swap(true, Ordering::SeqCst) {
+        return; // The other thread already handled it.
+    }
+    pty_state.lock().remove(pty_key);
+    let _ = handle.emit_to(
+        window_label,
+        "pty-exit",
+        PtyExitEvent {
+            window_label: window_label.to_string(),
+            pane_id,
+        },
+    );
+}
+
 /// Continuously reads PTY output and emits "pty-output" events to the frontend.
 fn pty_reader_loop(
     handle: &tauri::AppHandle,
     pty_state: &Arc<Mutex<HashMap<String, PtyBackend>>>,
+    exited: &AtomicBool,
     pty_key: String,
     window_label: String,
     pane_id: u32,
@@ -238,15 +290,7 @@ fn pty_reader_loop(
         match reader.read(&mut buf) {
             Ok(0) => {
                 // EOF — shell exited.
-                pty_state.lock().remove(&pty_key);
-                let _ = handle.emit_to(
-                    &window_label,
-                    "pty-exit",
-                    PtyExitEvent {
-                        window_label: window_label.clone(),
-                        pane_id,
-                    },
-                );
+                emit_pty_exit_once(handle, pty_state, exited, &pty_key, &window_label, pane_id);
                 break;
             }
             Ok(n) => {
@@ -266,19 +310,30 @@ fn pty_reader_loop(
             }
             Err(e) => {
                 log::error!("PTY read error on pane {pane_id}: {e}");
-                pty_state.lock().remove(&pty_key);
-                let _ = handle.emit_to(
-                    &window_label,
-                    "pty-exit",
-                    PtyExitEvent {
-                        window_label: window_label.clone(),
-                        pane_id,
-                    },
-                );
+                emit_pty_exit_once(handle, pty_state, exited, &pty_key, &window_label, pane_id);
                 break;
             }
         }
     }
+}
+
+/// Waits for the child process to exit and emits `pty-exit` as a fallback.
+///
+/// On Windows with ConPTY, `reader.read()` may never return EOF after the
+/// shell exits.  This thread calls `child.wait()` which reliably detects
+/// process termination on all platforms.
+fn pty_process_watcher(
+    mut child: Box<dyn portable_pty::Child + Send>,
+    handle: &tauri::AppHandle,
+    pty_state: &Arc<Mutex<HashMap<String, PtyBackend>>>,
+    exited: &AtomicBool,
+    pty_key: String,
+    window_label: String,
+    pane_id: u32,
+) {
+    let _ = child.wait();
+    log::info!("PTY child process exited for pane {pane_id}");
+    emit_pty_exit_once(handle, pty_state, exited, &pty_key, &window_label, pane_id);
 }
 
 #[cfg(test)]
