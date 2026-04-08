@@ -16,14 +16,26 @@ local ACTION_RENAME_TAB_EXISTING = "tmux_rename_tab_existing"
 local SETTINGS_VIEW_ID = "settings"
 local SETTINGS_CONFIG_KEY = "tmux_binary_path"
 local SETTINGS_PATH_LOOKUP_KEY = "tmux_use_path_lookup"
+local DIAG_ENABLED = false
+local OPEN_DEDUPE_MS = 900
+local FOCUS_VERIFY_MAX_TICKS = 1
+local DOUBLE_CLICK_MS = 450
 
 local state = {
     sessions = {},
     status = "Loading tmux sessions...",
     last_error = nil,
+    initial_hydration_done = false,
+    startup_maintenance_done = false,
     current_session = nil,
     attached_anywhere = 0,
     attached_total_clients = 0,
+    selected_session_key = nil,
+    selected_tab_id = nil,
+    open_guard_until = {},
+    pending_focus = nil,
+    last_select_click = nil,
+    last_tick_ms = 0,
     last_refresh_unix = 0,
     next_poll_unix = 0,
     action_targets = {},
@@ -85,6 +97,74 @@ end
 
 local function now_unix()
     return math.floor(tonumber(net.time() or 0) or 0)
+end
+
+local function now_ms()
+    local t = tonumber(net.time() or 0) or 0
+    if t > 0 then
+        return math.floor(t * 1000)
+    end
+    local tick = tonumber(state.last_tick_ms or 0) or 0
+    if tick > 0 then
+        return tick
+    end
+    return now_unix() * 1000
+end
+
+local function claim_open_guard(key)
+    key = trim(tostring(key or ""))
+    if key == "" then
+        return true
+    end
+
+    local now_value = now_ms()
+    for guard_key, guard_until in pairs(state.open_guard_until or {}) do
+        if (tonumber(guard_until or 0) or 0) <= now_value then
+            state.open_guard_until[guard_key] = nil
+        end
+    end
+
+    local existing_until = tonumber((state.open_guard_until or {})[key] or 0) or 0
+    if existing_until > now_value then
+        return false
+    end
+
+    state.open_guard_until[key] = now_value + OPEN_DEDUPE_MS
+    return true
+end
+
+local function clear_open_guard(key)
+    key = trim(tostring(key or ""))
+    if key == "" then
+        return
+    end
+    state.open_guard_until[key] = nil
+end
+
+local function is_double_select(kind, key)
+    kind = trim(tostring(kind or ""))
+    key = trim(tostring(key or ""))
+    if kind == "" or key == "" then
+        return false
+    end
+
+    local now_value = now_ms()
+    local last = state.last_select_click
+    local last_kind = trim(tostring(last and last.kind or ""))
+    local last_key = trim(tostring(last and last.key or ""))
+    local last_ms = tonumber(last and last.ms or 0) or 0
+
+    local matched = last_kind == kind and last_key == key and (now_value - last_ms) <= DOUBLE_CLICK_MS
+    state.last_select_click = {
+        kind = kind,
+        key = key,
+        ms = now_value,
+    }
+    if matched then
+        state.last_select_click = nil
+        return true
+    end
+    return false
 end
 
 local function run_shell(command)
@@ -171,17 +251,6 @@ local function is_command_missing(result)
         or stderr:find("No such file or directory", 1, true) ~= nil
 end
 
-local function tmux_available()
-    local result = run_shell(sh_quote(tmux_command_path()) .. " -V")
-    if tonumber(result.exit_code or -1) == 0 then
-        return true
-    end
-    if is_command_missing(result) then
-        return false
-    end
-    return false
-end
-
 -- ---------------------------------------------------------------------------
 -- Diagnostic logging (sandbox-safe: uses exec_local instead of os/io)
 -- Log file: ~/.config/conch/tmux-manager-diag.log
@@ -198,6 +267,9 @@ local function diag_log_path()
 end
 
 local function dlog(msg)
+    if not DIAG_ENABLED then
+        return
+    end
     local ts_result = session.exec_local("date '+%Y-%m-%d %H:%M:%S'")
     local ts = trim(ts_result.stdout or "?")
     local line = "[" .. ts .. "] " .. tostring(msg)
@@ -207,12 +279,17 @@ end
 local function run_tmux(args)
     local cmd = sh_quote(tmux_command_path()) .. " " .. args
     local result = run_shell(cmd)
-    dlog("run_tmux: " .. args .. " => exit=" .. tostring(result.exit_code)
-        .. (trim(result.stderr or "") ~= "" and (" stderr=" .. trim(result.stderr)) or ""))
+    if DIAG_ENABLED then
+        dlog("run_tmux: " .. args .. " => exit=" .. tostring(result.exit_code)
+            .. (trim(result.stderr or "") ~= "" and (" stderr=" .. trim(result.stderr)) or ""))
+    end
     return result
 end
 
 local function dlog_tmux_state(label)
+    if not DIAG_ENABLED then
+        return
+    end
     dlog("--- " .. label .. " ---")
     local sv = run_shell(sh_quote(tmux_command_path()) .. " display-message -p '#{version}' 2>&1")
     dlog("  tmux version: " .. trim(sv.stdout or "?") .. " (exit=" .. tostring(sv.exit_code) .. ")")
@@ -363,6 +440,177 @@ local function tracked_tab_id_for_session(name)
     return nil
 end
 
+local function clear_tracked_tab_for_session(name)
+    name = trim(name)
+    if name == "" then
+        return
+    end
+
+    state.pending_tabs_by_name[name] = nil
+
+    local known = session_by_name(name)
+    if known ~= nil and tonumber(known.created_unix or 0) > 0 then
+        state.tracked_tabs[tostring(known.created_unix)] = nil
+    end
+
+    for created_key, tracked in pairs(state.tracked_tabs or {}) do
+        if tracked ~= nil and tostring(tracked.last_name or "") == name then
+            state.tracked_tabs[created_key] = nil
+        end
+    end
+end
+
+local function attached_clients_for_session_live(name)
+    name = trim(name)
+    if name == "" then
+        return nil
+    end
+
+    local result = run_tmux("list-sessions -F '#{session_name}\t#{session_attached}'")
+    if tonumber(result.exit_code or -1) ~= 0 then
+        return nil
+    end
+
+    for _, line in ipairs(split_lines(result.stdout or "")) do
+        if trim(line) ~= "" then
+            local fields = split_tab(line)
+            if tostring(fields[1] or "") == name then
+                return tonumber(fields[2] or "0") or 0
+            end
+        end
+    end
+    return nil
+end
+
+local function resolve_live_tab_id_for_session(name)
+    local existing_tab_id = tracked_tab_id_for_session(name)
+    if existing_tab_id == nil then
+        return nil
+    end
+
+    local attached_clients = attached_clients_for_session_live(name)
+    if attached_clients == nil or attached_clients <= 0 then
+        dlog("dropping stale tracked tab for '" .. name .. "' (attached_clients=" .. tostring(attached_clients) .. ")")
+        clear_tracked_tab_for_session(name)
+        return nil
+    end
+    return existing_tab_id
+end
+
+local function track_tab_for_session(name, tab_id)
+    tab_id = trim(tostring(tab_id or ""))
+    name = trim(name)
+    if tab_id == "" or name == "" then
+        return
+    end
+
+    local known = session_by_name(name)
+    if known ~= nil and tonumber(known.created_unix or 0) > 0 then
+        state.tracked_tabs[tostring(known.created_unix)] = { tab_id = tab_id, last_name = name }
+    else
+        state.pending_tabs_by_name[name] = tab_id
+    end
+end
+
+local function queue_pending_focus(kind, name, tab_id, window_id, window_label)
+    state.pending_focus = {
+        kind = tostring(kind or ""),
+        name = trim(name),
+        tab_id = trim(tostring(tab_id or "")),
+        window_id = trim(tostring(window_id or "")),
+        window_label = tostring(window_label or ""),
+        started_ms = now_ms(),
+        ticks = 0,
+    }
+end
+
+local function open_session_in_new_tab(name)
+    local tab_id = launch_tmux_in_plain_tab(
+        "attach-session -t " .. sh_quote(name),
+        name
+    )
+    dlog("  launched tab, tab_id=" .. tostring(tab_id))
+    dlog_tmux_state("after attach launched " .. name)
+    track_tab_for_session(name, tab_id)
+    state.status = "Opening tmux session '" .. name .. "' in a new tab..."
+end
+
+local function open_session_window_in_new_tab(name, window_id, window_label)
+    local attach_cmd = "attach-session -t " .. sh_quote(name) .. " \\; select-window -t " .. sh_quote(window_id)
+    local tab_id = launch_tmux_in_plain_tab(attach_cmd, name)
+    track_tab_for_session(name, tab_id)
+    state.status = "Opening tmux tab '" .. tostring(window_label or "") .. "' from '" .. name .. "'..."
+end
+
+local function active_tmux_session_in_active_pane()
+    local probe = session.exec_active("tmux display-message -p '#S' 2>/dev/null")
+    if tonumber(probe.exit_code or -1) ~= 0 then
+        return nil
+    end
+    local current_name = trim(probe.stdout or "")
+    if current_name == "" then
+        return nil
+    end
+    return current_name
+end
+
+local function process_pending_focus()
+    local pending = state.pending_focus
+    if type(pending) ~= "table" then
+        return
+    end
+
+    local target_name = trim(pending.name or "")
+    if target_name == "" then
+        state.pending_focus = nil
+        return
+    end
+
+    if session_by_name(target_name) == nil then
+        clear_tracked_tab_for_session(target_name)
+        state.pending_focus = nil
+        return
+    end
+
+    local active_name = active_tmux_session_in_active_pane()
+    if active_name ~= nil and active_name == target_name then
+        if pending.kind == "tab" then
+            local switch_result = run_tmux("select-window -t " .. sh_quote(pending.window_id or ""))
+            if tonumber(switch_result.exit_code or -1) ~= 0 then
+                local message = trim(switch_result.stderr or "Unable to switch tmux tab.")
+                state.status = "Focused existing tab for '" .. target_name .. "', but switch failed."
+                state.last_error = message
+                app.notify("Tmux Manager", message, "warn", 2600)
+                state.pending_focus = nil
+                return
+            end
+            state.status = "Switched existing tab for '" .. target_name .. "' to '" .. tostring(pending.window_label or "") .. "'."
+        else
+            state.status = "Switched to existing tab for tmux session '" .. target_name .. "'."
+        end
+        state.pending_focus = nil
+        return
+    end
+
+    pending.ticks = (tonumber(pending.ticks or 0) or 0) + 1
+    if pending.ticks < FOCUS_VERIFY_MAX_TICKS then
+        return
+    end
+
+    clear_tracked_tab_for_session(target_name)
+    clear_open_guard("session:" .. target_name)
+    if pending.kind == "tab" then
+        clear_open_guard("tab:" .. target_name .. ":" .. tostring(pending.window_id or ""))
+    end
+
+    if pending.kind == "tab" then
+        open_session_window_in_new_tab(target_name, pending.window_id or "", pending.window_label or "")
+    else
+        open_session_in_new_tab(target_name)
+    end
+    state.pending_focus = nil
+end
+
 local function ensure_session_persistence(name, opts)
     name = trim(name)
     if name == "" then
@@ -462,32 +710,18 @@ local function is_no_server(result)
 end
 
 local function detect_current_session_best_effort(sessions)
-    local current_name = nil
-
-    -- If Conch itself is launched inside a tmux client, tmux can resolve #S.
-    local probe = run_tmux("display-message -p '#S'")
-    if tonumber(probe.exit_code or -1) == 0 then
-        local value = trim(probe.stdout or "")
-        if value ~= "" then
-            current_name = value
-        end
+    -- Resolve active session from the currently focused Conch pane only.
+    local current_name = active_tmux_session_in_active_pane()
+    if current_name == nil then
+        return nil
     end
 
-    if current_name ~= nil then
-        return current_name
-    end
-
-    -- Fallback heuristic: if exactly one session has attached clients, use it.
-    local single = nil
     for _, s in ipairs(sessions or {}) do
-        if (tonumber(s.attached_clients or 0) or 0) > 0 then
-            if single ~= nil then
-                return nil
-            end
-            single = s.name
+        if tostring(s.name or "") == current_name then
+            return current_name
         end
     end
-    return single
+    return nil
 end
 
 local function reconcile_tracked_tabs(sessions)
@@ -567,30 +801,78 @@ local function list_windows_for_session(session_name)
 end
 
 local function refresh_session_tabs(parsed_sessions)
-    local next_tabs = {}
-    local tab_error = nil
+    local expanded_keys = {}
     for _, s in ipairs(parsed_sessions or {}) do
         local key = session_key(s)
         if key ~= "" and state.expanded_sessions[key] == true then
-            local tabs, err = list_windows_for_session(s.name or "")
-            if tabs == nil then
-                tabs = {}
-                if tab_error == nil then
-                    tab_error = err
-                end
-            end
-            next_tabs[key] = tabs
+            expanded_keys[key] = true
         end
     end
-    state.tabs_by_session = next_tabs
-    if tab_error ~= nil and tab_error ~= "" then
-        state.last_error = tab_error
+
+    local next_tabs = {}
+    for key, _ in pairs(expanded_keys) do
+        next_tabs[key] = {}
     end
+
+    if next(expanded_keys) == nil then
+        state.tabs_by_session = next_tabs
+        return
+    end
+
+    local list = run_tmux(
+        "list-windows -a -F '#{session_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_panes}'"
+    )
+    if tonumber(list.exit_code or -1) ~= 0 then
+        if not is_no_server(list) then
+            local err = trim(list.stderr or "")
+            if err ~= "" then
+                state.last_error = err
+            end
+        end
+        state.tabs_by_session = next_tabs
+        return
+    end
+
+    for _, line in ipairs(split_lines(list.stdout or "")) do
+        if trim(line) ~= "" then
+            local fields = split_tab(line)
+            local sid = tostring(fields[1] or "")
+            local sname = tostring(fields[2] or "")
+            local key = ""
+            if sid ~= "" and expanded_keys[sid] == true then
+                key = sid
+            elseif sname ~= "" and expanded_keys[sname] == true then
+                key = sname
+            end
+            if key ~= "" then
+                next_tabs[key] = next_tabs[key] or {}
+                next_tabs[key][#next_tabs[key] + 1] = {
+                    id = fields[3] or "",
+                    index = tonumber(fields[4] or "0") or 0,
+                    name = fields[5] or "",
+                    active = tostring(fields[6] or "0") == "1",
+                    panes = tonumber(fields[7] or "0") or 0,
+                }
+            end
+        end
+    end
+
+    for _, tabs in pairs(next_tabs) do
+        table.sort(tabs, function(a, b)
+            if tonumber(a.index or 0) == tonumber(b.index or 0) then
+                return tostring(a.name or ""):lower() < tostring(b.name or ""):lower()
+            end
+            return tonumber(a.index or 0) < tonumber(b.index or 0)
+        end)
+    end
+
+    state.tabs_by_session = next_tabs
 end
 
 local function refresh_sessions(quiet, update_status)
     quiet = quiet == true
     update_status = update_status ~= false
+    state.initial_hydration_done = true
     state.last_error = nil
     state.current_session = nil
     state.action_targets = {}
@@ -598,22 +880,21 @@ local function refresh_sessions(quiet, update_status)
     state.attached_total_clients = 0
     state.last_refresh_unix = now_unix()
 
-    if not tmux_available() then
-        state.sessions = {}
-        state.persistence_initialized = {}
-        local message = "tmux is not installed or not available on PATH."
-        if update_status then
-            state.status = message
-        end
-        state.last_error = message
-        if not quiet then
-            app.notify("Tmux Manager", message, "error", 3200)
-        end
-        return false
-    end
-
     local list = run_tmux("list-sessions -F '#{session_id}\t#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}'")
     if tonumber(list.exit_code or -1) ~= 0 then
+        if is_command_missing(list) then
+            state.sessions = {}
+            state.persistence_initialized = {}
+            local message = "tmux is not installed or not available on PATH."
+            if update_status then
+                state.status = message
+            end
+            state.last_error = message
+            if not quiet then
+                app.notify("Tmux Manager", message, "error", 3200)
+            end
+            return false
+        end
         if is_no_server(list) then
             state.sessions = {}
             state.persistence_initialized = {}
@@ -674,6 +955,11 @@ local function refresh_sessions(quiet, update_status)
         if key ~= "" then
             seen_expanded[key] = true
         end
+    end
+    if tostring(state.selected_session_key or "") ~= ""
+        and seen_expanded[tostring(state.selected_session_key)] ~= true then
+        state.selected_session_key = nil
+        state.selected_tab_id = nil
     end
     for key, expanded in pairs(state.expanded_sessions or {}) do
         if expanded == true and not seen_expanded[key] then
@@ -757,6 +1043,10 @@ local function attach_session(name)
 
     dlog("attach_session: name=" .. name)
     dlog_tmux_state("before attach " .. name)
+    if not claim_open_guard("session:" .. name) then
+        state.status = "Already opening tmux session '" .. name .. "'..."
+        return
+    end
 
     ensure_session_persistence(name, { refresh_windows = true })
 
@@ -764,29 +1054,17 @@ local function attach_session(name)
     -- never sees "[Pane is dead]" when re-attaching.
     respawn_dead_panes(name)
 
-    local existing_tab_id = tracked_tab_id_for_session(name)
+    local existing_tab_id = resolve_live_tab_id_for_session(name)
     if existing_tab_id ~= nil then
         dlog("  focusing existing tab " .. existing_tab_id)
         session.focus_tab_by_id(existing_tab_id)
-        state.status = "Switched to existing tab for tmux session '" .. name .. "'."
+        queue_pending_focus("session", name, existing_tab_id, "", "")
+        process_pending_focus()
+        state.status = "Switching to existing tab for tmux session '" .. name .. "'..."
         return
     end
 
-    local tab_id = launch_tmux_in_plain_tab(
-        "attach-session -t " .. sh_quote(name),
-        name
-    )
-    dlog("  launched tab, tab_id=" .. tostring(tab_id))
-    dlog_tmux_state("after attach launched " .. name)
-    if tab_id ~= nil and tab_id ~= "" then
-        local known = session_by_name(name)
-        if known ~= nil and tonumber(known.created_unix or 0) > 0 then
-            state.tracked_tabs[tostring(known.created_unix)] = { tab_id = tab_id, last_name = name }
-        else
-            state.pending_tabs_by_name[name] = tab_id
-        end
-    end
-    state.status = "Opening tmux session '" .. name .. "' in a new tab..."
+    open_session_in_new_tab(name)
 end
 
 local function attach_session_tab(name, window_id, _window_index, window_label)
@@ -796,39 +1074,23 @@ local function attach_session_tab(name, window_id, _window_index, window_label)
         app.notify("Tmux Manager", "Session and tab are required.", "warn", 2400)
         return
     end
-
-    ensure_session_persistence(name)
-
-    local tab_title = name
-
-    local existing_tab_id = tracked_tab_id_for_session(name)
-    if existing_tab_id ~= nil then
-        session.focus_tab_by_id(existing_tab_id)
-        local switch_result = run_tmux("select-window -t " .. sh_quote(window_id))
-        if tonumber(switch_result.exit_code or -1) ~= 0 then
-            local message = trim(switch_result.stderr or "Unable to switch tmux tab.")
-            state.status = "Focused existing tab for '" .. name .. "', but switch failed."
-            state.last_error = message
-            app.notify("Tmux Manager", message, "warn", 2600)
-            return
-        end
-        state.status = "Switched existing tab for '" .. name .. "' to '" .. tostring(window_label or "") .. "'."
+    if not claim_open_guard("tab:" .. name .. ":" .. window_id) then
+        state.status = "Already opening '" .. tostring(window_label or "") .. "' from '" .. name .. "'..."
         return
     end
 
-    local attach_cmd = "attach-session -t " .. sh_quote(name) .. " \\; select-window -t " .. sh_quote(window_id)
+    ensure_session_persistence(name)
 
-    local tab_id = launch_tmux_in_plain_tab(attach_cmd, tab_title)
-    if tab_id ~= nil and tab_id ~= "" then
-        local known = session_by_name(name)
-        if known ~= nil and tonumber(known.created_unix or 0) > 0 then
-            state.tracked_tabs[tostring(known.created_unix)] = { tab_id = tab_id, last_name = name }
-        else
-            state.pending_tabs_by_name[name] = tab_id
-        end
+    local existing_tab_id = resolve_live_tab_id_for_session(name)
+    if existing_tab_id ~= nil then
+        session.focus_tab_by_id(existing_tab_id)
+        queue_pending_focus("tab", name, existing_tab_id, window_id, window_label)
+        process_pending_focus()
+        state.status = "Switching to existing tab for '" .. name .. "'..."
+        return
     end
 
-    state.status = "Opening tmux tab '" .. tostring(window_label or "") .. "' from '" .. name .. "'..."
+    open_session_window_in_new_tab(name, window_id, window_label)
 end
 
 local function create_session(name)
@@ -859,9 +1121,7 @@ local function create_session(name)
 
     local tab_id = launch_tmux_in_plain_tab("attach-session -t " .. sh_quote(name), name)
     dlog("  launched tab, tab_id=" .. tostring(tab_id))
-    if tab_id ~= nil and tab_id ~= "" then
-        state.pending_tabs_by_name[name] = tab_id
-    end
+    track_tab_for_session(name, tab_id)
     state.status = "Creating session '" .. name .. "' in a new tab..."
     app.notify("Tmux Manager", "Creating session '" .. name .. "' in a new tab.", "success", 2400)
 end
@@ -1178,7 +1438,7 @@ local function render_html()
 
     local rows = {}
     local header_title = "Tmux Manager"
-    local header_subtitle = "Sessions"
+    local header_subtitle = "Sessions (double-click to open)"
     local header_actions = [[
       <button class="tmx-icon-btn" data-action="refresh" title="Refresh sessions" aria-label="Refresh sessions">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 0 1 6.93 6h-2.18l3.03 3.53L22.8 11h-1.86A9 9 0 1 0 12 21a9 9 0 0 0 8.19-5.26l-1.83-.82A7 7 0 1 1 12 5"></path></svg>
@@ -1193,7 +1453,14 @@ local function render_html()
         state.action_targets[id] = s
         local expanded = is_session_expanded(s)
         local row_class = "tmx-row"
-        local session_tab_id = tracked_tab_id_for_session(s.name or "") or ""
+        local session_is_current = tostring(state.current_session or "") ~= ""
+            and tostring(s.name or "") == tostring(state.current_session or "")
+        if session_is_current then
+            row_class = "tmx-row is-current"
+        end
+        if tostring(state.selected_session_key or "") == tostring(session_key(s) or "") then
+            row_class = row_class .. " is-selected"
+        end
         local chevron = expanded and "&#9662;" or "&#9656;"
         local tabs = expanded and tabs_for_session(s) or {}
         local tab_rows = {}
@@ -1201,10 +1468,13 @@ local function render_html()
         for t_idx, tab in ipairs(tabs) do
             local tab_id = id .. ":" .. tostring(t_idx)
             state.tab_action_targets[tab_id] = { session = s, tab = tab }
-            local tab_row_class = tab.active and "tmx-tab-row is-current" or "tmx-tab-row"
+            local tab_row_class = (session_is_current and tab.active) and "tmx-tab-row is-current" or "tmx-tab-row"
+            if tostring(state.selected_tab_id or "") == tab_id then
+                tab_row_class = tab_row_class .. " is-selected"
+            end
             tab_rows[#tab_rows + 1] = [[
               <div class="tmx-tab-wrap">
-                <button class="]] .. tab_row_class .. [[" data-action="open_tab:]] .. tab_id .. [[" data-context-action="show_tab_menu:]] .. tab_id .. [[" title="Click to open this tmux tab. Right-click for actions.">
+                <button class="]] .. tab_row_class .. [[" data-action="select_tab:]] .. tab_id .. [[" data-context-action="show_tab_menu:]] .. tab_id .. [[" title="Single click selects. Double click opens this tmux tab. Right-click for actions.">
                   <span class="tmx-name-wrap">
                     <span class="tmx-tab-index">]] .. tostring(tab.index or 0) .. [[</span>
                     <span class="tmx-name">]] .. html_escape(tab.name) .. [[</span>
@@ -1219,14 +1489,27 @@ local function render_html()
             tab_rows[#tab_rows + 1] = [[<div class="tmx-empty tmx-empty-tabs">No tabs in this session.</div>]]
         end
 
+        local attached_clients = tonumber(s.attached_clients or 0) or 0
+        local attached_badge = ""
+        if attached_clients > 0 then
+            if session_is_current then
+                attached_badge = [[<span class="tmx-attach-badge is-here">active here</span>]]
+            else
+                attached_badge = [[<span class="tmx-attach-badge">attached ]] .. tostring(attached_clients) .. [[</span>]]
+            end
+        end
+
         rows[#rows + 1] = [[
           <div class="tmx-session">
-            <div class="]] .. row_class .. [[" data-session-tab-id="]] .. html_escape(session_tab_id) .. [[">
-              <button class="tmx-row-main" data-action="toggle_session:]] .. id .. [[" data-context-action="show_session_menu:]] .. id .. [[" title="Click to expand tabs. Right-click for actions.">
+            <div class="]] .. row_class .. [[">
+              <button class="tmx-row-toggle" data-action="toggle_session:]] .. id .. [[" title="Expand/collapse tabs" aria-label="Expand/collapse tabs">
+                <span class="tmx-chevron">]] .. chevron .. [[</span>
+              </button>
+              <button class="tmx-row-main" data-action="select_session:]] .. id .. [[" data-context-action="show_session_menu:]] .. id .. [[" title="Single click selects. Double click opens this tmux session. Right-click for actions.">
                 <span class="tmx-name-wrap">
-                  <span class="tmx-chevron">]] .. chevron .. [[</span>
                   <span class="tmx-current-dot"></span>
                   <span class="tmx-name">]] .. html_escape(s.name) .. [[</span>
+                  ]] .. attached_badge .. [[
                 </span>
                 <span class="tmx-meta">]] .. tostring(s.windows or 0) .. [[ tab(s)</span>
               </button>
@@ -1241,7 +1524,7 @@ local function render_html()
             </div>
             <div class="tmx-tabs-wrap ]] .. (expanded and "is-open" or "") .. [[">
               <div class="tmx-tabs-shell">
-                <div class="tmx-tabs-hint">Click a tab to open it. Right-click for tab actions.</div>
+                <div class="tmx-tabs-hint">Use chevron to expand. Single click selects. Double click opens. Right-click for tab actions.</div>
                 ]] .. table.concat(tab_rows, "\n") .. [[
               </div>
             </div>
@@ -1275,9 +1558,13 @@ local function render_html()
     end
 
     if #rows == 0 then
+        local empty_message = "No tmux sessions yet."
+        if state.initial_hydration_done ~= true then
+            empty_message = "Loading tmux sessions..."
+        end
         rows[#rows + 1] = [[
           <div class="tmx-empty">
-            No tmux sessions yet.
+            ]] .. html_escape(empty_message) .. [[
           </div>
         ]]
     end
@@ -1392,14 +1679,33 @@ local function render_html()
         padding: 2px;
         border-radius: 6px;
       }
+      .tmx-row.is-selected {
+        outline: 1px solid var(--active-highlight);
+      }
       .tmx-row.is-current {
+        background: var(--hover-bg);
+      }
+      .tmx-row-toggle {
+        border: none;
+        background: transparent;
+        color: inherit;
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        flex: 0 0 auto;
+      }
+      .tmx-row-toggle:hover {
         background: var(--hover-bg);
       }
       .tmx-row-main {
         border: none;
         background: transparent;
         color: inherit;
-        width: 100%;
+        flex: 1 1 auto;
         min-width: 0;
         display: inline-flex;
         align-items: center;
@@ -1452,6 +1758,19 @@ local function render_html()
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      .tmx-attach-badge {
+        font-size: 9px;
+        color: var(--text-secondary);
+        border: 1px solid var(--tab-border);
+        border-radius: 999px;
+        padding: 1px 6px;
+        line-height: 12px;
+        flex: 0 0 auto;
+      }
+      .tmx-attach-badge.is-here {
+        color: var(--green);
+        border-color: var(--green);
+      }
       .tmx-meta {
         color: var(--text-secondary);
         font-size: 10px;
@@ -1463,22 +1782,12 @@ local function render_html()
         flex: 0 0 auto;
       }
       .tmx-tabs-wrap {
-        overflow: hidden;
-        max-height: 0;
-        opacity: 0;
-        border-left-color: transparent;
-        transition:
-          max-height 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
-          opacity 140ms ease,
-          border-left-color 140ms ease;
+        display: none;
         margin-left: 14px;
         border-left: 1px solid var(--tab-border);
-        will-change: max-height, opacity;
       }
       .tmx-tabs-wrap.is-open {
-        max-height: var(--tmx-open-height, 360px);
-        opacity: 1;
-        border-left-color: var(--tab-border);
+        display: block;
       }
       .tmx-tabs-shell {
         display: flex;
@@ -1517,6 +1826,9 @@ local function render_html()
       .tmx-tab-row.is-current {
         background: var(--hover-bg);
       }
+      .tmx-tab-row.is-selected {
+        outline: 1px solid var(--active-highlight);
+      }
       .tmx-context-backdrop {
         position: fixed;
         inset: 0;
@@ -1535,11 +1847,6 @@ local function render_html()
         box-shadow: 0 10px 24px rgba(0, 0, 0, 0.38);
         overflow: hidden;
         z-index: 3998;
-        animation: tmx-menu-in 0.11s ease;
-      }
-      @keyframes tmx-menu-in {
-        from { opacity: 0; transform: translateY(-3px) scale(0.98); }
-        to { opacity: 1; transform: translateY(0) scale(1); }
       }
       .tmx-context-item {
         display: block;
@@ -1688,6 +1995,8 @@ local function handle_button_action(action_id, context_x, context_y)
             return
         end
         if verb == "open_tab" then
+            state.selected_tab_id = idx
+            state.selected_session_key = session_key(target.session)
             attach_session_tab(
                 target.session.name or "",
                 target.tab.id or "",
@@ -1700,16 +2009,71 @@ local function handle_button_action(action_id, context_x, context_y)
         return
     end
 
+    if verb == "select_tab" then
+        local target = state.tab_action_targets[idx]
+        if target == nil or target.session == nil or target.tab == nil then
+            return
+        end
+        if tostring(state.selected_tab_id or "") == tostring(idx) then
+            attach_session_tab(
+                target.session.name or "",
+                target.tab.id or "",
+                target.tab.index or -1,
+                target.tab.name or ""
+            )
+            return
+        end
+        state.selected_tab_id = idx
+        state.selected_session_key = session_key(target.session)
+        local click_key = tostring(state.selected_session_key or "") .. "|" .. tostring(target.tab.id or "")
+        if is_double_select("tab", click_key) then
+            attach_session_tab(
+                target.session.name or "",
+                target.tab.id or "",
+                target.tab.index or -1,
+                target.tab.name or ""
+            )
+            return
+        end
+        state.status = "Selected tmux tab '" .. tostring(target.tab.name or "") .. "'."
+        return
+    end
+
     local target = state.action_targets[idx]
     if target == nil then
         return
     end
 
+    if verb == "select_session" then
+        local target_key = session_key(target)
+        if tostring(state.selected_session_key or "") == tostring(target_key or "") and tostring(target_key or "") ~= "" then
+            attach_session(target.name or "")
+            return
+        end
+        state.selected_session_key = target_key
+        state.selected_tab_id = nil
+        if is_double_select("session", tostring(state.selected_session_key or "")) then
+            attach_session(target.name or "")
+            return
+        end
+        state.status = "Selected tmux session '" .. tostring(target.name or "") .. "'."
+        return
+    end
+    if verb == "open_session" then
+        state.selected_session_key = session_key(target)
+        state.selected_tab_id = nil
+        attach_session(target.name or "")
+        return
+    end
     if verb == "toggle_session" then
+        state.selected_session_key = session_key(target)
+        state.selected_tab_id = nil
         toggle_session_expanded(target)
         return
     end
     if verb == "attach_session" then
+        state.selected_session_key = session_key(target)
+        state.selected_tab_id = nil
         attach_session(target.name or "")
         return
     end
@@ -1723,17 +2087,25 @@ local function handle_button_action(action_id, context_x, context_y)
     end
 end
 
-function setup()
-    dlog("===== PLUGIN SETUP START =====")
-    dlog_tmux_state("setup initial state")
+local function run_startup_maintenance()
+    if state.startup_maintenance_done == true then
+        return
+    end
+    state.startup_maintenance_done = true
 
     -- Clean up stale global remain-on-exit from previous plugin versions.
     -- Older versions set this globally (-g) which polluted all tmux sessions.
-    -- Now we set it per-window on managed sessions only.
+    -- We keep this lightweight migration even in non-diagnostic mode.
     run_tmux("set-window-option -g -uq remain-on-exit 2>/dev/null")
-    dlog("cleared stale global remain-on-exit")
 
-    -- Respawn any dead panes across all sessions left from a previous exit.
+    if not DIAG_ENABLED then
+        return
+    end
+
+    dlog("===== STARTUP MAINTENANCE START =====")
+    dlog_tmux_state("startup maintenance initial state")
+
+    -- Respawn dead panes across sessions (diagnostic mode only).
     local ls = run_tmux("list-sessions -F '#{session_name}' 2>/dev/null")
     for _, sname in ipairs(split_lines(ls.stdout or "")) do
         sname = trim(sname)
@@ -1742,8 +2114,7 @@ function setup()
         end
     end
 
-    -- Install tmux hooks to log session lifecycle events to the diag log.
-    -- These fire inside the tmux server regardless of whether Conch is running.
+    -- Install tmux hooks to log lifecycle events to the diag log.
     local log_path = diag_log_path()
     local hooks = {
         { "client-detached",         "client-detached session=#{session_name} client=#{client_name}" },
@@ -1755,7 +2126,6 @@ function setup()
         { "pane-exited",             "pane-exited session=#{session_name} pane=#{pane_id} pid=#{pane_pid}" },
     }
     for _, h in ipairs(hooks) do
-        -- Build: tmux set-hook -g <hook> 'run-shell "echo ... >> logfile"'
         local inner = "echo \\\"[$(date +%%Y-%%m-%%d\\ %%H:%%M:%%S)] tmux-hook: " .. h[2] .. "\\\" >> " .. log_path:gsub('"', '\\"')
         run_shell(sh_quote(tmux_command_path())
             .. " set-hook -g " .. h[1]
@@ -1763,7 +2133,11 @@ function setup()
             .. " 2>/dev/null")
     end
     dlog("tmux hooks installed")
+    dlog("===== STARTUP MAINTENANCE COMPLETE =====")
+    dlog_tmux_state("startup maintenance final state")
+end
 
+function setup()
     sync_tmux_settings_draft_from_host()
     app.register_settings_section({
         id = "tmux-manager",
@@ -1788,9 +2162,13 @@ function setup()
     app.register_command("Tmux: Delete Session...", ACTION_DELETE_EXISTING)
     app.register_command("Tmux: Rename Tab...", ACTION_RENAME_TAB_EXISTING)
     app.subscribe("host.tick")
-    refresh_sessions(true)
-    dlog("===== PLUGIN SETUP COMPLETE =====")
-    dlog_tmux_state("setup final state")
+    state.status = "Loading tmux sessions..."
+    state.initial_hydration_done = false
+    state.startup_maintenance_done = false
+    state.pending_focus = nil
+    state.open_guard_until = {}
+    state.last_select_click = nil
+    state.next_poll_unix = 0
 end
 
 function render()
@@ -1873,7 +2251,21 @@ function on_event(event)
 
     if event.kind == "bus_event" and event.event_type == "host.tick" then
         local tick_ms = tonumber(event.data and event.data.unix_ms or 0) or 0
+        if tick_ms > 0 then
+            state.last_tick_ms = tick_ms
+        end
         local tick_unix = tick_ms > 0 and math.floor(tick_ms / 1000) or now_unix()
+        if state.initial_hydration_done ~= true then
+            refresh_sessions(true)
+            state.next_poll_unix = tick_unix + 3
+            rerender()
+            run_startup_maintenance()
+            return
+        end
+        if state.startup_maintenance_done ~= true then
+            run_startup_maintenance()
+        end
+        process_pending_focus()
         poll_tmux_updates(tick_unix)
         return
     end
@@ -1889,4 +2281,5 @@ function on_event(event)
     end
 
     handle_button_action(event.id, event.x, event.y)
+    rerender()
 end
