@@ -23,6 +23,7 @@
     const updateThemePreview = typeof d.updateThemePreview === 'function' ? d.updateThemePreview : null;
     const invoke = typeof d.invoke === 'function' ? d.invoke : null;
     const makeSwitch = typeof d.makeSwitch === 'function' ? d.makeSwitch : null;
+    const configService = global.conchConfigService || {};
 
     if (!addSectionLabel || !addRow || !setRowTarget || !addDivider || !buildThemePreview || !updateThemePreview || !invoke || !makeSwitch) {
       return false;
@@ -44,6 +45,47 @@
       themeSelect.appendChild(opt);
     }
     setRowTarget(addRow(container, 'Theme', 'Color theme for the terminal and UI', themeSelect), 'appearance:theme');
+
+    const availableSkins = typeof configService.getAvailableSkins === 'function'
+      ? configService.getAvailableSkins()
+      : [
+        { id: 'default', label: 'Default' },
+        { id: 'metal', label: 'Metal (Swing)' },
+      ];
+    const skinSelect = document.createElement('select');
+    skinSelect.className = 'settings-select';
+    const selectedSkin = String(pendingSettings.conch.ui.skin || 'default').toLowerCase();
+    let skinMatched = false;
+    for (const skin of availableSkins) {
+      if (!skin || !skin.id) continue;
+      const option = document.createElement('option');
+      option.value = skin.id;
+      option.textContent = skin.label || skin.id;
+      if (skin.id.toLowerCase() === selectedSkin) {
+        option.selected = true;
+        skinMatched = true;
+      }
+      skinSelect.appendChild(option);
+    }
+    if (!skinMatched) {
+      const fallbackOption = document.createElement('option');
+      fallbackOption.value = selectedSkin || 'default';
+      fallbackOption.textContent = selectedSkin || 'default';
+      fallbackOption.selected = true;
+      skinSelect.appendChild(fallbackOption);
+    }
+    skinSelect.addEventListener('change', () => {
+      pendingSettings.conch.ui.skin = skinSelect.value;
+    });
+    setRowTarget(
+      addRow(
+        container,
+        'UI Skin',
+        'Controls chrome styling for panes, tabs, dialogs, and controls.',
+        skinSelect
+      ),
+      'appearance:ui-skin'
+    );
 
     const previewBox = buildThemePreview();
     container.appendChild(previewBox);

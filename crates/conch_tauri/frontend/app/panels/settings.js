@@ -137,6 +137,9 @@
     if (!settings.conch.ui || typeof settings.conch.ui !== 'object') {
       settings.conch.ui = {};
     }
+    if (!settings.conch.ui.skin) {
+      settings.conch.ui.skin = 'default';
+    }
     if (typeof settings.conch.ui.disable_animations !== 'boolean') {
       settings.conch.ui.disable_animations = false;
     }
